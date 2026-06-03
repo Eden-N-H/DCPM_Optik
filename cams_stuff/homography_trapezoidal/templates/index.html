@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Road Defect Homography Tool</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        body { background-color: #f8f9fa; }
+        .canvas-container {
+            position: relative; width: 100%; border: 2px dashed #adb5bd;
+            background: #e9ecef; display: flex; justify-content: center; overflow: hidden;
+        }
+        canvas { max-width: 100%; height: auto; cursor: crosshair; }
+        #loading {
+            display: none; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); background: rgba(255,255,255,0.95);
+            padding: 20px; border-radius: 8px; font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container py-4">
+    <h2 class="mb-4">🛣️ Orthophoto Generation & Metric Scaler</h2>
+    
+    <!-- Upload Section -->
+    <div class="row mb-3 bg-white p-3 shadow-sm rounded align-items-end">
+        <div class="col-md-6">
+            <label class="form-label fw-bold">1. Upload Raw Inspection Image</label>
+            <input type="file" id="fileInput" class="form-control" accept="image/jpeg, image/png">
+        </div>
+        <div class="col-md-6">
+            <label class="form-label fw-bold">Output Base Dimensions (px)</label>
+            <div class="input-group">
+                <input type="number" id="outW" class="form-control" value="800">
+                <span class="input-group-text">x</span>
+                <input type="number" id="outH" class="form-control" value="1000">
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs for Modes -->
+    <ul class="nav nav-tabs mb-3" id="myTab" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="telemetry-tab" data-bs-toggle="tab" data-bs-target="#telemetry" type="button" role="tab">⚙️ Automated Telemetry (Recommended)</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab">🖱️ Manual 4-Point Map</button>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="myTabContent">
+        
+        <!-- Telemetry Mode -->
+        <div class="tab-pane fade show active bg-white p-3 shadow-sm rounded mb-4" id="telemetry" role="tabpanel">
+            <div class="row align-items-end g-3">
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Camera Height</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="camH" class="form-control" value="1600">
+                        <span class="input-group-text">mm</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Camera Pitch (Tilt Down)</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="camPitch" class="form-control" value="10">
+                        <span class="input-group-text">deg</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Extracted FOV</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" step="0.1" id="camFOV" class="form-control" value="96.7">
+                        <span class="input-group-text">deg</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Target Metric Scale</label>
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text">1 px =</span>
+                        <input type="number" id="targetScale" class="form-control" value="2">
+                        <span class="input-group-text">mm</span>
+                    </div>
+                </div>
+                <div class="col-12 mt-3">
+                    <button class="btn btn-primary w-100" onclick="processTelemetry()">Generate Metric Orthophoto</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Manual Mode -->
+        <div class="tab-pane fade bg-white p-3 shadow-sm rounded mb-4" id="manual" role="tabpanel">
+             <div class="row align-items-end g-3">
+                <div class="col-md-6">
+                    <label class="form-label small fw-bold">Scale Reference Length</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="realLength" class="form-control" value="300">
+                        <span class="input-group-text">mm</span>
+                    </div>
+                </div>
+                <div class="col-md-6 text-muted small">
+                    Click 4 road corners on the left image to warp. Then click 2 points on the right image to set scale.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Canvases -->
+    <div class="row g-4">
+        <!-- Original Image -->
+        <div class="col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0">Source Image</h5>
+                <button class="btn btn-sm btn-outline-danger" onclick="clearRoad()">Clear Points</button>
+            </div>
+            <div class="canvas-container shadow-sm">
+                <canvas id="canvasOriginal"></canvas>
+                <div id="loading">Processing...</div>
+            </div>
+        </div>
+
+        <!-- Transformed Image -->
+        <div class="col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0">Metric Plane Output</h5>
+                <div>
+                    <button class="btn btn-sm btn-outline-danger" onclick="clearScale()">Clear Scale</button>
+                    <button class="btn btn-sm btn-success" id="downloadBtn" style="display:none;" onclick="downloadImage()">💾 Export Data for ML</button>
+                </div>
+            </div>
+            <div class="canvas-container shadow-sm">
+                <canvas id="canvasTransformed"></canvas>
+            </div>
+            <div id="resultAlert" class="alert alert-info mt-3" style="display: none;"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let originalImage = new Image();
+    let transformedImage = new Image();
+    let roadPoints = [];
+    let scalePoints = [];
+    let originalBase64 = null;
+    let currentScaleMmPerPixel = null;
+    let currentMode = 'telemetry'; // Tracks active tab
+
+    const canvasOrg = document.getElementById('canvasOriginal');
+    const ctxOrg = canvasOrg.getContext('2d');
+    const canvasTrans = document.getElementById('canvasTransformed');
+    const ctxTrans = canvasTrans.getContext('2d');
+
+    // Watch tab changes
+    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tab => {
+        tab.addEventListener('shown.bs.tab', event => {
+            currentMode = event.target.id === 'telemetry-tab' ? 'telemetry' : 'manual';
+            clearRoad();
+            clearScale();
+            ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
+        });
+    });
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            originalBase64 = event.target.result;
+            
+            // Extract EXIF FOV Automatically via backend
+            fetch('/parse_exif', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: originalBase64 })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if(data.success && data.fov) document.getElementById('camFOV').value = data.fov;
+            });
+
+            originalImage.onload = () => {
+                canvasOrg.width = originalImage.width;
+                canvasOrg.height = originalImage.height;
+                clearRoad(); 
+            }
+            originalImage.src = originalBase64;
+        }
+        reader.readAsDataURL(file);
+    });
+
+    canvasOrg.addEventListener('mousedown', function(e) {
+        if (currentMode !== 'manual' || !originalBase64 || roadPoints.length >= 4) return;
+        roadPoints.push(getMousePos(canvasOrg, e));
+        drawOriginal();
+        if (roadPoints.length === 4) processManualHomography();
+    });
+
+    canvasTrans.addEventListener('mousedown', function(e) {
+        if (currentMode !== 'manual' || !transformedImage.src || scalePoints.length >= 2) return;
+        scalePoints.push(getMousePos(canvasTrans, e));
+        drawTransformed();
+        if (scalePoints.length === 2) calculateManualScale();
+    });
+
+    function getMousePos(canvas, evt) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return { x: (evt.clientX - rect.left) * scaleX, y: (evt.clientY - rect.top) * scaleY };
+    }
+
+    function drawOriginal() {
+        ctxOrg.clearRect(0, 0, canvasOrg.width, canvasOrg.height);
+        ctxOrg.drawImage(originalImage, 0, 0);
+        
+        if (currentMode !== 'manual') return;
+
+        const r = Math.max(8, canvasOrg.width * 0.005);
+        ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
+
+        roadPoints.forEach(p => {
+            ctxOrg.beginPath(); ctxOrg.arc(p.x, p.y, r, 0, 2 * Math.PI);
+            ctxOrg.fillStyle = '#00FF00'; ctxOrg.fill(); ctxOrg.stroke();
+        });
+
+        if (roadPoints.length === 4) {
+            let pts = [...roadPoints].sort((a,b) => a.y - b.y);
+            let top = pts.slice(0,2).sort((a,b) => a.x - b.x);
+            let bot = pts.slice(2,4).sort((a,b) => b.x - a.x);
+            let poly = [...top, ...bot];
+
+            ctxOrg.beginPath(); ctxOrg.moveTo(poly[0].x, poly[0].y);
+            for(let i=1; i<4; i++) ctxOrg.lineTo(poly[i].x, poly[i].y);
+            ctxOrg.closePath(); ctxOrg.strokeStyle = '#00FF00'; ctxOrg.stroke();
+        }
+    }
+
+    function drawTransformed() {
+        ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
+        ctxTrans.drawImage(transformedImage, 0, 0);
+
+        if (currentMode !== 'manual') return;
+
+        const r = Math.max(5, canvasTrans.width * 0.01);
+        ctxTrans.lineWidth = Math.max(3, canvasTrans.width * 0.005);
+
+        scalePoints.forEach(p => {
+            ctxTrans.beginPath(); ctxTrans.arc(p.x, p.y, r, 0, 2 * Math.PI);
+            ctxTrans.fillStyle = '#FF0000'; ctxTrans.fill(); ctxTrans.stroke();
+        });
+
+        if (scalePoints.length === 2) {
+            ctxTrans.beginPath(); ctxTrans.moveTo(scalePoints[0].x, scalePoints[0].y);
+            ctxTrans.lineTo(scalePoints[1].x, scalePoints[1].y);
+            ctxTrans.strokeStyle = '#FF0000'; ctxTrans.stroke();
+        }
+    }
+
+    function processManualHomography() {
+        document.getElementById('loading').innerText = "Warping Image...";
+        document.getElementById('loading').style.display = 'block';
+        
+        fetch('/transform', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mode: 'manual',
+                image: originalBase64,
+                points: roadPoints.map(p => [p.x, p.y]),
+                out_w: document.getElementById('outW').value,
+                out_h: document.getElementById('outH').value
+            })
+        })
+        .then(res => res.json())
+        .then(data => handleTransformResponse(data));
+    }
+
+    function processTelemetry() {
+        if(!originalBase64) return alert("Please upload an image first.");
+        document.getElementById('loading').innerText = "Calculating IPM Matrix...";
+        document.getElementById('loading').style.display = 'block';
+
+        currentScaleMmPerPixel = parseFloat(document.getElementById('targetScale').value);
+
+        fetch('/transform', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mode: 'telemetry',
+                image: originalBase64,
+                cam_h: document.getElementById('camH').value,
+                pitch: document.getElementById('camPitch').value,
+                fov: document.getElementById('camFOV').value,
+                mm_px: currentScaleMmPerPixel,
+                out_w: document.getElementById('outW').value,
+                out_h: document.getElementById('outH').value
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            handleTransformResponse(data);
+            showResultAlert();
+        });
+    }
+
+    function handleTransformResponse(data) {
+        document.getElementById('loading').style.display = 'none';
+        if(data.success) {
+            transformedImage.onload = () => {
+                canvasTrans.width = transformedImage.width;
+                canvasTrans.height = transformedImage.height;
+                clearScale(); 
+            }
+            transformedImage.src = data.image;
+        } else alert("Error: " + data.error);
+    }
+
+    function calculateManualScale() {
+        const dx = scalePoints[1].x - scalePoints[0].x;
+        const dy = scalePoints[1].y - scalePoints[0].y;
+        currentScaleMmPerPixel = parseFloat(document.getElementById('realLength').value) / Math.hypot(dx, dy);
+        showResultAlert();
+    }
+
+    function showResultAlert() {
+        document.getElementById('resultAlert').style.display = 'block';
+        document.getElementById('downloadBtn').style.display = 'inline-block';
+        document.getElementById('resultAlert').innerHTML = `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br><span class="small text-muted">This metric ratio will be embedded into the EXIF data on download.</span>`;
+    }
+
+    function downloadImage() {
+        document.getElementById('loading').innerText = "Injecting EXIF & Saving...";
+        document.getElementById('loading').style.display = 'block';
+
+        let bodyData = {
+            mode: currentMode,
+            image: originalBase64,
+            out_w: document.getElementById('outW').value,
+            out_h: document.getElementById('outH').value,
+        };
+
+        if (currentMode === 'manual') {
+            bodyData.points = roadPoints.map(p => [p.x, p.y]);
+            bodyData.mm_per_pixel = currentScaleMmPerPixel;
+        } else {
+            bodyData.cam_h = document.getElementById('camH').value;
+            bodyData.pitch = document.getElementById('camPitch').value;
+            bodyData.fov = document.getElementById('camFOV').value;
+            bodyData.mm_px = currentScaleMmPerPixel;
+        }
+
+        fetch('/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bodyData)
+        })
+        .then(res => res.blob())
+        .then(blob => {
+            document.getElementById('loading').style.display = 'none';
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'ml_ready_defect.jpg';
+            link.click();
+        })
+        .catch(err => {
+            document.getElementById('loading').style.display = 'none';
+            alert("Download failed: " + err);
+        });
+    }
+
+    function clearRoad() { roadPoints = []; drawOriginal(); }
+    function clearScale() { 
+        scalePoints = []; 
+        document.getElementById('resultAlert').style.display = 'none';
+        document.getElementById('downloadBtn').style.display = 'none';
+        if (transformedImage.src) drawTransformed(); 
+    }
+</script>
+</body>
+</html>
