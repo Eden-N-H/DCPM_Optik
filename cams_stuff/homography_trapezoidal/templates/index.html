@@ -45,17 +45,61 @@
     <!-- Tabs for Modes -->
     <ul class="nav nav-tabs mb-3" id="myTab" role="tablist">
         <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="telemetry-tab" data-bs-toggle="tab" data-bs-target="#telemetry" type="button" role="tab">⚙️ Automated Telemetry (Recommended)</button>
+            <button class="nav-link active" id="autovp-tab" data-bs-toggle="tab" data-bs-target="#autovp" type="button" role="tab">🔍 Auto VP (AI)</button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab">🖱️ Manual 4-Point Map</button>
+            <button class="nav-link" id="telemetry-tab" data-bs-toggle="tab" data-bs-target="#telemetry" type="button" role="tab">⚙️ Manual Telemetry</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab">🖱️ Manual 4-Point</button>
         </li>
     </ul>
 
     <div class="tab-content" id="myTabContent">
         
+        <!-- Auto VP Mode -->
+        <div class="tab-pane fade show active bg-white p-3 shadow-sm rounded mb-4" id="autovp" role="tabpanel">
+            <div class="row align-items-end g-3">
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Camera Height</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="camH_auto" class="form-control" value="1600">
+                        <span class="input-group-text">mm</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Extracted FOV</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" step="0.1" id="camFOV_auto" class="form-control" value="96.7">
+                        <span class="input-group-text">deg</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold">Target Metric Scale</label>
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text">1 px =</span>
+                        <input type="number" id="targetScale_auto" class="form-control" value="2">
+                        <span class="input-group-text">mm</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-check form-switch pt-4">
+                        <input class="form-check-input" type="checkbox" role="switch" id="showDebugLines">
+                        <label class="form-check-label small" for="showDebugLines">Show AI Debug Lines</label>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <button class="btn btn-primary w-100" onclick="processAutoVP()">Detect VP & Generate Orthophoto</button>
+                </div>
+                 <div class="col-12 text-muted small mt-2">
+                    <span class="fw-bold">Hint:</span> After running, you can click the Source Image to manually set the Vanishing Point.
+                    <button class="btn btn-sm btn-outline-secondary ms-2" id="clearManualVpBtn" style="display:none;" onclick="clearManualVP()">Revert to AI Detection</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Telemetry Mode -->
-        <div class="tab-pane fade show active bg-white p-3 shadow-sm rounded mb-4" id="telemetry" role="tabpanel">
+        <div class="tab-pane fade bg-white p-3 shadow-sm rounded mb-4" id="telemetry" role="tabpanel">
             <div class="row align-items-end g-3">
                 <div class="col-md-3">
                     <label class="form-label small fw-bold">Camera Height</label>
@@ -147,7 +191,13 @@
     let scalePoints = [];
     let originalBase64 = null;
     let currentScaleMmPerPixel = null;
-    let currentMode = 'telemetry'; // Tracks active tab
+    let currentMode = 'autovp';
+
+    let detectedVP = null;
+    let detectedTrap = null;
+    let manualVP = null;
+    let detectedLines = [];
+    let inlierMask = [];
 
     const canvasOrg = document.getElementById('canvasOriginal');
     const ctxOrg = canvasOrg.getContext('2d');
@@ -157,7 +207,9 @@
     // Watch tab changes
     document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tab => {
         tab.addEventListener('shown.bs.tab', event => {
-            currentMode = event.target.id === 'telemetry-tab' ? 'telemetry' : 'manual';
+            if (event.target.id === 'autovp-tab') currentMode = 'autovp';
+            else if (event.target.id === 'telemetry-tab') currentMode = 'telemetry';
+            else currentMode = 'manual';
             clearRoad();
             clearScale();
             ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
@@ -171,7 +223,6 @@
         reader.onload = function(event) {
             originalBase64 = event.target.result;
             
-            // Extract EXIF FOV Automatically via backend
             fetch('/parse_exif', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -179,7 +230,10 @@
             })
             .then(res => res.json())
             .then(data => {
-                if(data.success && data.fov) document.getElementById('camFOV').value = data.fov;
+                if(data.success && data.fov) {
+                    document.getElementById('camFOV').value = data.fov;
+                    document.getElementById('camFOV_auto').value = data.fov;
+                }
             });
 
             originalImage.onload = () => {
@@ -193,10 +247,15 @@
     });
 
     canvasOrg.addEventListener('mousedown', function(e) {
-        if (currentMode !== 'manual' || !originalBase64 || roadPoints.length >= 4) return;
-        roadPoints.push(getMousePos(canvasOrg, e));
-        drawOriginal();
-        if (roadPoints.length === 4) processManualHomography();
+        if (currentMode === 'manual' && originalBase64 && roadPoints.length < 4) {
+            roadPoints.push(getMousePos(canvasOrg, e));
+            drawOriginal();
+            if (roadPoints.length === 4) processManualHomography();
+        } else if (currentMode === 'autovp' && originalBase64) {
+            manualVP = getMousePos(canvasOrg, e);
+            document.getElementById('clearManualVpBtn').style.display = 'inline-block';
+            processAutoVP();
+        }
     });
 
     canvasTrans.addEventListener('mousedown', function(e) {
@@ -205,6 +264,8 @@
         drawTransformed();
         if (scalePoints.length === 2) calculateManualScale();
     });
+    
+    document.getElementById('showDebugLines').addEventListener('change', drawOriginal);
 
     function getMousePos(canvas, evt) {
         const rect = canvas.getBoundingClientRect();
@@ -215,44 +276,75 @@
 
     function drawOriginal() {
         ctxOrg.clearRect(0, 0, canvasOrg.width, canvasOrg.height);
-        ctxOrg.drawImage(originalImage, 0, 0);
+        if(originalImage.src) ctxOrg.drawImage(originalImage, 0, 0);
+
+        const showLines = document.getElementById('showDebugLines').checked;
+        if (showLines && currentMode === 'autovp' && detectedLines.length > 0) {
+            ctxOrg.lineWidth = Math.max(2, canvasOrg.width * 0.002);
+            detectedLines.forEach((line, index) => {
+                const is_inlier = inlierMask[index];
+                ctxOrg.strokeStyle = is_inlier ? 'rgba(0, 255, 0, 0.9)' : 'rgba(80, 80, 80, 0.5)';
+                ctxOrg.beginPath();
+                ctxOrg.moveTo(line[0], line[1]);
+                ctxOrg.lineTo(line[2], line[3]);
+                ctxOrg.stroke();
+            });
+        }
         
-        if (currentMode !== 'manual') return;
+        if (currentMode === 'autovp' && detectedVP && detectedTrap) {
+            ctxOrg.beginPath();
+            ctxOrg.moveTo(detectedTrap[0][0], detectedTrap[0][1]);
+            for(let i=1; i<4; i++) ctxOrg.lineTo(detectedTrap[i][0], detectedTrap[i][1]);
+            ctxOrg.closePath();
+            ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
+            ctxOrg.strokeStyle = '#00FFFF';
+            ctxOrg.stroke();
 
-        const r = Math.max(8, canvasOrg.width * 0.005);
-        ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
+            ctxOrg.beginPath();
+            ctxOrg.arc(detectedVP.x, detectedVP.y, Math.max(8, canvasOrg.width * 0.005), 0, 2 * Math.PI);
+            ctxOrg.fillStyle = '#FF0000';
+            ctxOrg.fill();
+            ctxOrg.strokeStyle = '#FFFFFF';
+            ctxOrg.stroke();
+            
+            if (manualVP) {
+                ctxOrg.beginPath();
+                ctxOrg.arc(detectedVP.x, detectedVP.y, Math.max(12, canvasOrg.width * 0.008), 0, 2 * Math.PI);
+                ctxOrg.strokeStyle = '#00FFFF';
+                ctxOrg.lineWidth = Math.max(2, canvasOrg.width * 0.002);
+                ctxOrg.stroke();
+            }
+        }
 
-        roadPoints.forEach(p => {
-            ctxOrg.beginPath(); ctxOrg.arc(p.x, p.y, r, 0, 2 * Math.PI);
-            ctxOrg.fillStyle = '#00FF00'; ctxOrg.fill(); ctxOrg.stroke();
-        });
-
-        if (roadPoints.length === 4) {
-            let pts = [...roadPoints].sort((a,b) => a.y - b.y);
-            let top = pts.slice(0,2).sort((a,b) => a.x - b.x);
-            let bot = pts.slice(2,4).sort((a,b) => b.x - a.x);
-            let poly = [...top, ...bot];
-
-            ctxOrg.beginPath(); ctxOrg.moveTo(poly[0].x, poly[0].y);
-            for(let i=1; i<4; i++) ctxOrg.lineTo(poly[i].x, poly[i].y);
-            ctxOrg.closePath(); ctxOrg.strokeStyle = '#00FF00'; ctxOrg.stroke();
+        if (currentMode === 'manual') {
+            const r = Math.max(8, canvasOrg.width * 0.005);
+            ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
+            roadPoints.forEach(p => {
+                ctxOrg.beginPath(); ctxOrg.arc(p.x, p.y, r, 0, 2 * Math.PI);
+                ctxOrg.fillStyle = '#00FF00'; ctxOrg.fill(); ctxOrg.stroke();
+            });
+            if (roadPoints.length === 4) {
+                let pts = [...roadPoints].sort((a,b) => a.y - b.y);
+                let top = pts.slice(0,2).sort((a,b) => a.x - b.x);
+                let bot = pts.slice(2,4).sort((a,b) => b.x - a.x);
+                let poly = [...top, ...bot];
+                ctxOrg.beginPath(); ctxOrg.moveTo(poly[0].x, poly[0].y);
+                for(let i=1; i<4; i++) ctxOrg.lineTo(poly[i].x, poly[i].y);
+                ctxOrg.closePath(); ctxOrg.strokeStyle = '#00FF00'; ctxOrg.stroke();
+            }
         }
     }
 
     function drawTransformed() {
         ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
-        ctxTrans.drawImage(transformedImage, 0, 0);
-
+        if(transformedImage.src) ctxTrans.drawImage(transformedImage, 0, 0);
         if (currentMode !== 'manual') return;
-
         const r = Math.max(5, canvasTrans.width * 0.01);
         ctxTrans.lineWidth = Math.max(3, canvasTrans.width * 0.005);
-
         scalePoints.forEach(p => {
             ctxTrans.beginPath(); ctxTrans.arc(p.x, p.y, r, 0, 2 * Math.PI);
             ctxTrans.fillStyle = '#FF0000'; ctxTrans.fill(); ctxTrans.stroke();
         });
-
         if (scalePoints.length === 2) {
             ctxTrans.beginPath(); ctxTrans.moveTo(scalePoints[0].x, scalePoints[0].y);
             ctxTrans.lineTo(scalePoints[1].x, scalePoints[1].y);
@@ -263,47 +355,64 @@
     function processManualHomography() {
         document.getElementById('loading').innerText = "Warping Image...";
         document.getElementById('loading').style.display = 'block';
-        
         fetch('/transform', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                mode: 'manual',
-                image: originalBase64,
-                points: roadPoints.map(p => [p.x, p.y]),
-                out_w: document.getElementById('outW').value,
-                out_h: document.getElementById('outH').value
+                mode: 'manual', image: originalBase64, points: roadPoints.map(p => [p.x, p.y]),
+                out_w: document.getElementById('outW').value, out_h: document.getElementById('outH').value
             })
-        })
+        }).then(res => res.json()).then(data => handleTransformResponse(data));
+    }
+
+    function processAutoVP() {
+        if(!originalBase64) return alert("Please upload an image first.");
+        document.getElementById('loading').innerText = manualVP ? "Using Manual VP..." : "Running RANSAC VP Detection...";
+        document.getElementById('loading').style.display = 'block';
+        currentScaleMmPerPixel = parseFloat(document.getElementById('targetScale_auto').value);
+
+        let body = {
+            mode: 'autovp', image: originalBase64,
+            cam_h: document.getElementById('camH_auto').value,
+            fov: document.getElementById('camFOV_auto').value,
+            mm_px: currentScaleMmPerPixel,
+            out_w: document.getElementById('outW').value,
+            out_h: document.getElementById('outH').value
+        };
+        if (manualVP) body.manual_vp = manualVP;
+
+        fetch('/transform', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(res => res.json())
-        .then(data => handleTransformResponse(data));
+        .then(data => {
+            if(data.success) {
+                detectedVP = data.vp;
+                detectedTrap = data.src_pts;
+                detectedLines = data.lines || [];
+                inlierMask = data.mask || [];
+                let alertHtml = `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br>
+                <span class="small text-muted">Inferred Pitch: ${data.pitch.toFixed(1)}° | Yaw: ${data.yaw.toFixed(1)}°</span>`;
+                showResultAlert(alertHtml);
+            }
+            handleTransformResponse(data);
+        });
     }
 
     function processTelemetry() {
         if(!originalBase64) return alert("Please upload an image first.");
         document.getElementById('loading').innerText = "Calculating IPM Matrix...";
         document.getElementById('loading').style.display = 'block';
-
         currentScaleMmPerPixel = parseFloat(document.getElementById('targetScale').value);
-
         fetch('/transform', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                mode: 'telemetry',
-                image: originalBase64,
-                cam_h: document.getElementById('camH').value,
-                pitch: document.getElementById('camPitch').value,
-                fov: document.getElementById('camFOV').value,
-                mm_px: currentScaleMmPerPixel,
-                out_w: document.getElementById('outW').value,
-                out_h: document.getElementById('outH').value
+                mode: 'telemetry', image: originalBase64,
+                cam_h: document.getElementById('camH').value, pitch: document.getElementById('camPitch').value,
+                fov: document.getElementById('camFOV').value, mm_px: currentScaleMmPerPixel,
+                out_w: document.getElementById('outW').value, out_h: document.getElementById('outH').value
             })
-        })
-        .then(res => res.json())
-        .then(data => {
+        }).then(res => res.json()).then(data => {
+            if(data.success) showResultAlert();
             handleTransformResponse(data);
-            showResultAlert();
         });
     }
 
@@ -313,10 +422,11 @@
             transformedImage.onload = () => {
                 canvasTrans.width = transformedImage.width;
                 canvasTrans.height = transformedImage.height;
-                clearScale(); 
+                drawTransformed(); 
             }
             transformedImage.src = data.image;
         } else alert("Error: " + data.error);
+        drawOriginal();
     }
 
     function calculateManualScale() {
@@ -326,10 +436,10 @@
         showResultAlert();
     }
 
-    function showResultAlert() {
+    function showResultAlert(customHtml) {
         document.getElementById('resultAlert').style.display = 'block';
         document.getElementById('downloadBtn').style.display = 'inline-block';
-        document.getElementById('resultAlert').innerHTML = `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br><span class="small text-muted">This metric ratio will be embedded into the EXIF data on download.</span>`;
+        document.getElementById('resultAlert').innerHTML = customHtml || `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br><span class="small text-muted">This metric ratio will be embedded into the EXIF data on download.</span>`;
     }
 
     function downloadImage() {
@@ -337,8 +447,7 @@
         document.getElementById('loading').style.display = 'block';
 
         let bodyData = {
-            mode: currentMode,
-            image: originalBase64,
+            mode: currentMode, image: originalBase64,
             out_w: document.getElementById('outW').value,
             out_h: document.getElementById('outH').value,
         };
@@ -346,18 +455,19 @@
         if (currentMode === 'manual') {
             bodyData.points = roadPoints.map(p => [p.x, p.y]);
             bodyData.mm_per_pixel = currentScaleMmPerPixel;
-        } else {
+        } else if (currentMode === 'telemetry') {
             bodyData.cam_h = document.getElementById('camH').value;
             bodyData.pitch = document.getElementById('camPitch').value;
             bodyData.fov = document.getElementById('camFOV').value;
             bodyData.mm_px = currentScaleMmPerPixel;
+        } else if (currentMode === 'autovp') {
+            bodyData.cam_h = document.getElementById('camH_auto').value;
+            bodyData.fov = document.getElementById('camFOV_auto').value;
+            bodyData.mm_px = currentScaleMmPerPixel;
+            if (manualVP) bodyData.manual_vp = manualVP;
         }
 
-        fetch('/download', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(bodyData)
-        })
+        fetch('/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) })
         .then(res => res.blob())
         .then(blob => {
             document.getElementById('loading').style.display = 'none';
@@ -366,14 +476,30 @@
             link.href = url;
             link.download = 'ml_ready_defect.jpg';
             link.click();
-        })
-        .catch(err => {
+            window.URL.revokeObjectURL(url);
+        }).catch(err => {
             document.getElementById('loading').style.display = 'none';
             alert("Download failed: " + err);
         });
     }
 
-    function clearRoad() { roadPoints = []; drawOriginal(); }
+    function clearManualVP() {
+        manualVP = null;
+        document.getElementById('clearManualVpBtn').style.display = 'none';
+        processAutoVP();
+    }
+
+    function clearRoad() { 
+        roadPoints = []; 
+        detectedVP = null;
+        detectedTrap = null;
+        manualVP = null;
+        detectedLines = [];
+        inlierMask = [];
+        document.getElementById('clearManualVpBtn').style.display = 'none';
+        drawOriginal(); 
+    }
+    
     function clearScale() { 
         scalePoints = []; 
         document.getElementById('resultAlert').style.display = 'none';
