@@ -2,21 +2,6 @@
 
 ## Technical Approach & Architecture
 
-```
-┌────────────────────────┐      ┌────────────────────────┐
-│ 1. Telemetry Ingestion │      │ 2. Flattening          │
-│    • Extract GPMF Data │ ───► │    • Homography Matrix │
-│    • Extract GPS/IMU   │      │    • Ortho-rectification│
-└────────────────────────┘      └────────────────────────┘
-                                             │
-                                             ▼
-┌────────────────────────┐      ┌────────────────────────┐
-│ 4. Sequential SfM      │      │ 3. ML Segmentation     │
-│    • Keypoint tracking │ ◄─── │    • Outline defect    │
-│    • Baseline depth    │      │    • Classify anomalies│
-└────────────────────────┘      └────────────────────────┘
-```
-
 ### Phase 1: Telemetry Ingestion & Calibration
 
 - **Source Media:** Processing continuous MP4 video files to extract high-frequency sensor readings via the GoPro Metadata Format (GPMF).
