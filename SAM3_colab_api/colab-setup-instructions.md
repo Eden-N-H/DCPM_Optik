@@ -262,7 +262,7 @@ print("Waiting for SAM 3 model weights to load and Flask to boot (this may take 
 
 # 2. Smart loop to wait until Flask is actually responsive
 flask_ready = False
-for _ in range(60): # Wait up to 120 seconds
+for _ in range(300): # Wait up to 10 minutes
     if flask_process.poll() is not None:
         break
     try:
