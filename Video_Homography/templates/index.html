@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DCPM Geospatial Pipeline</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        .dropzone { border: 2px dashed #d1d5db; transition: all 0.3s; }
+        .dropzone:hover { border-color: #3b82f6; background-color: #eff6ff; }
+        #map { height: 80vh; border-radius: 0.75rem; border: 1px solid #e5e7eb; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans min-h-screen p-6">
+    <div class="max-w-screen-2xl mx-auto">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6">DCPM Mapping Engine</h1>
+        
+        <div class="bg-white p-6 rounded-xl shadow-sm mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div id="dz-model" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center">
+                <span class="text-sm font-medium text-gray-600">Drop YOLO Model (.pt)</span>
+                <span id="name-model" class="text-xs text-blue-600 mt-1 hidden"></span>
+                <input type="file" id="in-model" accept=".pt" class="hidden">
+            </div>
+
+            <div id="dz-image" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center">
+                <span class="text-sm font-medium text-gray-600">Drop 360 Image(s) or Video File</span>
+                <span id="name-image" class="text-xs text-blue-600 mt-1 hidden"></span>
+                <input type="file" id="in-image" name="files" accept="image/*,video/mp4,video/quicktime,video/x-msvideo" multiple class="hidden">
+            </div>
+
+            <div class="flex items-center gap-4">
+                <div class="flex-1">
+                    <label class="text-xs font-semibold text-gray-500 uppercase">Camera Height (m)</label>
+                    <input type="number" id="cam-height" value="1.6" step="0.1" class="w-full text-sm p-2 border rounded">
+                </div>
+                <button id="process-btn" class="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-700 disabled:opacity-50 mt-4" disabled>
+                    Run Pipeline
+                </button>
+            </div>
+        </div>
+
+        <div id="loading" class="hidden text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+            <p class="text-gray-500 font-medium">Extracting Telemetry & Processing Frames...</p>
+        </div>
+
+        <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <div class="lg:col-span-5 bg-white p-4 rounded-xl shadow-sm border flex flex-col h-[80vh] overflow-y-auto">
+                <div class="flex justify-between items-center mb-4">
+                    <button id="btn-prev" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded">&larr; Prev</button>
+                    <div class="text-center">
+                        <p id="carousel-counter" class="font-bold text-gray-800 text-sm">Item 1 of X</p>
+                        <p id="carousel-filename" class="text-xs text-gray-500">filename.jpg</p>
+                        <p id="carousel-telemetry" class="text-xs text-blue-600">Pitch: -15.0°</p>
+                    </div>
+                    <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded">Next &rarr;</button>
+                </div>
+
+                <div class="flex flex-col gap-4">
+                    <div>
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">Perspective Annotations</p>
+                        <img id="img-rect" class="w-full rounded border bg-gray-100" src="" alt="Rectilinear View">
+                    </div>
+                    <div>
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">Metric Bird's-Eye (BEV)</p>
+                        <img id="img-bev" class="w-full rounded border bg-gray-100" src="" alt="BEV View">
+                    </div>
+                    <div>
+                        <p class="text-xs font-bold text-gray-500 uppercase mb-1">Defects Found</p>
+                        <table class="w-full text-left text-sm bg-gray-50 rounded">
+                            <tbody id="table-defects" class="divide-y"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-7">
+                <div id="map"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
