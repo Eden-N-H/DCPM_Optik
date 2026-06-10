@@ -56,6 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
         fd.append("model", modelFile);
         imageFiles.forEach(f => fd.append("images", f));
         fd.append("cam_height", document.getElementById("cam-height").value);
+        fd.append("gps_snap", document.getElementById("gps-snap").checked ? "true" : "false");
 
         document.getElementById("loading").classList.remove("hidden");
         document.getElementById("workspace").classList.add("hidden");
