@@ -218,62 +218,79 @@ def extract_video_gpmf_pitch_track(video_path, fallback_pitch=-15.0):
     except Exception:
         return lambda t: fallback_pitch
 
-
-def process_video_frames(video_path, model, upload_dir, cam_height, pitch_interp, base_filename):
-    """Iterates frame components sequentially without hitting disk I/O bottlenecks."""
+def process_video_frames(video_path, model, upload_dir, cam_height, pitch_interp, base_filename, gps_snap=False):
     cap = cv2.VideoCapture(video_path)
     video_defects_summary = []
     video_geojson_features = []
     trail_coordinates = []
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    frame_sample_rate = max(1, int(fps / 2))
-    frame_idx = 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Video: {total_frames} frames @ {fps:.1f}fps = {total_frames/fps:.1f}s")
 
+    frame_idx = 0
     base_lat, base_lon = 37.7749, -122.4194
     current_heading = 0.0
+    gps_frame_set = None
+
+    if gps_snap:
+        try:
+            from pathlib import Path
+            from extract_gpmf import extract_streams_with_time
+            streams = extract_streams_with_time(video_path)
+            if "GPS5" in streams:
+                gps_times = [s["time_sec"] for s in streams["GPS5"]]
+                gps_frame_set = set(round(t * fps) for t in gps_times)
+                print(f"GPS time range: {min(gps_times):.1f}s to {max(gps_times):.1f}s")
+                print(f"GPS samples: {len(gps_times)}, unique frame indices: {len(gps_frame_set)}")
+            else:
+                print("GPS snap: no GPS5 stream found, falling back to all frames")
+        except Exception as e:
+            print(f"GPS snap failed, falling back to interpolation: {e}")
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_idx % frame_sample_rate == 0:
-            elapsed_time_sec = frame_idx / fps
-            current_pitch = float(pitch_interp(elapsed_time_sec))
+        if gps_snap and gps_frame_set is not None:
+            if frame_idx not in gps_frame_set:
+                frame_idx += 1
+                continue
 
-            simulated_lat = base_lat + (frame_idx * 0.00001)
-            simulated_lon = base_lon + (frame_idx * 0.00001)
-            trail_coordinates.append([simulated_lon, simulated_lat])
+        elapsed_time_sec = frame_idx / fps
+        current_pitch = float(pitch_interp(elapsed_time_sec))
 
-            rect_name = f"rect_fr{frame_idx}_{base_filename}.jpg"
-            bev_name = f"bev_fr{frame_idx}_{base_filename}.jpg"
-            rect_path = os.path.join(upload_dir, rect_name)
-            bev_path = os.path.join(upload_dir, bev_name)
+        simulated_lat = base_lat + (frame_idx * 0.00001)
+        simulated_lon = base_lon + (frame_idx * 0.00001)
+        trail_coordinates.append([simulated_lon, simulated_lat])
 
-            # FIX: Pass the raw numpy frame directly instead of writing/reading it from disk
-            defects, geo_feats = process_single_image(
-                frame, model, rect_path, bev_path,
-                simulated_lat, simulated_lon, current_heading, cam_height, current_pitch
-            )
+        rect_name = f"rect_fr{frame_idx}_{base_filename}.jpg"
+        bev_name = f"bev_fr{frame_idx}_{base_filename}.jpg"
+        rect_path = os.path.join(upload_dir, rect_name)
+        bev_path = os.path.join(upload_dir, bev_name)
 
-            video_geojson_features.extend(geo_feats)
+        defects, geo_feats = process_single_image(
+            frame, model, rect_path, bev_path,
+            simulated_lat, simulated_lon, current_heading, cam_height, current_pitch
+        )
 
-            video_geojson_features.append({
-                "type": "Feature",
-                "properties": {"type": "camera", "filename": f"Frame {frame_idx}"},
-                "geometry": {"type": "Point", "coordinates": [simulated_lon, simulated_lat]}
-            })
+        video_geojson_features.extend(geo_feats)
+        video_geojson_features.append({
+            "type": "Feature",
+            "properties": {"type": "camera", "filename": f"Frame {frame_idx}"},
+            "geometry": {"type": "Point", "coordinates": [simulated_lon, simulated_lat]}
+        })
 
-            video_defects_summary.append({
-                "original_name": f"{base_filename} (Frame {frame_idx})",
-                "lat": round(simulated_lat, 6),
-                "lon": round(simulated_lon, 6),
-                "pitch": round(current_pitch, 2),
-                "rect_url": f"/static/uploads/{rect_name}",
-                "bev_url": f"/static/uploads/{bev_name}",
-                "defects": defects
-            })
+        video_defects_summary.append({
+            "original_name": f"{base_filename} (Frame {frame_idx})",
+            "lat": round(simulated_lat, 6),
+            "lon": round(simulated_lon, 6),
+            "pitch": round(current_pitch, 2),
+            "rect_url": f"/static/uploads/{rect_name}",
+            "bev_url": f"/static/uploads/{bev_name}",
+            "defects": defects
+        })
 
         frame_idx += 1
 
