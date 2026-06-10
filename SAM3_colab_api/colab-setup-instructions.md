@@ -73,11 +73,14 @@ app = Flask(__name__)
 CORS(app)
 
 print("--> Loading SAM 3 Models (Image PCS & Video Tracker)...", flush=True)
-device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# 1. Load the models WITHOUT passing dtype to prevent ruining complex tensors
-image_model = build_sam3_image_model().to(device=device)
-video_predictor = build_sam3_predictor(version="sam3.1").to(device=device)
+# 1. Load the Image Model (It is an nn.Module, so .cuda() works)
+image_model = build_sam3_image_model().cuda().eval()
+
+# 2. Load the Video Predictor 
+# Note: It returns a Python wrapper class, not an nn.Module! It automatically puts itself on CUDA.
+# CRITICAL: T4 GPUs do not support FlashAttention-3, so we must set use_fa3=False
+video_predictor = build_sam3_predictor(version="sam3.1", use_fa3=False)
 
 # Patch the video predictor's hardcoded bfloat16 context
 if hasattr(video_predictor, 'bf16_context'):
@@ -88,7 +91,7 @@ if hasattr(video_predictor, 'bf16_context'):
     video_predictor.bf16_context = torch.autocast(device_type="cuda", dtype=torch.float32)
     video_predictor.bf16_context.__enter__()
 
-# 2. SURGICAL CASTING: Convert bfloat16/float16 to float32 safely
+# 3. SURGICAL CASTING: Convert bfloat16/float16 to float32 safely
 # This avoids BFloat16 hardware crashes on T4 GPUs while preserving complex RoPE tensors.
 def make_fp32_safe(m):
     for name, param in m.named_parameters(recurse=False):
@@ -135,6 +138,13 @@ def format_video_outputs(outputs):
     return {{"boxes": boxes, "scores": scores, "obj_ids": obj_ids, "masks_base64": encode_masks(masks)}}
 
 # ==========================================
+# HEALTH ENDPOINT
+# ==========================================
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({{"status": "online"}})
+
+# ==========================================
 # IMAGE PCS API
 # ==========================================
 @app.route('/image/segment', methods=['POST'])
@@ -172,7 +182,7 @@ def start_session():
 
         req = {{"type": "start_session", "resource_path": video_path}}
         resp = video_predictor.handle_request(req)
-
+        
         session_id = resp["session_id"]
         ACTIVE_SESSIONS[session_id] = temp_dir
         return jsonify({{"success": True, "session_id": session_id}})
@@ -245,8 +255,8 @@ import time
 import urllib.request
 import urllib.error
 import os
+import getpass
 from pyngrok import ngrok
-from google.colab import userdata
 
 # 0. Kill any zombie Flask processes to free the port and clear old code from memory
 os.system("pkill -f 'python -u /content/app.py'")
@@ -258,20 +268,18 @@ print("Starting Flask Server... (Logs piping to /content/flask_logs.txt)")
 log_file = open("/content/flask_logs.txt", "w")
 flask_process = subprocess.Popen(["python", "-u", "/content/app.py"], stdout=log_file, stderr=subprocess.STDOUT)
 
-print("Waiting for SAM 3 model weights to load and Flask to boot (this may take up to a minute)...")
+print("Waiting for SAM 3 model weights to load and Flask to boot (this may take several minutes)...")
 
-# 2. Smart loop to wait until Flask is actually responsive
+# 2. Smart loop to wait until Flask is actually responsive using our /health endpoint
 flask_ready = False
-for _ in range(300): # Wait up to 10 minutes
+for _ in range(600): # Wait up to 1200 seconds (wait times are 2s each)
     if flask_process.poll() is not None:
         break
     try:
-        urllib.request.urlopen("http://127.0.0.1:5000/image/segment")
-        flask_ready = True
-        break
-    except urllib.error.HTTPError: # 405 Method Not Allowed is a good sign (it's alive!)
-        flask_ready = True
-        break
+        res = urllib.request.urlopen("http://127.0.0.1:5000/health")
+        if res.getcode() == 200:
+            flask_ready = True
+            break
     except urllib.error.URLError:
         time.sleep(2)
 
@@ -281,12 +289,24 @@ if not flask_ready:
     print("--- FLASK LOGS ---")
     with open("/content/flask_logs.txt", "r") as f:
         print(f.read())
+    raise RuntimeError("Flask server failed to boot.")
 else:
     print("\n✅ Flask server is fully online!")
     print("=== STARTING TUNNEL ===")
 
-    ngrok_token = userdata.get('NGROK_TOKEN')
-    ngrok.set_auth_token(ngrok_token)
+    # Safely attempt to retrieve the ngrok token, fallback to manual input if Colab is bugged
+    try:
+        from google.colab import userdata
+        ngrok_token = userdata.get('NGROK_TOKEN')
+    except Exception as e:
+        print("\n⚠️ Colab's secret manager could not find 'NGROK_TOKEN'.")
+        print("Let's bypass it. Please paste your Ngrok Authtoken below:")
+        ngrok_token = getpass.getpass("Ngrok Authtoken: ")
+
+    if not ngrok_token or not ngrok_token.strip():
+        raise ValueError("Ngrok token cannot be empty. Please provide a valid token.")
+
+    ngrok.set_auth_token(ngrok_token.strip())
 
     ngrok.kill()
     public_url = ngrok.connect(addr="127.0.0.1:5000").public_url
