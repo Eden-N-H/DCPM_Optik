@@ -6,20 +6,31 @@ document.addEventListener("DOMContentLoaded", () => {
     let geoJsonLayer = null;
     let mapMarkers = {}; // Stores { "filename.jpg": leaflet_marker_object }
     
-    let appResults = [];
+    // State Management Variables
+    let fullResults = [];
+    let fullGeojson = null;
+    let appResults = []; // Filtered results for the current active location
     let currentIndex = 0;
 
     const btnProcess = document.getElementById("process-btn");
+    const selLocation = document.getElementById("sel-location");
 
+    // ==========================================
+    // Initialization & Map Logic
+    // ==========================================
     function initMap() {
         if (!map) {
             map = L.map('map').setView([-32.06, 151.90], 15);
             L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                maxZoom: 19
+                maxZoom: 24,          // Allow the map user to zoom in infinitely close
+                maxNativeZoom: 17     // FIX: Stop requesting tiles past zoom 17, Esri will just visually stretch the level 17 tiles.
             }).addTo(map);
         }
     }
 
+    // ==========================================
+    // File Upload Setup
+    // ==========================================
     const setupDz = (dzId, inId, nameId, isMulti, callback) => {
         const dz = document.getElementById(dzId);
         const inp = document.getElementById(inId);
@@ -51,6 +62,9 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDz("dz-model", "in-model", "name-model", false, f => modelFile = f);
     setupDz("dz-image", "in-image", "name-image", true, f => imageFiles = f);
 
+    // ==========================================
+    // Process Pipeline Logic
+    // ==========================================
     btnProcess.onclick = async () => {
         const fd = new FormData();
         fd.append("model", modelFile);
@@ -58,7 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
         fd.append("cam_height", document.getElementById("cam-height").value);
 
         document.getElementById("loading").classList.remove("hidden");
-        document.getElementById("workspace").classList.add("hidden");
+        document.getElementById("upload-panel").classList.add("hidden");
         btnProcess.disabled = true;
 
         try {
@@ -66,25 +80,83 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             if (data.error) throw new Error(data.error);
 
-            appResults = data.results;
-            currentIndex = 0;
-
-            initMap();
-            document.getElementById("workspace").classList.remove("hidden");
-            
-            // FIX: Force Leaflet to recalculate bounds after un-hiding the div
-            setTimeout(() => { map.invalidateSize(); }, 200);
-
-            renderMap(data.geojson);
-            updateCarousel();
+            loadWorkspace(data.results, data.geojson);
 
         } catch (e) {
             alert(e.message);
+            document.getElementById("upload-panel").classList.remove("hidden");
         } finally {
             document.getElementById("loading").classList.add("hidden");
             btnProcess.disabled = false;
         }
     };
+
+    // ==========================================
+    // Save / Load Project JSON
+    // ==========================================
+    document.getElementById("btn-save-project").onclick = () => {
+        if (fullResults.length === 0) return;
+        const projectData = { results: fullResults, geojson: fullGeojson };
+        const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "dcpm_project.json";
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    document.getElementById("in-load-project").addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            try {
+                const data = JSON.parse(ev.target.result);
+                if (!data.results || !data.geojson) throw new Error("Invalid project format.");
+                loadWorkspace(data.results, data.geojson);
+            } catch (err) {
+                alert("Error loading project: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    // ==========================================
+    // Workspace Management
+    // ==========================================
+    function loadWorkspace(resultsData, geojsonData) {
+        fullResults = resultsData;
+        fullGeojson = geojsonData;
+
+        initMap();
+        document.getElementById("upload-panel").classList.add("hidden");
+        document.getElementById("workspace").classList.remove("hidden");
+        document.getElementById("btn-save-project").classList.remove("hidden");
+        
+        // Force Leaflet to recalculate bounds after un-hiding the div
+        setTimeout(() => { map.invalidateSize(); }, 200);
+
+        renderMap(fullGeojson);
+        populateLocations();
+    }
+
+    function populateLocations() {
+        const locations = [...new Set(fullResults.map(r => r.location))];
+        selLocation.innerHTML = locations.map(loc => `<option value="${loc}">${loc}</option>`).join("");
+        
+        selLocation.onchange = () => {
+            appResults = fullResults.filter(r => r.location === selLocation.value);
+            currentIndex = 0;
+            updateCarousel(true);
+        };
+        
+        // Trigger initial setup
+        if (locations.length > 0) {
+            selLocation.value = locations[0];
+            selLocation.dispatchEvent(new Event('change'));
+        }
+    }
 
     function renderMap(geoJsonData) {
         if (geoJsonLayer) map.removeLayer(geoJsonLayer);
@@ -96,15 +168,30 @@ document.addEventListener("DOMContentLoaded", () => {
                     return { color: "#ff0000", weight: 2, fillColor: "#ffaa00", fillOpacity: 0.5 };
                 }
                 if (feature.geometry.type === 'LineString') {
-                    return { color: "#00b4d8", weight: 3, dashArray: "5, 10" }; // The driving trail
+                    return { color: "#00b4d8", weight: 3, dashArray: "5, 10" }; 
                 }
             },
             pointToLayer: function(feature, latlng) {
                 const marker = L.circleMarker(latlng, {
                     radius: 5, fillColor: "#3b82f6", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
                 });
+                
                 if (feature.properties.type === 'camera') {
                     mapMarkers[feature.properties.filename] = marker;
+                    
+                    // Click Map Point -> Jump to Image in Carousel
+                    marker.on('click', () => {
+                        const target = fullResults.find(r => r.original_name === feature.properties.filename);
+                        if (target) {
+                            // If the image clicked is in a different location group, switch the group
+                            if (selLocation.value !== target.location) {
+                                selLocation.value = target.location;
+                                appResults = fullResults.filter(r => r.location === target.location);
+                            }
+                            currentIndex = appResults.findIndex(r => r.original_name === target.original_name);
+                            updateCarousel(false); // Update UI but don't force re-pan the map
+                        }
+                    });
                 }
                 return marker;
             },
@@ -122,7 +209,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function updateCarousel() {
+    function updateCarousel(panMap = true) {
         if (appResults.length === 0) return;
         const current = appResults[currentIndex];
 
@@ -145,10 +232,12 @@ document.addEventListener("DOMContentLoaded", () => {
             </tr>
         `).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No defects detected</td></tr>`;
 
-        // Sync Map! Pan to the camera dot and open popup
+        // Sync Map Marker
         const activeMarker = mapMarkers[current.original_name];
         if (activeMarker) {
-            map.setView(activeMarker.getLatLng(), 18, { animate: true });
+            if (panMap) {
+                map.setView(activeMarker.getLatLng(), 20, { animate: true });
+            }
             activeMarker.openPopup();
         }
 
@@ -157,11 +246,13 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("btn-next").disabled = (currentIndex === appResults.length - 1);
     }
 
+    // ==========================================
     // Carousel Navigation
+    // ==========================================
     document.getElementById("btn-prev").onclick = () => {
-        if (currentIndex > 0) { currentIndex--; updateCarousel(); }
+        if (currentIndex > 0) { currentIndex--; updateCarousel(true); }
     };
     document.getElementById("btn-next").onclick = () => {
-        if (currentIndex < appResults.length - 1) { currentIndex++; updateCarousel(); }
+        if (currentIndex < appResults.length - 1) { currentIndex++; updateCarousel(true); }
     };
 });

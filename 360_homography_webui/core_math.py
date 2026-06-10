@@ -1,44 +1,39 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from ultralytics.utils.plotting import colors  # Automatically fetches YOLO's class color palette
+from ultralytics.utils.plotting import colors 
 import math
 import struct
 import exifread
 
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculates the distance in meters between two coordinates."""
+    R = 6371000.0  # Earth radius in meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
 def extract_gpmf_pitch(filepath, fallback_pitch=-15.0):
-    """
-    Extracts the raw GPMF payload from the GoPro JPEG to find the 'GRAV' (Gravity) vector.
-    Calculates the exact camera pitch to account for vehicle bounce.
-    """
     try:
         with open(filepath, 'rb') as f:
             data = f.read()
-            
-        # Fast binary search for the 'GRAV' tag
         idx = data.find(b'GRAV')
         if idx != -1:
-            # GPMF KLV Header is 8 bytes. Payload follows.
-            # GRAV payload is usually 3 floats (X, Y, Z) = 12 bytes
             payload = data[idx+8 : idx+8+12]
             if len(payload) == 12:
                 x, y, z = struct.unpack('>fff', payload)
-                # Calculate pitch from the gravity vector (Z=forward/back, Y=up/down)
                 pitch = math.degrees(math.atan2(z, y))
-                # For a road facing camera, it's pointing down. We force it to be negative.
-                # E.g. atan2(0.13, 0.98) returns ~7.5. We make it -7.5
                 return -abs(pitch)
     except Exception as e:
         print(f"GPMF Extraction failed: {e}")
-        
     return fallback_pitch
 
 def get_exif_gps(filepath):
-    """Extracts Lat/Lng from JPEG EXIF data."""
     try:
         with open(filepath, 'rb') as f:
             tags = exifread.process_file(f, details=False)
-        
         if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
             def convert_to_degrees(value):
                 d, m, s = value.values
@@ -58,7 +53,6 @@ def get_exif_gps(filepath):
     return 0.0, 0.0
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
-    """Calculates forward heading from point A to point B."""
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
     x = math.sin(dlon) * math.cos(lat2)
@@ -66,7 +60,6 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 def local_to_global(lat, lon, heading_deg, local_x, local_z):
-    """Projects local metric coordinates to global Earth Lat/Lng."""
     R = 6378137.0
     d = math.hypot(local_x, local_z)
     angle_rad = math.atan2(local_x, local_z)
@@ -136,10 +129,8 @@ def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_
     
     H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
     
-    # Base BEV road canvas, plus a duplicate overlay for opacity blending
     bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
     bev_overlay = bev_img.copy() 
-    
     rect_h, rect_w = rect_img.shape[:2]
     
     defects = []
@@ -152,45 +143,30 @@ def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_
                 cls_id = int(r.boxes.cls[i])
                 class_name = model.names[cls_id]
                 conf = float(r.boxes.conf[i])
-                
-                # Fetch Ultralytics' standard BGR color for this specific class
                 mask_color = colors(cls_id, bgr=True)
                 
-                # 1. Create a blank canvas matching the perspective image size
                 mask_canvas = np.zeros((rect_h, rect_w), dtype=np.uint8)
-                
-                # 2. Draw the YOLO defect polygon as a solid white shape
                 int_mask_pts = np.array(mask_pts, dtype=np.int32)
                 cv2.fillPoly(mask_canvas, [int_mask_pts], 255)
                 
-                # 3. Warp the raster canvas to BEV 
                 bev_mask_canvas = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
-                
-                # 4. Extract the newly shaped, perfectly bounded contour(s)
                 contours, _ = cv2.findContours(bev_mask_canvas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
                 for contour in contours:
-                    # 5. Calculate metric area and ignore minuscule sub-pixel noise
                     area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                     if area_sqm <= 0.0001: 
                         continue
                         
-                    # Fill the contour on the BEV overlay layer with the matching YOLO color
                     cv2.fillPoly(bev_overlay, [contour], color=mask_color)
                     
                     geo_coords = []
                     for pt in contour:
                         px, py = pt[0][0], pt[0][1]
-                        
-                        # Translate pixel coordinates to local physical metric grid
                         local_x = (px * gsd) - x_range
                         local_z = z_far - (py * gsd)
-                        
-                        # Project onto Earth
                         g_lat, g_lon = local_to_global(gps_lat, gps_lon, heading, local_x, local_z)
                         geo_coords.append([g_lon, g_lat])
                     
-                    # Close the GeoJSON Polygon loop properly
                     if len(geo_coords) > 0 and geo_coords[0] != geo_coords[-1]:
                         geo_coords.append(geo_coords[0])
 
@@ -201,9 +177,7 @@ def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_
                         "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                     })
 
-    # Mathematically blend the colored overlay with the base image at exactly 50% opacity (YOLO's default)
     cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
-
     cv2.imwrite(out_rect_path, annotated_rect)
     cv2.imwrite(out_bev_path, bev_img)
     return defects, geojson_features
