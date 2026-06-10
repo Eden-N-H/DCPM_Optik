@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
+from ultralytics.utils.plotting import colors  # Automatically fetches YOLO's class color palette
 import math
 import struct
 import exifread
@@ -114,7 +115,6 @@ def get_bev_homography(K, cam_height_m, pitch_deg, gsd=0.01, z_near=2.0, z_far=8
     rect_pts = []
     for pt in road_pts:
         X, Z = pt
-        # FIX: OpenCV Y is positive down. The road is BELOW the camera, so Y is positive cam_height_m!
         Y = cam_height_m 
         
         Y_rot = Y * math.cos(pitch_rad) - Z * math.sin(pitch_rad)
@@ -135,7 +135,12 @@ def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_
     annotated_rect = rect_img.copy()
     
     H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
+    
+    # Base BEV road canvas, plus a duplicate overlay for opacity blending
     bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+    bev_overlay = bev_img.copy() 
+    
+    rect_h, rect_w = rect_img.shape[:2]
     
     defects = []
     geojson_features = []
@@ -144,34 +149,60 @@ def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_
         annotated_rect = r.plot()
         if r.masks is not None:
             for i, mask_pts in enumerate(r.masks.xy):
-                class_name = model.names[int(r.boxes.cls[i])]
+                cls_id = int(r.boxes.cls[i])
+                class_name = model.names[cls_id]
                 conf = float(r.boxes.conf[i])
                 
-                mask_pts = np.array(mask_pts, dtype=np.float32).reshape(-1, 1, 2)
-                bev_mask_pts = cv2.perspectiveTransform(mask_pts, H_mat)
+                # Fetch Ultralytics' standard BGR color for this specific class
+                mask_color = colors(cls_id, bgr=True)
                 
-                int_bev_pts = np.int32(bev_mask_pts)
-                cv2.fillPoly(bev_img, [int_bev_pts], color=(0, 0, 255))
-                cv2.polylines(bev_img, [int_bev_pts], isClosed=True, color=(0, 255, 255), thickness=2)
+                # 1. Create a blank canvas matching the perspective image size
+                mask_canvas = np.zeros((rect_h, rect_w), dtype=np.uint8)
                 
-                area_sqm = cv2.contourArea(bev_mask_pts) * (gsd ** 2)
-                if area_sqm <= 0: continue
+                # 2. Draw the YOLO defect polygon as a solid white shape
+                int_mask_pts = np.array(mask_pts, dtype=np.int32)
+                cv2.fillPoly(mask_canvas, [int_mask_pts], 255)
+                
+                # 3. Warp the raster canvas to BEV 
+                bev_mask_canvas = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
+                
+                # 4. Extract the newly shaped, perfectly bounded contour(s)
+                contours, _ = cv2.findContours(bev_mask_canvas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for contour in contours:
+                    # 5. Calculate metric area and ignore minuscule sub-pixel noise
+                    area_sqm = cv2.contourArea(contour) * (gsd ** 2)
+                    if area_sqm <= 0.0001: 
+                        continue
+                        
+                    # Fill the contour on the BEV overlay layer with the matching YOLO color
+                    cv2.fillPoly(bev_overlay, [contour], color=mask_color)
+                    
+                    geo_coords = []
+                    for pt in contour:
+                        px, py = pt[0][0], pt[0][1]
+                        
+                        # Translate pixel coordinates to local physical metric grid
+                        local_x = (px * gsd) - x_range
+                        local_z = z_far - (py * gsd)
+                        
+                        # Project onto Earth
+                        g_lat, g_lon = local_to_global(gps_lat, gps_lon, heading, local_x, local_z)
+                        geo_coords.append([g_lon, g_lat])
+                    
+                    # Close the GeoJSON Polygon loop properly
+                    if len(geo_coords) > 0 and geo_coords[0] != geo_coords[-1]:
+                        geo_coords.append(geo_coords[0])
 
-                geo_coords = []
-                for pt in bev_mask_pts:
-                    local_x = (pt[0][0] * gsd) - x_range
-                    local_z = z_far - (pt[0][1] * gsd)
-                    g_lat, g_lon = local_to_global(gps_lat, gps_lon, heading, local_x, local_z)
-                    geo_coords.append([g_lon, g_lat])
-                
-                if len(geo_coords) > 0: geo_coords.append(geo_coords[0])
+                    defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4)})
+                    geojson_features.append({
+                        "type": "Feature",
+                        "properties": {"class": class_name, "area_sqm": round(area_sqm, 4)},
+                        "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
+                    })
 
-                defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4)})
-                geojson_features.append({
-                    "type": "Feature",
-                    "properties": {"class": class_name, "area_sqm": round(area_sqm, 4)},
-                    "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
-                })
+    # Mathematically blend the colored overlay with the base image at exactly 50% opacity (YOLO's default)
+    cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
 
     cv2.imwrite(out_rect_path, annotated_rect)
     cv2.imwrite(out_bev_path, bev_img)
