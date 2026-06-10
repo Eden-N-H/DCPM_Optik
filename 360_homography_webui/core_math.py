@@ -5,6 +5,7 @@ from ultralytics.utils.plotting import colors
 import math
 import struct
 import exifread
+import os
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Calculates the distance in meters between two coordinates."""
@@ -70,15 +71,20 @@ def local_to_global(lat, lon, heading_deg, local_x, local_z):
     out_lon = lon_rad + math.atan2(math.sin(true_heading_rad)*math.sin(d/R)*math.cos(lat_rad), math.cos(d/R) - math.sin(lat_rad)*math.sin(out_lat))
     return math.degrees(out_lat), math.degrees(out_lon)
 
-def equirectangular_to_rectilinear(equi_img, fov_deg=100, pitch_deg=-15, output_width=1280, output_height=720):
+def equirectangular_to_rectilinear(equi_img, fov_deg=100, pitch_deg=-15, yaw_deg=0, output_width=1280, output_height=720):
     h, w = equi_img.shape[:2]
     f = (output_width / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
     K = np.array([[f, 0, output_width / 2.0], [0, f, output_height / 2.0], [0, 0, 1]], dtype=np.float32)
     K_inv = np.linalg.inv(K)
 
     pitch = math.radians(pitch_deg)
+    yaw = math.radians(yaw_deg)
+    
     R_pitch = np.array([[1, 0, 0], [0, math.cos(pitch), -math.sin(pitch)], [0, math.sin(pitch), math.cos(pitch)]])
-    R_inv = np.linalg.inv(R_pitch)
+    R_yaw = np.array([[math.cos(yaw), 0, math.sin(yaw)], [0, 1, 0], [-math.sin(yaw), 0, math.cos(yaw)]])
+    
+    R_combined = R_yaw @ R_pitch 
+    R_inv = np.linalg.inv(R_combined)
 
     x, y = np.meshgrid(np.arange(output_width), np.arange(output_height))
     pixels = np.stack((x, y, np.ones_like(x)), axis=-1).reshape(-1, 3).T
@@ -120,64 +126,75 @@ def get_bev_homography(K, cam_height_m, pitch_deg, gsd=0.01, z_near=2.0, z_far=8
     H_mat = cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts)
     return H_mat, bev_w, bev_h, gsd, x_range, z_far
 
-def process_single_image(equi_img_path, model, out_rect_path, out_bev_path, gps_lat, gps_lon, heading, cam_height, pitch):
+def process_single_image(equi_img_path, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch):
     equi_img = cv2.imread(equi_img_path)
-    rect_img, K = equirectangular_to_rectilinear(equi_img, pitch_deg=pitch)
     
-    results = model.predict(source=rect_img, conf=0.25, save=False)
-    annotated_rect = rect_img.copy()
+    all_defects = {'front': [], 'rear': []}
+    all_geojson_features = []
     
-    H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
+    views = {
+        'front': {'yaw': 0, 'heading_offset': 0},
+        'rear': {'yaw': 180, 'heading_offset': 180}
+    }
     
-    bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-    bev_overlay = bev_img.copy() 
-    rect_h, rect_w = rect_img.shape[:2]
-    
-    defects = []
-    geojson_features = []
+    for view_name, config in views.items():
+        rect_img, K = equirectangular_to_rectilinear(equi_img, pitch_deg=pitch, yaw_deg=config['yaw'])
+        
+        results = model.predict(source=rect_img, conf=0.25, save=False)
+        annotated_rect = rect_img.copy()
+        
+        H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
+        
+        bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        bev_overlay = bev_img.copy() 
+        rect_h, rect_w = rect_img.shape[:2]
+        
+        view_heading = (heading + config['heading_offset']) % 360
 
-    for r in results:
-        annotated_rect = r.plot()
-        if r.masks is not None:
-            for i, mask_pts in enumerate(r.masks.xy):
-                cls_id = int(r.boxes.cls[i])
-                class_name = model.names[cls_id]
-                conf = float(r.boxes.conf[i])
-                mask_color = colors(cls_id, bgr=True)
-                
-                mask_canvas = np.zeros((rect_h, rect_w), dtype=np.uint8)
-                int_mask_pts = np.array(mask_pts, dtype=np.int32)
-                cv2.fillPoly(mask_canvas, [int_mask_pts], 255)
-                
-                bev_mask_canvas = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
-                contours, _ = cv2.findContours(bev_mask_canvas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                for contour in contours:
-                    area_sqm = cv2.contourArea(contour) * (gsd ** 2)
-                    if area_sqm <= 0.0001: 
-                        continue
+        for r in results:
+            annotated_rect = r.plot()
+            if r.masks is not None:
+                for i, mask_pts in enumerate(r.masks.xy):
+                    cls_id = int(r.boxes.cls[i])
+                    class_name = model.names[cls_id]
+                    conf = float(r.boxes.conf[i])
+                    mask_color = colors(cls_id, bgr=True)
+                    
+                    mask_canvas = np.zeros((rect_h, rect_w), dtype=np.uint8)
+                    int_mask_pts = np.array(mask_pts, dtype=np.int32)
+                    cv2.fillPoly(mask_canvas, [int_mask_pts], 255)
+                    
+                    bev_mask_canvas = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
+                    contours, _ = cv2.findContours(bev_mask_canvas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    for contour in contours:
+                        area_sqm = cv2.contourArea(contour) * (gsd ** 2)
+                        if area_sqm <= 0.0001: 
+                            continue
+                            
+                        cv2.fillPoly(bev_overlay, [contour], color=mask_color)
                         
-                    cv2.fillPoly(bev_overlay, [contour], color=mask_color)
-                    
-                    geo_coords = []
-                    for pt in contour:
-                        px, py = pt[0][0], pt[0][1]
-                        local_x = (px * gsd) - x_range
-                        local_z = z_far - (py * gsd)
-                        g_lat, g_lon = local_to_global(gps_lat, gps_lon, heading, local_x, local_z)
-                        geo_coords.append([g_lon, g_lat])
-                    
-                    if len(geo_coords) > 0 and geo_coords[0] != geo_coords[-1]:
-                        geo_coords.append(geo_coords[0])
+                        geo_coords = []
+                        for pt in contour:
+                            px, py = pt[0][0], pt[0][1]
+                            local_x = (px * gsd) - x_range
+                            local_z = z_far - (py * gsd)
+                            g_lat, g_lon = local_to_global(gps_lat, gps_lon, view_heading, local_x, local_z)
+                            geo_coords.append([g_lon, g_lat])
+                        
+                        if len(geo_coords) > 0 and geo_coords[0] != geo_coords[-1]:
+                            geo_coords.append(geo_coords[0])
 
-                    defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4)})
-                    geojson_features.append({
-                        "type": "Feature",
-                        "properties": {"class": class_name, "area_sqm": round(area_sqm, 4)},
-                        "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
-                    })
+                        all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4)})
+                        all_geojson_features.append({
+                            "type": "Feature",
+                            "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name},
+                            "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
+                        })
 
-    cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
-    cv2.imwrite(out_rect_path, annotated_rect)
-    cv2.imwrite(out_bev_path, bev_img)
-    return defects, geojson_features
+        cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
+        
+        cv2.imwrite(os.path.join(output_dir, f"rect_{view_name}_{base_filename}"), annotated_rect)
+        cv2.imwrite(os.path.join(output_dir, f"bev_{view_name}_{base_filename}"), bev_img)
+        
+    return all_defects, all_geojson_features

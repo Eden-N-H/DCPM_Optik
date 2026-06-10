@@ -57,13 +57,13 @@
 
         <div id="loading" class="hidden text-center py-12">
             <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
-            <p class="text-gray-500 font-medium">Extracting Telemetry & Running Segmentation...</p>
+            <p class="text-gray-500 font-medium">Extracting Telemetry & Running Dual Segmentation...</p>
         </div>
 
         <!-- Workspace (Carousel & Map) -->
         <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-6 h-[80vh]">
             
-            <!-- Left: Carousel (Flexbox locked to screen height) -->
+            <!-- Left: Carousel -->
             <div class="lg:col-span-5 bg-white p-4 rounded-xl shadow-sm border flex flex-col h-full overflow-hidden">
                 
                 <!-- Controls -->
@@ -77,22 +77,36 @@
                     <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded shadow-sm">Next &rarr;</button>
                 </div>
 
-                <!-- Dual Images Wrapper (Dynamically fills space without scrolling) -->
+                <!-- Dual Images Wrapper -->
                 <div class="flex-1 flex flex-col min-h-0 gap-2 mb-4">
-                    <div class="flex-none text-xs font-bold text-gray-500 uppercase">Perspective Annotations</div>
+                    <div class="flex-none flex justify-between items-end">
+                        <div class="text-xs font-bold text-gray-500 uppercase">Perspective Annotations</div>
+                        <div id="label-active-view" class="text-[10px] font-bold text-blue-600 uppercase bg-blue-100 px-2 py-0.5 rounded shadow-sm">Front View Active</div>
+                    </div>
                     <div class="flex-1 min-h-0 relative border rounded bg-gray-50">
-                        <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1" src="" alt="Rectilinear View">
+                        <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1 transition-opacity duration-200" src="" alt="Rectilinear View">
                     </div>
                     
-                    <div class="flex-none text-xs font-bold text-gray-500 uppercase mt-2">Metric Bird's-Eye (BEV)</div>
-                    <div class="flex-1 min-h-0 relative border rounded bg-gray-50">
-                        <img id="img-bev" class="absolute inset-0 w-full h-full object-contain p-1" src="" alt="BEV View">
+                    <div class="flex-none flex justify-between items-end mt-2">
+                        <div class="text-xs font-bold text-gray-500 uppercase">Metric Bird's-Eye (BEV)</div>
+                        <div class="text-[10px] text-gray-400 italic">Click an image below to switch perspective</div>
+                    </div>
+                    <!-- Side-by-side BEV interactables -->
+                    <div class="flex-1 min-h-0 flex gap-2">
+                        <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-10 pointer-events-none">⬆️ Front</span>
+                            <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform" src="" alt="Front BEV View">
+                        </div>
+                        <div id="container-bev-rear" class="flex-1 relative border-2 border-transparent rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-10 pointer-events-none">⬇️ Rear</span>
+                            <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform" src="" alt="Rear BEV View">
+                        </div>
                     </div>
                 </div>
 
-                <!-- Defects Table (Fixed max-height to ensure space is kept) -->
+                <!-- Defects Table -->
                 <div class="flex-none h-32 flex flex-col">
-                    <p class="text-xs font-bold text-gray-500 uppercase mb-1 flex-none">Defects Found</p>
+                    <p class="text-xs font-bold text-gray-500 uppercase mb-1 flex-none">Defects Found in Current View</p>
                     <div class="overflow-y-auto flex-1 bg-gray-50 rounded border">
                         <table class="w-full text-left text-sm">
                             <tbody id="table-defects" class="divide-y"></tbody>

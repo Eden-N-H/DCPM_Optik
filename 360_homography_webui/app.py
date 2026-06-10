@@ -88,13 +88,8 @@ def process():
         })
 
     for img in image_data:
-        rect_name = f"rect_{img['filename']}"
-        bev_name = f"bev_{img['filename']}"
-        rect_path = os.path.join(app.config['UPLOAD_FOLDER'], rect_name)
-        bev_path = os.path.join(app.config['UPLOAD_FOLDER'], bev_name)
-
         defects, geo_feats = process_single_image(
-            img['path'], model, rect_path, bev_path, 
+            img['path'], model, img['filename'], app.config['UPLOAD_FOLDER'], 
             img['lat'], img['lon'], img['heading'], cam_height, img['pitch']
         )
         
@@ -113,9 +108,18 @@ def process():
             "lon": round(img['lon'], 6),
             "pitch": round(img['pitch'], 2),
             "location": img['location'],
-            "rect_url": url_for('static', filename=f'uploads/{rect_name}'),
-            "bev_url": url_for('static', filename=f'uploads/{bev_name}'),
-            "defects": defects
+            "views": {
+                "front": {
+                    "rect_url": url_for('static', filename=f"uploads/rect_front_{img['filename']}"),
+                    "bev_url": url_for('static', filename=f"uploads/bev_front_{img['filename']}"),
+                    "defects": defects['front']
+                },
+                "rear": {
+                    "rect_url": url_for('static', filename=f"uploads/rect_rear_{img['filename']}"),
+                    "bev_url": url_for('static', filename=f"uploads/bev_rear_{img['filename']}"),
+                    "defects": defects['rear']
+                }
+            }
         })
 
     return jsonify({
