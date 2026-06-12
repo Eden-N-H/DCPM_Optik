@@ -14,6 +14,9 @@ Open a new Google Colab notebook, set the runtime to **T4 GPU**, and run this ce
 *(Note: Colab may prompt you to **Restart Session** at the bottom of the output after this runs. Please click it before proceeding).*
 
 ```bash
+# Create templates directory for the web UI
+!mkdir -p templates
+
 # Clone SAM 3 repository and install
 !git clone https://github.com/facebookresearch/sam3.git
 %cd sam3
@@ -21,9 +24,6 @@ Open a new Google Colab notebook, set the runtime to **T4 GPU**, and run this ce
 
 # Install Flask, CORS, and Ngrok
 !pip install flask flask-cors pyngrok opencv-python-headless
-
-# Create templates directory for the web UI
-!mkdir -p templates
 ```
 
 ---
@@ -931,7 +931,7 @@ def api_save():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-    
+
 print("✅ Robust Backend server generated!")
 ```
 
