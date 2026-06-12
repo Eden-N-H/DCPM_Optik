@@ -3,7 +3,6 @@
 This guide turns your Google Colab instance into an on-demand SAM 3 inference server and annotation tool. It features a completely revamped, framework-less, lightning-fast WebUI inspired by brutalist web design principles. Google Drive acts as the single source of truth for your data and class ontology.
 
 ### Prerequisites:
-
 1. **Hugging Face Token:** You must agree to the SAM 3 license at [https://huggingface.co/facebook/sam3](https://huggingface.co/facebook/sam3) and generate an Access Token.
 2. **Ngrok Token:** Get your authtoken from [ngrok.com](https://dashboard.ngrok.com/get-started/your-authtoken).
 3. **Colab Secrets:** In the left sidebar of Colab (🔑 icon), add `HF_TOKEN` and `NGROK_TOKEN`. Ensure "Notebook access" is toggled ON for both.
@@ -11,9 +10,8 @@ This guide turns your Google Colab instance into an on-demand SAM 3 inference se
 ---
 
 ### Cell 1: Install Dependencies
-
-Open a new Google Colab notebook, set the runtime to **T4 GPU**, and run this cell.
-_(Note: Colab may prompt you to **Restart Session** at the bottom of the output after this runs. Please click it before proceeding)._
+Open a new Google Colab notebook, set the runtime to **T4 GPU**, and run this cell. 
+*(Note: Colab may prompt you to **Restart Session** at the bottom of the output after this runs. Please click it before proceeding).*
 
 ```bash
 # Clone SAM 3 repository and install
@@ -23,12 +21,14 @@ _(Note: Colab may prompt you to **Restart Session** at the bottom of the output 
 
 # Install Flask, CORS, and Ngrok
 !pip install flask flask-cors pyngrok opencv-python-headless
+
+# Create templates directory for the web UI
+!mkdir -p templates
 ```
 
 ---
 
 ### Cell 2: Mount Google Drive
-
 This connects your Google Drive so the dataset and configuration are saved permanently.
 
 ```python
@@ -40,15 +40,10 @@ print("✅ Google Drive mounted successfully!")
 ---
 
 ### Cell 3: Create the Frontend UI (`index.html`)
+*Note: `%%writefile` must be the very first line in the cell.*
 
-This generates a brutally fast, semantic HTML/JS frontend using a tabbed architecture. No React, no Vue, just raw browser performance.
-
-```python
-import os
-
-os.makedirs("templates", exist_ok=True)
-
-html_code = """
+```html
+%%writefile templates/index.html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -56,59 +51,71 @@ html_code = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SAM 3 Lightning Labeler</title>
     <style>
-        :root { --bg: #121212; --panel: #1e1e1e; --text: #e0e0e0; --accent: #007bff; --danger: #dc3545; --success: #28a745; }
+        :root { --bg: #121212; --panel: #1e1e1e; --text: #e0e0e0; --accent: #007bff; --danger: #dc3545; --success: #28a745; --border: #333; }
         body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
-
+        
         /* Navigation */
-        nav { width: 60px; background: #000; display: flex; flex-direction: column; align-items: center; padding-top: 20px; gap: 30px; border-right: 1px solid #333;}
+        nav { width: 60px; background: #000; display: flex; flex-direction: column; align-items: center; padding-top: 20px; gap: 30px; border-right: 1px solid var(--border);}
         .nav-btn { cursor: pointer; background: none; border: none; font-size: 24px; opacity: 0.4; transition: 0.2s; padding: 10px; border-radius: 8px;}
         .nav-btn.active, .nav-btn:hover { opacity: 1; background: #333; }
-
+        
         /* Layouts */
         .view-panel { flex-grow: 1; display: none; overflow-y: auto; box-sizing: border-box; }
         .view-panel.active { display: flex; flex-direction: column; }
         .padded-view { padding: 30px; max-width: 1200px; margin: 0 auto; width: 100%; }
-
+        
         /* Studio specific */
         #view-studio { flex-direction: row; padding: 0; }
         .canvas-container { flex-grow: 1; position: relative; background: #050505; display: flex; align-items: center; justify-content: center; overflow: hidden;}
         canvas { max-width: 100%; max-height: 100%; cursor: crosshair; }
-        aside { width: 320px; background: var(--panel); padding: 20px; display: flex; flex-direction: column; gap: 15px; border-left: 1px solid #333; overflow-y: auto;}
-
+        aside { width: 340px; background: var(--panel); padding: 20px; display: flex; flex-direction: column; gap: 15px; border-left: 1px solid var(--border); overflow-y: auto;}
+        
         /* UI Elements */
-        h2 { margin-top: 0; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        h2 { margin-top: 0; border-bottom: 2px solid var(--border); padding-bottom: 10px; }
         button { padding: 10px 15px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; background: #444; color: white; transition: 0.2s; }
         button:hover { filter: brightness(1.2); }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-accent { background: var(--accent); }
         .btn-success { background: var(--success); }
         .btn-danger { background: var(--danger); }
+        .btn-outline { background: transparent; border: 1px solid #666; color: #ccc; padding: 4px 8px; font-size: 11px;}
         input[type="text"], input[type="color"] { padding: 8px; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 4px; width: 100%; box-sizing: border-box;}
-
-        /* Gallery */
-        .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 20px;}
-        .gallery-item { background: #2a2a2a; padding: 10px; border-radius: 6px; text-align: center; border: 1px solid #444; display: flex; flex-direction: column; gap: 10px;}
-        .gallery-item span { font-size: 12px; word-break: break-all; }
-        .badge { font-size: 10px; padding: 3px 6px; border-radius: 12px; font-weight: bold; }
+        
+        /* Data / Gallery specific */
+        .sub-tabs { display: flex; gap: 10px; margin-bottom: 15px; }
+        .sub-tab-btn { background: transparent; border: 1px solid var(--border); color: #888; border-radius: 20px; padding: 6px 15px; }
+        .sub-tab-btn.active { background: #333; color: white; border-color: #555; }
+        
+        .compact-gallery { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+        .compact-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 15px; background: #222; border-bottom: 1px solid var(--border); transition: background 0.1s;}
+        .compact-item:hover { background: #2a2a2a; }
+        .compact-item:last-child { border-bottom: none; }
+        .compact-left { display: flex; align-items: center; gap: 15px; }
+        
+        #bulkActionBar { background: var(--accent); color: white; padding: 10px 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;}
+        
+        .badge { font-size: 10px; padding: 3px 8px; border-radius: 12px; font-weight: bold; text-transform: uppercase;}
         .badge.approved { background: #1e4620; color: #5cb85c; }
         .badge.pending { background: #463c1e; color: #f0ad4e; }
-
+        
         /* Ontology Table */
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
         th { background: #222; }
 
         /* Loader & Toast */
         .loader-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.8); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
         .spinner { border: 4px solid #333; border-top: 4px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 15px;}
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
         #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); padding: 15px 20px; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); transform: translateY(150%); transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 1000; border-left: 5px solid var(--success); font-weight: bold;}
         #toast.show { transform: translateY(0); }
 
-        /* Class selection buttons */
-        .class-btn { display: flex; align-items: center; justify-content: space-between; text-align: left; background: #333; border: 1px solid #444; width: 100%; }
-        .class-btn.selected { border: 2px solid white; background: #444; }
-        .color-box { width: 16px; height: 16px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,0.2);}
+        /* Class selection rows */
+        .class-row { display: flex; align-items: center; gap: 10px; background: #2a2a2a; border-radius: 4px; padding: 4px 8px; border: 1px solid #333;}
+        .class-btn { flex-grow: 1; display: flex; align-items: center; justify-content: space-between; background: transparent; border: none; padding: 6px; text-align: left;}
+        .class-row.selected { border-color: white; background: #333; }
+        .color-box { width: 14px; height: 14px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,0.2);}
     </style>
 </head>
 <body>
@@ -130,19 +137,27 @@ html_code = """
             </div>
         </div>
         <aside>
-            <div style="background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;">
+            <div style="background: #111; padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
                 <div style="font-size: 11px; color: #888; text-transform: uppercase;">Current File</div>
                 <div id="currentFilename" style="font-weight: bold; word-break: break-all; margin-top: 5px;">No image loaded</div>
             </div>
-
-            <div style="flex-grow: 1; overflow-y: auto;">
-                <div style="font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 10px;">Ontology Classes</div>
-                <div id="activeClassesList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            
+            <div style="flex-grow: 1; display: flex; flex-direction: column;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div style="font-size: 11px; color: #888; text-transform: uppercase;">SAM 3 Targeting</div>
+                    <div style="display: flex; gap: 5px;">
+                        <button class="btn-outline" onclick="toggleAllSAM(true)">All</button>
+                        <button class="btn-outline" onclick="toggleAllSAM(false)">None</button>
+                    </div>
+                </div>
+                <div id="activeClassesList" style="display: flex; flex-direction: column; gap: 6px; overflow-y: auto;"></div>
             </div>
 
-            <div style="font-size: 12px; color: #aaa; background: #222; padding: 10px; border-radius: 4px;">
-                🖱️ Click polygon to select<br>
-                ⌨️ Backspace/Delete to remove
+            <div style="font-size: 11px; color: #aaa; background: #222; padding: 10px; border-radius: 4px; border: 1px solid #333;">
+                <b style="color:white;">Controls:</b><br>
+                ☑️ Checkbox = Include in SAM run<br>
+                🖱️ Click Class = Assign to selected polygon<br>
+                ⌨️ Backspace/Del = Remove polygon
             </div>
 
             <hr style="border-color: #333; margin: 0;">
@@ -156,7 +171,7 @@ html_code = """
     <main id="view-data" class="view-panel">
         <div class="padded-view">
             <h2>Data Management</h2>
-            <div style="display: flex; gap: 10px; background: var(--panel); padding: 15px; border-radius: 6px; border: 1px solid #333;">
+            <div style="display: flex; gap: 10px; background: var(--panel); padding: 15px; border-radius: 6px; border: 1px solid var(--border);">
                 <div style="flex-grow: 1;">
                     <label style="font-size: 12px; color:#888;">Input Directory (Google Drive)</label>
                     <input type="text" id="inputDir" readonly style="opacity: 0.7;">
@@ -167,13 +182,25 @@ html_code = """
                 </div>
             </div>
 
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <input type="file" id="fileUpload" multiple accept="image/*" style="display: none;" onchange="handleUpload(event)">
-                <button onclick="document.getElementById('fileUpload').click()" class="btn-accent">📤 Upload Local Images</button>
-                <button onclick="refreshGallery()">🔄 Refresh Directory</button>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; margin-bottom: 15px;">
+                <div class="sub-tabs">
+                    <button id="tab-pending" class="sub-tab-btn active" onclick="setGalleryFilter('pending')">Pending (<span id="count-pending">0</span>)</button>
+                    <button id="tab-approved" class="sub-tab-btn" onclick="setGalleryFilter('approved')">Approved (<span id="count-approved">0</span>)</button>
+                    <button id="tab-all" class="sub-tab-btn" onclick="setGalleryFilter('all')">All (<span id="count-all">0</span>)</button>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <input type="file" id="fileUpload" multiple accept="image/*" style="display: none;" onchange="handleUpload(event)">
+                    <button onclick="document.getElementById('fileUpload').click()" class="btn-accent">📤 Upload Local</button>
+                    <button onclick="refreshGallery(true)">🔄 Refresh</button>
+                </div>
             </div>
 
-            <div class="gallery" id="galleryContainer"></div>
+            <div id="bulkActionBar" style="display: none;">
+                <div><strong id="bulkCount">0</strong> files selected</div>
+                <button onclick="bulkDelete()" style="background: transparent; border: 1px solid white; padding: 6px 12px;">🗑️ Delete Selected</button>
+            </div>
+            
+            <div class="compact-gallery" id="galleryContainer"></div>
         </div>
     </main>
 
@@ -181,17 +208,18 @@ html_code = """
     <main id="view-ontology" class="view-panel">
         <div class="padded-view">
             <h2>Class Ontology & Prompts</h2>
-            <p style="color: #aaa; font-size: 14px;">Define YOLO class IDs, display names, and the descriptive text prompts fed into SAM 3.</p>
-
-            <div style="background: var(--panel); border: 1px solid #333; border-radius: 6px; overflow: hidden;">
+            <p style="color: #aaa; font-size: 14px;">Define YOLO classes. Check <b>Invert?</b> to extract the background around the subject (e.g. "Select everything but the car").</p>
+            
+            <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
                 <table>
                     <thead>
                         <tr>
-                            <th style="width: 60px;">ID</th>
+                            <th style="width: 50px;">ID</th>
                             <th>Display Name</th>
                             <th>SAM 3 Text Prompt</th>
-                            <th style="width: 80px;">Color</th>
-                            <th style="width: 80px;">Action</th>
+                            <th style="width: 70px; text-align:center;">Invert?</th>
+                            <th style="width: 60px;">Color</th>
+                            <th style="width: 50px;"></th>
                         </tr>
                     </thead>
                     <tbody id="ontologyTableBody"></tbody>
@@ -211,6 +239,8 @@ html_code = """
         const AppState = {
             config: { input_dir: '', output_dir: '', classes: [] },
             gallery: [],
+            galleryFilter: 'pending', // 'pending', 'approved', 'all'
+            selectedFiles: new Set(),
             currentFilename: null,
             imageObj: null,
             polygons: [],
@@ -234,8 +264,8 @@ html_code = """
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             document.getElementById(`view-${viewName}`).classList.add('active');
             event.currentTarget.classList.add('active');
-
-            if(viewName === 'data') refreshGallery();
+            
+            if(viewName === 'data') refreshGallery(false);
             if(viewName === 'ontology') renderOntology();
             if(viewName === 'studio') renderStudioClasses();
         }
@@ -245,12 +275,12 @@ html_code = """
             try {
                 const res = await fetch('/api/config', { headers: HEADERS });
                 AppState.config = await res.json();
-
+                
                 document.getElementById('inputDir').value = AppState.config.input_dir;
                 document.getElementById('outputDir').value = AppState.config.output_dir;
-
+                
                 renderStudioClasses();
-                await refreshGallery(false); // Silent refresh
+                await refreshGallery(false);
                 loadNextPendingImage();
             } catch (e) {
                 showToast("Failed to connect to backend. Is Flask running?", "error");
@@ -263,28 +293,97 @@ html_code = """
                 const res = await fetch('/api/gallery', { headers: HEADERS });
                 const data = await res.json();
                 AppState.gallery = data.images;
-
-                const container = document.getElementById('galleryContainer');
-                container.innerHTML = '';
-
-                data.images.forEach(img => {
-                    const isApproved = img.status === 'approved';
-                    const div = document.createElement('div');
-                    div.className = 'gallery-item';
-                    div.id = `card-${img.filename}`;
-                    div.innerHTML = `
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                            <span class="badge ${isApproved ? 'approved' : 'pending'}">${img.status.toUpperCase()}</span>
-                            <button onclick="deleteImage('${img.filename}')" style="padding:4px 8px; background:transparent; color:#ff4444; border:1px solid #ff4444;" title="Delete Image">🗑️</button>
-                        </div>
-                        <span title="${img.filename}">${img.filename.length > 20 ? img.filename.substring(0,17)+'...' : img.filename}</span>
-                        <button onclick="loadImageIntoStudio('${img.filename}')" style="background:#333;">Open in Studio</button>
-                    `;
-                    container.appendChild(div);
-                });
-                if(showMsg) showToast("Gallery refreshed");
+                renderGallery();
+                if(showMsg) showToast("Directory refreshed");
             } catch (e) {
-                showToast("Failed to load gallery", "error");
+                showToast("Failed to load directory", "error");
+            }
+        }
+
+        function setGalleryFilter(filter) {
+            AppState.galleryFilter = filter;
+            document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`tab-${filter}`).classList.add('active');
+            AppState.selectedFiles.clear(); // Clear selections on tab switch
+            updateBulkActionBar();
+            renderGallery();
+        }
+
+        function renderGallery() {
+            const container = document.getElementById('galleryContainer');
+            container.innerHTML = '';
+            
+            let filtered = AppState.gallery;
+            if(AppState.galleryFilter !== 'all') {
+                filtered = AppState.gallery.filter(img => img.status === AppState.galleryFilter);
+            }
+            
+            filtered.forEach(img => {
+                const isApproved = img.status === 'approved';
+                const div = document.createElement('div');
+                div.className = 'compact-item';
+                div.id = `row-${img.filename}`;
+                
+                const isChecked = AppState.selectedFiles.has(img.filename) ? 'checked' : '';
+                
+                div.innerHTML = `
+                    <div class="compact-left">
+                        <input type="checkbox" ${isChecked} onchange="toggleFileSelection('${img.filename}', this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                        <span class="badge ${isApproved ? 'approved' : 'pending'}">${img.status.toUpperCase()}</span>
+                        <span title="${img.filename}">${img.filename}</span>
+                    </div>
+                    <button onclick="loadImageIntoStudio('${img.filename}')" style="padding: 6px 12px; font-size: 12px;">Open Studio ➔</button>
+                `;
+                container.appendChild(div);
+            });
+
+            // Update Counts
+            document.getElementById('count-pending').innerText = AppState.gallery.filter(i=>i.status==='pending').length;
+            document.getElementById('count-approved').innerText = AppState.gallery.filter(i=>i.status==='approved').length;
+            document.getElementById('count-all').innerText = AppState.gallery.length;
+        }
+
+        function toggleFileSelection(filename, isChecked) {
+            if(isChecked) AppState.selectedFiles.add(filename);
+            else AppState.selectedFiles.delete(filename);
+            updateBulkActionBar();
+        }
+
+        function updateBulkActionBar() {
+            const bar = document.getElementById('bulkActionBar');
+            const countSpan = document.getElementById('bulkCount');
+            if(AppState.selectedFiles.size > 0) {
+                countSpan.innerText = AppState.selectedFiles.size;
+                bar.style.display = 'flex';
+            } else {
+                bar.style.display = 'none';
+            }
+        }
+
+        async function bulkDelete() {
+            if(!confirm(`Are you sure you want to delete ${AppState.selectedFiles.size} files?`)) return;
+            
+            const filenames = Array.from(AppState.selectedFiles);
+            
+            // Optimistic DOM removal
+            filenames.forEach(f => {
+                const el = document.getElementById(`row-${f}`);
+                if(el) el.style.display = 'none';
+            });
+
+            try {
+                await Promise.all(filenames.map(f => 
+                    fetch(`/api/image/${f}`, { method: 'DELETE', headers: HEADERS })
+                ));
+                showToast(`Deleted ${filenames.length} files`);
+                AppState.selectedFiles.clear();
+                updateBulkActionBar();
+                refreshGallery(false);
+                
+                if(filenames.includes(AppState.currentFilename)) loadNextPendingImage();
+            } catch (e) {
+                showToast("Some deletions failed", "error");
+                refreshGallery(false);
             }
         }
 
@@ -309,24 +408,6 @@ html_code = """
             e.target.value = ""; // Reset
         }
 
-        async function deleteImage(filename) {
-            // Optimistic UI update
-            const card = document.getElementById(`card-${filename}`);
-            if(card) card.style.display = 'none';
-
-            try {
-                const res = await fetch(`/api/image/${filename}`, { method: 'DELETE', headers: HEADERS });
-                if (!res.ok) throw new Error("Delete failed");
-                showToast(`Deleted ${filename}`);
-                // Remove from local state
-                AppState.gallery = AppState.gallery.filter(i => i.filename !== filename);
-                if(AppState.currentFilename === filename) loadNextPendingImage();
-            } catch (e) {
-                if(card) card.style.display = 'flex'; // Revert
-                showToast(e.message, "error");
-            }
-        }
-
         // --- Ontology Logic ---
         function renderOntology() {
             const tbody = document.getElementById('ontologyTableBody');
@@ -334,9 +415,10 @@ html_code = """
             AppState.config.classes.forEach((cls, index) => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td><input type="text" id="cls-id-${index}" value="${cls.id}" style="width:50px; text-align:center;"></td>
+                    <td><input type="text" id="cls-id-${index}" value="${cls.id}" style="text-align:center;"></td>
                     <td><input type="text" id="cls-name-${index}" value="${cls.name}"></td>
                     <td><input type="text" id="cls-prompt-${index}" value="${cls.prompt}"></td>
+                    <td style="text-align:center;"><input type="checkbox" id="cls-invert-${index}" ${cls.invert ? 'checked' : ''} style="width:20px; height:20px; cursor:pointer;"></td>
                     <td><input type="color" id="cls-color-${index}" value="${cls.color}" style="height:35px; padding:2px;"></td>
                     <td><button onclick="removeOntologyRow(${index})" class="btn-danger" style="padding:8px;">🗑️</button></td>
                 `;
@@ -346,7 +428,7 @@ html_code = """
 
         function addNewClass() {
             const nextId = AppState.config.classes.length > 0 ? Math.max(...AppState.config.classes.map(c => c.id)) + 1 : 0;
-            AppState.config.classes.push({ id: nextId, name: "New Class", prompt: "describe it here", color: "#ffffff" });
+            AppState.config.classes.push({ id: nextId, name: "New Class", prompt: "describe it here", invert: false, color: "#ffffff" });
             renderOntology();
         }
 
@@ -362,6 +444,7 @@ html_code = """
                     id: parseInt(document.getElementById(`cls-id-${i}`).value),
                     name: document.getElementById(`cls-name-${i}`).value,
                     prompt: document.getElementById(`cls-prompt-${i}`).value,
+                    invert: document.getElementById(`cls-invert-${i}`).checked,
                     color: document.getElementById(`cls-color-${i}`).value
                 });
             }
@@ -384,38 +467,66 @@ html_code = """
             const container = document.getElementById('activeClassesList');
             container.innerHTML = '';
             AppState.config.classes.forEach(cls => {
+                const row = document.createElement('div');
+                row.className = `class-row ${AppState.selectedPolyIndex !== -1 && AppState.polygons[AppState.selectedPolyIndex]?.classId === cls.id ? 'selected' : ''}`;
+                
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'sam-target-cb';
+                cb.value = cls.id;
+                cb.checked = true; // Included in SAM by default
+                cb.title = "Include this class in Auto-Labeling";
+                cb.style.cursor = "pointer";
+
                 const btn = document.createElement('button');
                 btn.className = 'class-btn';
-                btn.innerHTML = `<span style="display:flex; align-items:center; gap:10px;"><div class="color-box" style="background-color: ${cls.color}"></div> ${cls.name}</span> <span style="opacity:0.5; font-size:10px;">ID:${cls.id}</span>`;
-                btn.onclick = () => {
-                    if (AppState.selectedPolyIndex !== -1) {
-                        AppState.polygons[AppState.selectedPolyIndex].classId = cls.id;
-                        drawCanvas();
-                    }
-                };
-                container.appendChild(btn);
+                btn.innerHTML = `
+                    <span style="display:flex; align-items:center; gap:8px;">
+                        <div class="color-box" style="background-color: ${cls.color}"></div> 
+                        ${cls.name} ${cls.invert ? '<span style="color:#f0ad4e; font-size:10px;">(Inv)</span>' : ''}
+                    </span> 
+                    <span style="opacity:0.5; font-size:10px;">ID:${cls.id}</span>
+                `;
+                btn.onclick = () => assignClassToSelected(cls.id);
+
+                row.appendChild(cb);
+                row.appendChild(btn);
+                container.appendChild(row);
             });
+        }
+
+        function toggleAllSAM(checked) {
+            document.querySelectorAll('.sam-target-cb').forEach(cb => cb.checked = checked);
+        }
+
+        function assignClassToSelected(classId) {
+            if (AppState.selectedPolyIndex !== -1) {
+                AppState.polygons[AppState.selectedPolyIndex].classId = classId;
+                renderStudioClasses(); // Update borders
+                drawCanvas();
+            }
         }
 
         async function loadImageIntoStudio(filename) {
             switchView('studio');
             document.getElementById('currentFilename').innerText = "Loading...";
-
+            
             try {
                 const res = await fetch(`/api/image/${filename}/data`, { headers: HEADERS });
                 const data = await res.json();
-
+                
                 if (!data.success) throw new Error(data.error);
 
                 AppState.currentFilename = filename;
                 document.getElementById('currentFilename').innerText = filename;
-
+                
                 AppState.imageObj = new Image();
                 AppState.imageObj.onload = () => {
                     canvas.width = AppState.imageObj.width;
                     canvas.height = AppState.imageObj.height;
                     AppState.polygons = data.annotations || [];
                     AppState.selectedPolyIndex = -1;
+                    renderStudioClasses();
                     drawCanvas();
                 };
                 AppState.imageObj.src = "data:image/jpeg;base64," + data.image_b64;
@@ -437,22 +548,31 @@ html_code = """
         }
 
         async function runSAM3() {
-            if (!AppState.currentFilename || AppState.config.classes.length === 0) return;
+            if (!AppState.currentFilename) return;
+            
+            // Collect prompts from CHECKED boxes only
+            const activeIds = Array.from(document.querySelectorAll('.sam-target-cb:checked')).map(cb => parseInt(cb.value));
+            const activePrompts = AppState.config.classes.filter(c => activeIds.includes(c.id));
 
+            if(activePrompts.length === 0) {
+                showToast("Select at least one class checkbox to run SAM", "error");
+                return;
+            }
+            
             document.getElementById('btnSam').disabled = true;
             document.getElementById('btnSave').disabled = true;
             document.getElementById('samLoader').style.display = 'flex';
-
+            
             try {
                 const res = await fetch('/api/auto_label', {
                     method: 'POST', headers: HEADERS_JSON,
-                    body: JSON.stringify({ filename: AppState.currentFilename, prompts: AppState.config.classes })
+                    body: JSON.stringify({ filename: AppState.currentFilename, prompts: activePrompts })
                 });
                 const data = await res.json();
                 if (data.success) {
                     AppState.polygons.push(...data.polygons);
                     drawCanvas();
-                    showToast("SAM 3 labeling complete!");
+                    showToast(`Labeled ${data.polygons.length} segments!`);
                 } else throw new Error(data.error);
             } catch(e) {
                 showToast(e.message, "error");
@@ -477,10 +597,10 @@ html_code = """
                 const data = await res.json();
                 if (data.success) {
                     showToast("Saved successfully!");
-                    // Update local gallery state
+                    // Update local gallery state silently
                     const img = AppState.gallery.find(i => i.filename === AppState.currentFilename);
                     if(img) img.status = 'approved';
-
+                    
                     loadNextPendingImage();
                 } else throw new Error(data.error);
             } catch(e) {
@@ -491,13 +611,13 @@ html_code = """
         function clearPolygons() {
             AppState.polygons = [];
             AppState.selectedPolyIndex = -1;
+            renderStudioClasses();
             drawCanvas();
         }
 
         // Canvas Interaction
         canvas.addEventListener('mousedown', (e) => {
             const rect = canvas.getBoundingClientRect();
-            // Scale mouse coordinates to actual canvas resolution
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
             const x = (e.clientX - rect.left) * scaleX / canvas.width;
@@ -510,6 +630,7 @@ html_code = """
                     break;
                 }
             }
+            renderStudioClasses(); // Update border states
             drawCanvas();
         });
 
@@ -517,6 +638,7 @@ html_code = """
             if ((e.key === 'Delete' || e.key === 'Backspace') && AppState.selectedPolyIndex !== -1) {
                 AppState.polygons.splice(AppState.selectedPolyIndex, 1);
                 AppState.selectedPolyIndex = -1;
+                renderStudioClasses();
                 drawCanvas();
             }
         });
@@ -550,13 +672,20 @@ html_code = """
 
                 const cls = AppState.config.classes.find(c => c.id === poly.classId);
                 const color = cls ? cls.color : '#ffffff';
-
+                
                 ctx.fillStyle = color + '66'; // 40% opacity hex
                 ctx.fill();
 
-                ctx.lineWidth = idx === AppState.selectedPolyIndex ? 6 : 2;
+                ctx.lineWidth = idx === AppState.selectedPolyIndex ? 4 : 2;
                 ctx.strokeStyle = idx === AppState.selectedPolyIndex ? '#ffffff' : color;
+                
+                if (idx === AppState.selectedPolyIndex) {
+                    ctx.setLineDash([5, 5]); // Dashed line for selected
+                } else {
+                    ctx.setLineDash([]);
+                }
                 ctx.stroke();
+                ctx.setLineDash([]); // Reset
             });
         }
 
@@ -564,20 +693,15 @@ html_code = """
     </script>
 </body>
 </html>
-"""
-
-with open("templates/index.html", "w") as f:
-    f.write(html_code)
-print("✅ Semantic Frontend template generated!")
 ```
 
 ---
 
 ### Cell 4: Create the Flask Backend (`app.py`)
-
-This backend eliminates messy state tracking. Google Drive folders dictates what is pending vs approved, and the `config.json` dictates the YOLO classes.
+This cell also uses `%%writefile`. It handles the new `invert` mask logic using NumPy arrays and OpenCV's `RETR_LIST` to successfully capture negative space contours.
 
 ```python
+%%writefile app.py
 import os
 import json
 import glob
@@ -595,7 +719,6 @@ CORS(app)
 
 print("--> Loading SAM 3 Model (This takes a minute)...", flush=True)
 
-# 1. Load model with EXPLICIT bpe_path to avoid pkg_resources Colab bug
 BPE_PATH = "/content/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
@@ -625,7 +748,8 @@ DEFAULT_CONFIG = {
     "input_dir": "/content/drive/MyDrive/SAM3_YOLO/raw_images",
     "output_dir": "/content/drive/MyDrive/SAM3_YOLO/dataset",
     "classes": [
-        {"id": 0, "name": "Crack", "prompt": "crack on asphalt road", "color": "#ff0000"}
+        {"id": 0, "name": "Foreground", "prompt": "the main subject", "invert": False, "color": "#00ff00"},
+        {"id": 1, "name": "Background", "prompt": "the main subject", "invert": True, "color": "#ff0000"}
     ]
 }
 
@@ -645,12 +769,19 @@ def setup_dirs(cfg):
     os.makedirs(os.path.join(cfg['output_dir'], "images"), exist_ok=True)
     os.makedirs(os.path.join(cfg['output_dir'], "labels"), exist_ok=True)
 
-def mask_to_yolo_polygons(binary_mask):
+def mask_to_yolo_polygons(binary_mask, invert=False):
     binary_mask = np.squeeze(binary_mask)
     if binary_mask.ndim != 2: return []
+    
+    # Invert the boolean mask if requested (0s become 1s, 1s become 0s)
+    if invert:
+        binary_mask = np.logical_not(binary_mask)
+
     h, w = binary_mask.shape
     mask_uint8 = np.ascontiguousarray((binary_mask * 255).astype(np.uint8))
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # RETR_LIST retrieves all contours (including internal holes if inverted)
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
     polygons = []
     for contour in contours:
@@ -667,7 +798,7 @@ def parse_yolo_txt(txt_path):
         with open(txt_path, 'r') as f:
             for line in f:
                 parts = line.strip().split()
-                if len(parts) >= 7: # class_id + at least 3 points (6 coords)
+                if len(parts) >= 7: 
                     cls_id = int(parts[0])
                     pts = [{"x": float(parts[i]), "y": float(parts[i+1])} for i in range(1, len(parts), 2)]
                     polygons.append({"classId": cls_id, "points": pts})
@@ -719,11 +850,11 @@ def api_delete(filename):
     img_path = os.path.join(cfg['input_dir'], filename)
     txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(filename)[0] + ".txt")
     out_img_path = os.path.join(cfg['output_dir'], "images", filename)
-
+    
     if os.path.exists(img_path): os.remove(img_path)
     if os.path.exists(txt_path): os.remove(txt_path)
     if os.path.exists(out_img_path): os.remove(out_img_path)
-
+        
     return jsonify({"success": True})
 
 @app.route('/api/image/<filename>/data', methods=['GET'])
@@ -731,13 +862,13 @@ def api_image_data(filename):
     cfg = load_config()
     img_path = os.path.join(cfg['input_dir'], filename)
     txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(filename)[0] + ".txt")
-
+    
     if not os.path.exists(img_path):
         return jsonify({"success": False, "error": "File not found"})
 
     with open(img_path, "rb") as img_file:
         b64_string = base64.b64encode(img_file.read()).decode('utf-8')
-
+        
     annotations = parse_yolo_txt(txt_path)
     return jsonify({"success": True, "image_b64": b64_string, "annotations": annotations})
 
@@ -745,8 +876,8 @@ def api_image_data(filename):
 def api_auto_label():
     data = request.json
     fname = data['filename']
-    prompts = data['prompts']
-
+    prompts = data['prompts'] # Filtered active prompts sent from UI
+    
     cfg = load_config()
     img_path = os.path.join(cfg['input_dir'], fname)
 
@@ -755,15 +886,16 @@ def api_auto_label():
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float32):
             inference_state = processor.set_image(image)
             results = []
-
+            
             for cls in prompts:
                 output = processor.set_text_prompt(state=inference_state, prompt=cls['prompt'])
                 masks = output["masks"].cpu().numpy()
                 scores = output["scores"].cpu().numpy()
+                invert_flag = cls.get('invert', False)
 
                 for i, mask in enumerate(masks):
                     if scores[i] < 0.50: continue
-                    polys = mask_to_yolo_polygons(mask)
+                    polys = mask_to_yolo_polygons(mask, invert=invert_flag)
                     for p in polys:
                         results.append({"classId": cls['id'], "points": p})
 
@@ -784,34 +916,28 @@ def api_save():
     txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
 
     try:
-        # Copy image to YOLO directory
         if not os.path.exists(dst_img) and os.path.exists(src_img):
             shutil.copy(src_img, dst_img)
 
-        # Write YOLO segmentation format (.txt)
         with open(txt_path, 'w') as f:
             for ann in annotations:
                 class_id = ann['classId']
                 points_str = " ".join([f"{pt['x']:.6f} {pt['y']:.6f}" for pt in ann['points']])
-                f.write(f"{class_id} {points_str}\\n")
-
+                f.write(f"{class_id} {points_str}\n")
+                
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-"""
-
-with open("app.py", "w") as f:
-    f.write(app_code)
+    
 print("✅ Robust Backend server generated!")
 ```
 
 ---
 
 ### Cell 5: Start the Server & Open the UI
-
 This cell authenticates Ngrok, kills old stray processes, starts Flask in the background, and provides your secure public URL.
 
 ```python
