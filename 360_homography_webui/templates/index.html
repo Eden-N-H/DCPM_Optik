@@ -10,103 +10,111 @@
     <style>
         .dropzone { border: 2px dashed #d1d5db; transition: all 0.3s; }
         .dropzone:hover { border-color: #3b82f6; background-color: #eff6ff; }
+        .progress-bar-fill { transition: width 0.4s ease; }
     </style>
 </head>
 <body class="bg-gray-100 font-sans min-h-screen p-6">
-    <div class="max-w-screen-2xl mx-auto">
+    <div class="max-w-screen-2xl mx-auto flex flex-col gap-4">
         
-        <div class="flex justify-between items-center mb-6">
-            <h1 class="text-3xl font-bold text-gray-800">DCPM Mapping Engine</h1>
+        <!-- Header -->
+        <div class="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm">
+            <h1 class="text-2xl font-bold text-gray-800">DCPM Engine</h1>
             
-            <!-- Save / Load Project Tools -->
             <div class="flex gap-3">
-                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm">
-                    💾 Save Project
+                <button id="btn-export-zip" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    📦 Export RAW ZIP
                 </button>
-                <label class="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm">
-                    📂 Load Project JSON
+                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    💾 Save State
+                </button>
+                <label class="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    📂 Load State JSON
                     <input type="file" id="in-load-project" accept=".json" class="hidden">
                 </label>
-            </div>
-        </div>
-        
-        <!-- Controls -->
-        <div class="bg-white p-6 rounded-xl shadow-sm mb-6 grid grid-cols-1 md:grid-cols-3 gap-4" id="upload-panel">
-            <div id="dz-model" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center">
-                <span class="text-sm font-medium text-gray-600">Drop YOLO Model (.pt)</span>
-                <span id="name-model" class="text-xs text-blue-600 mt-1 hidden"></span>
-                <input type="file" id="in-model" accept=".pt" class="hidden">
-            </div>
-            
-            <div id="dz-image" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center">
-                <span class="text-sm font-medium text-gray-600">Drop 360 Image(s) Folder</span>
-                <span id="name-image" class="text-xs text-blue-600 mt-1 hidden"></span>
-                <input type="file" id="in-image" accept="image/*" multiple class="hidden">
-            </div>
-
-            <div class="flex items-center gap-4">
-                <div class="flex-1">
-                    <label class="text-xs font-semibold text-gray-500 uppercase">Camera Height (m)</label>
-                    <input type="number" id="cam-height" value="1.6" step="0.1" class="w-full text-sm p-2 border rounded">
-                </div>
-                <button id="process-btn" class="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-700 disabled:opacity-50 mt-4" disabled>
-                    Run Pipeline
+                <button id="btn-toggle-upload" class="bg-blue-100 hover:bg-blue-200 text-blue-800 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    ➕ Add Images
                 </button>
             </div>
         </div>
+        
+        <!-- Upload Drawer (Collapsible) -->
+        <div id="upload-panel" class="bg-white p-6 rounded-xl shadow-sm transition-all duration-300">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div id="dz-model" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center relative">
+                    <span class="text-sm font-medium text-gray-600" id="lbl-model">Drop YOLO Model (.pt)</span>
+                    <span id="name-model" class="text-xs text-blue-600 mt-1 hidden"></span>
+                    <span id="status-model" class="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded hidden">Loaded</span>
+                    <input type="file" id="in-model" accept=".pt" class="hidden">
+                </div>
+                
+                <div id="dz-image" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center">
+                    <span class="text-sm font-medium text-gray-600">Drop 360 Folder</span>
+                    <span id="name-image" class="text-xs text-blue-600 mt-1 hidden"></span>
+                    <input type="file" id="in-image" accept="image/*" multiple class="hidden">
+                </div>
 
-        <div id="loading" class="hidden text-center py-12">
-            <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
-            <p class="text-gray-500 font-medium">Extracting Telemetry & Running Dual Segmentation...</p>
+                <div class="flex flex-col justify-center gap-2">
+                    <label class="text-xs font-semibold text-gray-500 uppercase">Camera Height (m)</label>
+                    <input type="number" id="cam-height" value="1.6" step="0.1" class="w-full text-sm p-2 border rounded">
+                    <button id="process-btn" class="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-700 disabled:opacity-50 mt-1" disabled>
+                        Process Batch
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Global Progress Bar -->
+        <div id="progress-container" class="hidden bg-white p-4 rounded-xl shadow-sm flex flex-col gap-2">
+            <div class="flex justify-between items-end">
+                <span id="progress-text" class="text-sm font-bold text-gray-700">Initializing...</span>
+                <span id="eta-text" class="text-xs font-semibold text-blue-600">ETA: Calculating...</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div id="progress-bar" class="bg-blue-600 h-3 rounded-full progress-bar-fill" style="width: 0%"></div>
+            </div>
         </div>
 
         <!-- Workspace (Carousel & Map) -->
-        <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-6 h-[80vh]">
-            
+        <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4 h-[75vh]">
             <!-- Left: Carousel -->
             <div class="lg:col-span-5 bg-white p-4 rounded-xl shadow-sm border flex flex-col h-full overflow-hidden">
-                
-                <!-- Controls -->
                 <div class="flex justify-between items-center mb-4 flex-none">
-                    <button id="btn-prev" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded shadow-sm">&larr; Prev</button>
+                    <button id="btn-prev" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded">&larr; Prev</button>
                     <div class="text-center">
-                        <p id="carousel-counter" class="font-bold text-gray-800 text-sm">Image 1 of X</p>
-                        <p id="carousel-filename" class="text-xs text-gray-500">filename.jpg</p>
-                        <p id="carousel-telemetry" class="text-xs text-blue-600">Pitch: -15.0°</p>
+                        <p id="carousel-counter" class="font-bold text-gray-800 text-sm">Image 0 of 0</p>
+                        <p id="carousel-filename" class="text-xs text-gray-500">Waiting for data...</p>
+                        <p id="carousel-telemetry" class="text-xs text-blue-600"></p>
                     </div>
-                    <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded shadow-sm">Next &rarr;</button>
+                    <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded">Next &rarr;</button>
                 </div>
 
-                <!-- Dual Images Wrapper -->
                 <div class="flex-1 flex flex-col min-h-0 gap-2 mb-4">
                     <div class="flex-none flex justify-between items-end">
-                        <div class="text-xs font-bold text-gray-500 uppercase">Perspective Annotations</div>
+                        <div class="text-xs font-bold text-gray-500 uppercase">Perspective Analysis</div>
                         <div id="label-active-view" class="text-[10px] font-bold text-blue-600 uppercase bg-blue-100 px-2 py-0.5 rounded shadow-sm">Front View Active</div>
                     </div>
-                    <div class="flex-1 min-h-0 relative border rounded bg-gray-50">
-                        <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1 transition-opacity duration-200" src="" alt="Rectilinear View">
+                    <div class="flex-1 min-h-0 relative border rounded bg-gray-50 flex items-center justify-center">
+                        <span id="placeholder-rect" class="text-gray-400 text-sm italic absolute">Awaiting Image Process...</span>
+                        <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1 z-10 hidden" src="" alt="Rectilinear View">
                     </div>
                     
                     <div class="flex-none flex justify-between items-end mt-2">
-                        <div class="text-xs font-bold text-gray-500 uppercase">Metric Bird's-Eye (BEV)</div>
-                        <div class="text-[10px] text-gray-400 italic">Click an image below to switch perspective</div>
+                        <div class="text-xs font-bold text-gray-500 uppercase">Metric BEV</div>
                     </div>
-                    <!-- Side-by-side BEV interactables -->
                     <div class="flex-1 min-h-0 flex gap-2">
                         <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
-                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-10 pointer-events-none">⬆️ Front</span>
-                            <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform" src="" alt="Front BEV View">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬆️ Front</span>
+                            <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
                         </div>
                         <div id="container-bev-rear" class="flex-1 relative border-2 border-transparent rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
-                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-10 pointer-events-none">⬇️ Rear</span>
-                            <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform" src="" alt="Rear BEV View">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬇️ Rear</span>
+                            <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
                         </div>
                     </div>
                 </div>
 
                 <!-- Defects Table -->
                 <div class="flex-none h-32 flex flex-col">
-                    <p class="text-xs font-bold text-gray-500 uppercase mb-1 flex-none">Defects Found in Current View</p>
                     <div class="overflow-y-auto flex-1 bg-gray-50 rounded border">
                         <table class="w-full text-left text-sm">
                             <tbody id="table-defects" class="divide-y"></tbody>
@@ -117,12 +125,9 @@
             
             <!-- Right: Interactive Map -->
             <div class="lg:col-span-7 relative h-full">
-                <!-- Map Container -->
                 <div id="map" class="w-full h-full rounded-xl border border-gray-200 shadow-sm z-0"></div>
-                
-                <!-- Overlay: Location Selector -->
                 <div class="absolute top-4 right-4 z-[1000] bg-white/95 backdrop-blur px-3 py-2 rounded-lg shadow-lg border border-gray-200 flex items-center gap-2">
-                    <span class="text-xs font-bold text-gray-600 uppercase">Location Group:</span>
+                    <span class="text-xs font-bold text-gray-600 uppercase">Location:</span>
                     <select id="sel-location" class="text-sm border-gray-300 rounded shadow-sm p-1 font-semibold text-gray-800 focus:ring-blue-500 cursor-pointer outline-none"></select>
                 </div>
             </div>
