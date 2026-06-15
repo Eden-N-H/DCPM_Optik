@@ -118,12 +118,14 @@ def process():
                     "views": {
                         "front": {
                             "raw_filename": f"raw_rect_front_{base_filename}",
+                            "raw_bev_filename": f"raw_bev_front_{base_filename}",
                             "rect_url": f"/static/uploads/rect_front_{base_filename}",
                             "bev_url": f"/static/uploads/bev_front_{base_filename}",
                             "defects": defects['front']
                         },
                         "rear": {
                             "raw_filename": f"raw_rect_rear_{base_filename}",
+                            "raw_bev_filename": f"raw_bev_rear_{base_filename}",
                             "rect_url": f"/static/uploads/rect_rear_{base_filename}",
                             "bev_url": f"/static/uploads/bev_rear_{base_filename}",
                             "defects": defects['rear']
@@ -199,6 +201,32 @@ def export_zip():
 
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
+
+@app.route('/export-flat-zip', methods=['POST'])
+def export_flat_zip():
+    project_data = request.json.get('results', [])
+    if not project_data:
+        return jsonify({"error": "No data provided"}), 400
+
+    memory_file = BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for r in project_data:
+            loc = r.get('location', 'Unknown Location')
+            for view in ['front', 'rear']:
+                raw_bev_filename = r['views'][view].get('raw_bev_filename') 
+                if not raw_bev_filename:
+                    continue
+                
+                original_name = r['original_name']
+                # Create a clean target path inside the ZIP using the user's original filename
+                target_filename = f"{loc}/{view}/FLAT_{original_name}"
+                
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_bev_filename)
+                if os.path.exists(file_path):
+                    zf.write(file_path, target_filename)
+
+    memory_file.seek(0)
+    return send_file(memory_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

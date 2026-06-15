@@ -167,6 +167,7 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("workspace").classList.remove("hidden");
         document.getElementById("btn-save-project").classList.remove("hidden");
         document.getElementById("btn-export-zip").classList.remove("hidden");
+        document.getElementById("btn-export-flat-zip").classList.remove("hidden");
         document.getElementById("progress-container").classList.remove("hidden");
         
         btnProcess.disabled = true;
@@ -352,6 +353,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("workspace").classList.remove("hidden");
                 document.getElementById("btn-save-project").classList.remove("hidden");
                 document.getElementById("btn-export-zip").classList.remove("hidden");
+                document.getElementById("btn-export-flat-zip").classList.remove("hidden");
                 
                 initMap();
 
@@ -423,6 +425,41 @@ document.addEventListener("DOMContentLoaded", () => {
             const a = document.createElement('a');
             a.href = url;
             a.download = "DCPM_Export.zip";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    };
+
+    document.getElementById("btn-export-flat-zip").onclick = async () => {
+        if (fullResults.length === 0) return;
+        
+        const btn = document.getElementById("btn-export-flat-zip");
+        const originalText = btn.textContent;
+        btn.textContent = "⏳ Compiling Flattened ZIP...";
+        btn.disabled = true;
+
+        try {
+            const res = await fetch("/export-flat-zip", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ results: fullResults })
+            });
+            
+            if (!res.ok) throw new Error("Failed to compile ZIP file");
+            
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = "DCPM_Flattened_Export.zip";
             document.body.appendChild(a);
             a.click();
             a.remove();

@@ -150,6 +150,12 @@ def process_single_image(equi_img_path, model, base_filename, output_dir, gps_la
         H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
         
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        
+        # --- NEW: Save the raw, unannotated flattened square ---
+        raw_bev_filename = f"raw_bev_{view_name}_{base_filename}"
+        cv2.imwrite(os.path.join(output_dir, raw_bev_filename), bev_img)
+        # -------------------------------------------------------
+        
         bev_overlay = bev_img.copy() 
         rect_h, rect_w = rect_img.shape[:2]
         
