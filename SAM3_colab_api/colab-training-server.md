@@ -54,23 +54,19 @@ print("✅ Google Drive mounted successfully!")
         :root { --bg: #121212; --panel: #1e1e1e; --text: #e0e0e0; --accent: #007bff; --danger: #dc3545; --success: #28a745; --border: #333; }
         body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
         
-        /* Navigation */
         nav { width: 60px; background: #000; display: flex; flex-direction: column; align-items: center; padding-top: 20px; gap: 30px; border-right: 1px solid var(--border);}
         .nav-btn { cursor: pointer; background: none; border: none; font-size: 24px; opacity: 0.4; transition: 0.2s; padding: 10px; border-radius: 8px;}
         .nav-btn.active, .nav-btn:hover { opacity: 1; background: #333; }
         
-        /* Layouts */
         .view-panel { flex-grow: 1; display: none; overflow-y: auto; box-sizing: border-box; }
         .view-panel.active { display: flex; flex-direction: column; }
         .padded-view { padding: 30px; max-width: 1200px; margin: 0 auto; width: 100%; }
         
-        /* Studio specific */
         #view-studio { flex-direction: row; padding: 0; }
         .canvas-container { flex-grow: 1; position: relative; background: #050505; display: flex; align-items: center; justify-content: center; overflow: hidden;}
         canvas { max-width: 100%; max-height: 100%; cursor: crosshair; }
         aside { width: 340px; background: var(--panel); padding: 20px; display: flex; flex-direction: column; gap: 15px; border-left: 1px solid var(--border); overflow-y: auto;}
         
-        /* UI Elements */
         h2 { margin-top: 0; border-bottom: 2px solid var(--border); padding-bottom: 10px; }
         button { padding: 10px 15px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; background: #444; color: white; transition: 0.2s; }
         button:hover { filter: brightness(1.2); }
@@ -81,14 +77,19 @@ print("✅ Google Drive mounted successfully!")
         .btn-outline { background: transparent; border: 1px solid #666; color: #ccc; padding: 4px 8px; font-size: 11px;}
         input[type="text"], input[type="color"] { padding: 8px; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 4px; width: 100%; box-sizing: border-box;}
         
-        /* Data / Gallery specific */
         .sub-tabs { display: flex; gap: 10px; margin-bottom: 15px; }
         .sub-tab-btn { background: transparent; border: 1px solid var(--border); color: #888; border-radius: 20px; padding: 6px 15px; }
         .sub-tab-btn.active { background: #333; color: white; border-color: #555; }
         
+        /* Explorer / Gallery styles */
+        .breadcrumb { font-size: 14px; margin-bottom: 15px; background: #222; padding: 10px; border-radius: 6px; display: flex; align-items: center; gap: 8px; }
+        .breadcrumb span { cursor: pointer; color: var(--accent); }
+        .breadcrumb span:hover { text-decoration: underline; }
+        
         .compact-gallery { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
         .compact-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 15px; background: #222; border-bottom: 1px solid var(--border); transition: background 0.1s;}
         .compact-item:hover { background: #2a2a2a; }
+        .compact-item.folder { cursor: pointer; }
         .compact-item:last-child { border-bottom: none; }
         .compact-left { display: flex; align-items: center; gap: 15px; }
         
@@ -98,20 +99,20 @@ print("✅ Google Drive mounted successfully!")
         .badge.approved { background: #1e4620; color: #5cb85c; }
         .badge.pending { background: #463c1e; color: #f0ad4e; }
         
-        /* Ontology Table */
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
         th { background: #222; }
 
-        /* Loader & Toast */
-        .loader-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.8); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+        .loader-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.85); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; text-align: center; }
         .spinner { border: 4px solid #333; border-top: 4px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 15px;}
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         
+        .progress-bar { width: 300px; height: 10px; background: #333; border-radius: 5px; margin-top: 20px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: 0.2s; }
+
         #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); padding: 15px 20px; border-radius: 4px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); transform: translateY(150%); transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 1000; border-left: 5px solid var(--success); font-weight: bold;}
         #toast.show { transform: translateY(0); }
 
-        /* Class selection rows */
         .class-row { display: flex; align-items: center; gap: 10px; background: #2a2a2a; border-radius: 4px; padding: 4px 8px; border: 1px solid #333;}
         .class-btn { flex-grow: 1; display: flex; align-items: center; justify-content: space-between; background: transparent; border: none; padding: 6px; text-align: left;}
         .class-row.selected { border-color: white; background: #333; }
@@ -120,7 +121,6 @@ print("✅ Google Drive mounted successfully!")
 </head>
 <body>
 
-    <!-- Navigation -->
     <nav>
         <button class="nav-btn active" onclick="switchView('studio')" title="Annotation Studio">🎨</button>
         <button class="nav-btn" onclick="switchView('data')" title="Data Management">📁</button>
@@ -131,16 +131,36 @@ print("✅ Google Drive mounted successfully!")
     <main id="view-studio" class="view-panel active">
         <div class="canvas-container">
             <canvas id="editorCanvas"></canvas>
+            
             <div id="samLoader" class="loader-overlay">
                 <div class="spinner"></div>
                 <div style="font-weight:bold; letter-spacing: 1px;">SAM 3 INFERENCING...</div>
             </div>
+
+            <div id="bulkLoader" class="loader-overlay">
+                <div class="spinner"></div>
+                <h2 style="margin: 10px 0;">🤖 Bulk Processing Queue</h2>
+                <div id="bulkStatusText" style="color: #aaa; margin-bottom: 10px;">Initializing...</div>
+                <div class="progress-bar"><div id="bulkProgressFill" class="progress-fill"></div></div>
+                <div id="bulkEtaText" style="margin-top: 15px; font-weight: bold; color: var(--accent);">ETA: --:--</div>
+                <div style="margin-top: 20px; font-size: 12px; color: #888;">Note: Annotations are being saved directly to Google Drive.</div>
+            </div>
         </div>
         <aside>
             <div style="background: #111; padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
-                <div style="font-size: 11px; color: #888; text-transform: uppercase;">Current File</div>
-                <div id="currentFilename" style="font-weight: bold; word-break: break-all; margin-top: 5px;">No image loaded</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <div style="font-size: 11px; color: #888; text-transform: uppercase;">Active Queue</div>
+                    <div style="font-size: 11px; color: #888;" id="queueCount">0 / 0</div>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <button onclick="navQueue(-1)" class="btn-outline">◀ Prev</button>
+                    <div id="currentFilename" style="font-weight: bold; font-size: 12px; word-break: break-all; text-align: center; margin: 0 5px;">No files loaded</div>
+                    <button onclick="navQueue(1)" class="btn-outline">Next ▶</button>
+                </div>
             </div>
+            
+            <button onclick="startBulkRun()" class="btn-accent" style="padding: 12px;">🤖 Bulk Process Entire Queue</button>
+            <hr style="border-color: #333; margin: 0;">
             
             <div style="flex-grow: 1; display: flex; flex-direction: column;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -153,15 +173,8 @@ print("✅ Google Drive mounted successfully!")
                 <div id="activeClassesList" style="display: flex; flex-direction: column; gap: 6px; overflow-y: auto;"></div>
             </div>
 
-            <div style="font-size: 11px; color: #aaa; background: #222; padding: 10px; border-radius: 4px; border: 1px solid #333;">
-                <b style="color:white;">Controls:</b><br>
-                ☑️ Checkbox = Include in SAM run<br>
-                🖱️ Click Class = Assign to selected polygon<br>
-                ⌨️ Backspace/Del = Remove polygon
-            </div>
-
             <hr style="border-color: #333; margin: 0;">
-            <button onclick="runSAM3()" id="btnSam" class="btn-accent" style="padding: 15px;">🤖 Auto-Label (SAM 3)</button>
+            <button onclick="runSAM3Single()" id="btnSam" style="padding: 12px;">🎯 Label Current File</button>
             <button onclick="clearPolygons()" class="btn-danger">🗑️ Clear Polygons</button>
             <button onclick="saveAndNext()" id="btnSave" class="btn-success" style="padding: 15px; margin-top: 10px;">💾 Save & Next</button>
         </aside>
@@ -171,33 +184,33 @@ print("✅ Google Drive mounted successfully!")
     <main id="view-data" class="view-panel">
         <div class="padded-view">
             <h2>Data Management</h2>
-            <div style="display: flex; gap: 10px; background: var(--panel); padding: 15px; border-radius: 6px; border: 1px solid var(--border);">
-                <div style="flex-grow: 1;">
-                    <label style="font-size: 12px; color:#888;">Input Directory (Google Drive)</label>
-                    <input type="text" id="inputDir" readonly style="opacity: 0.7;">
-                </div>
-                <div style="flex-grow: 1;">
-                    <label style="font-size: 12px; color:#888;">Output Directory (Google Drive)</label>
-                    <input type="text" id="outputDir" readonly style="opacity: 0.7;">
-                </div>
-            </div>
-
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px; margin-bottom: 15px;">
-                <div class="sub-tabs">
-                    <button id="tab-pending" class="sub-tab-btn active" onclick="setGalleryFilter('pending')">Pending (<span id="count-pending">0</span>)</button>
-                    <button id="tab-approved" class="sub-tab-btn" onclick="setGalleryFilter('approved')">Approved (<span id="count-approved">0</span>)</button>
-                    <button id="tab-all" class="sub-tab-btn" onclick="setGalleryFilter('all')">All (<span id="count-all">0</span>)</button>
+            
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px;">
+                <div class="sub-tabs" style="margin-bottom: 0;">
+                    <button id="tab-pending" class="sub-tab-btn active" onclick="setGalleryFilter('pending')">Pending Views</button>
+                    <button id="tab-approved" class="sub-tab-btn" onclick="setGalleryFilter('approved')">Approved Views</button>
+                    <button id="tab-all" class="sub-tab-btn" onclick="setGalleryFilter('all')">View All</button>
                 </div>
                 <div style="display: flex; gap: 10px;">
                     <input type="file" id="fileUpload" multiple accept="image/*" style="display: none;" onchange="handleUpload(event)">
-                    <button onclick="document.getElementById('fileUpload').click()" class="btn-accent">📤 Upload Local</button>
-                    <button onclick="refreshGallery(true)">🔄 Refresh</button>
+                    <input type="file" id="folderUpload" webkitdirectory directory multiple style="display: none;" onchange="handleUpload(event)">
+                    <input type="file" id="zipUpload" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">
+                    
+                    <button onclick="document.getElementById('fileUpload').click()">📄 Upload Files</button>
+                    <button onclick="document.getElementById('folderUpload').click()">📁 Upload Folder</button>
+                    <button onclick="document.getElementById('zipUpload').click()">📦 Upload ZIP</button>
+                    <button onclick="refreshGallery(true)" class="btn-accent">🔄 Refresh</button>
                 </div>
             </div>
 
+            <div class="breadcrumb" id="breadcrumbNav"></div>
+
             <div id="bulkActionBar" style="display: none;">
-                <div><strong id="bulkCount">0</strong> files selected</div>
-                <button onclick="bulkDelete()" style="background: transparent; border: 1px solid white; padding: 6px 12px;">🗑️ Delete Selected</button>
+                <div><strong id="bulkCount">0</strong> items selected</div>
+                <div>
+                    <button onclick="loadSelectedIntoStudio()" style="background: transparent; border: 1px solid white; padding: 6px 12px; margin-right: 10px;">🎨 Open in Studio</button>
+                    <button onclick="bulkDelete()" style="background: transparent; border: 1px solid white; padding: 6px 12px;">🗑️ Delete Selected</button>
+                </div>
             </div>
             
             <div class="compact-gallery" id="galleryContainer"></div>
@@ -208,7 +221,7 @@ print("✅ Google Drive mounted successfully!")
     <main id="view-ontology" class="view-panel">
         <div class="padded-view">
             <h2>Class Ontology & Prompts</h2>
-            <p style="color: #aaa; font-size: 14px;">Define YOLO classes. Check <b>Invert?</b> to extract the background around the subject (e.g. "Select everything but the car").</p>
+            <p style="color: #aaa; font-size: 14px;">Define YOLO classes. Check <b>Invert?</b> to extract the background around the subject.</p>
             
             <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
                 <table>
@@ -235,13 +248,14 @@ print("✅ Google Drive mounted successfully!")
     <div id="toast"></div>
 
     <script>
-        // --- State Management ---
         const AppState = {
             config: { input_dir: '', output_dir: '', classes: [] },
             gallery: [],
-            galleryFilter: 'pending', // 'pending', 'approved', 'all'
-            selectedFiles: new Set(),
-            currentFilename: null,
+            galleryFilter: 'pending', 
+            currentPath: '',
+            selectedPaths: new Set(),
+            queue: [],
+            queueIndex: 0,
             imageObj: null,
             polygons: [],
             selectedPolyIndex: -1
@@ -250,7 +264,6 @@ print("✅ Google Drive mounted successfully!")
         const HEADERS = { 'ngrok-skip-browser-warning': 'true' };
         const HEADERS_JSON = { 'Content-Type': 'application/json', ...HEADERS };
 
-        // --- Snappy UI Utilities ---
         function showToast(msg, type = "success") {
             const toast = document.getElementById('toast');
             toast.textContent = msg;
@@ -265,29 +278,23 @@ print("✅ Google Drive mounted successfully!")
             document.getElementById(`view-${viewName}`).classList.add('active');
             event.currentTarget.classList.add('active');
             
-            if(viewName === 'data') refreshGallery(false);
+            if(viewName === 'data') renderGallery();
             if(viewName === 'ontology') renderOntology();
             if(viewName === 'studio') renderStudioClasses();
         }
 
-        // --- Initialization ---
         async function initApp() {
             try {
                 const res = await fetch('/api/config', { headers: HEADERS });
                 AppState.config = await res.json();
-                
-                document.getElementById('inputDir').value = AppState.config.input_dir;
-                document.getElementById('outputDir').value = AppState.config.output_dir;
-                
                 renderStudioClasses();
                 await refreshGallery(false);
-                loadNextPendingImage();
             } catch (e) {
-                showToast("Failed to connect to backend. Is Flask running?", "error");
+                showToast("Failed to connect to backend.", "error");
             }
         }
 
-        // --- Data & Gallery Logic ---
+        // --- Data & Directory Explorer Logic ---
         async function refreshGallery(showMsg = true) {
             try {
                 const res = await fetch('/api/gallery', { headers: HEADERS });
@@ -304,108 +311,193 @@ print("✅ Google Drive mounted successfully!")
             AppState.galleryFilter = filter;
             document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById(`tab-${filter}`).classList.add('active');
-            AppState.selectedFiles.clear(); // Clear selections on tab switch
+            AppState.selectedPaths.clear(); 
             updateBulkActionBar();
             renderGallery();
         }
 
+        function navigatePath(newPath) {
+            AppState.currentPath = newPath;
+            AppState.selectedPaths.clear();
+            updateBulkActionBar();
+            renderGallery();
+        }
+
+        function renderBreadcrumb() {
+            const bc = document.getElementById('breadcrumbNav');
+            bc.innerHTML = `<span onclick="navigatePath('')">🏠 Root</span>`;
+            if(!AppState.currentPath) return;
+            
+            let parts = AppState.currentPath.split('/').filter(p => p);
+            let accum = '';
+            parts.forEach(p => {
+                accum += p + '/';
+                const curPath = accum;
+                bc.innerHTML += ` <span style="color:#666; cursor:default;">/</span> <span onclick="navigatePath('${curPath}')">${p}</span>`;
+            });
+        }
+
         function renderGallery() {
+            renderBreadcrumb();
             const container = document.getElementById('galleryContainer');
             container.innerHTML = '';
             
-            let filtered = AppState.gallery;
-            if(AppState.galleryFilter !== 'all') {
-                filtered = AppState.gallery.filter(img => img.status === AppState.galleryFilter);
-            }
+            let filesInPath = AppState.gallery.filter(img => img.filename.startsWith(AppState.currentPath));
+            let folders = new Map();
+            let items = [];
+
+            filesInPath.forEach(img => {
+                const relPath = img.filename.substring(AppState.currentPath.length);
+                if (relPath.includes('/')) {
+                    const folderName = relPath.split('/')[0];
+                    if(!folders.has(folderName)) folders.set(folderName, []);
+                    folders.get(folderName).push(img);
+                } else {
+                    items.push(img);
+                }
+            });
+
+            // Filter logic
+            const filter = AppState.galleryFilter;
             
-            filtered.forEach(img => {
-                const isApproved = img.status === 'approved';
+            // Process Folders
+            Array.from(folders.entries()).forEach(([name, contents]) => {
+                const isApproved = contents.every(f => f.status === 'approved');
+                if(filter === 'pending' && isApproved) return;
+                if(filter === 'approved' && !isApproved) return;
+                
+                const fullFolderPath = AppState.currentPath + name + '/';
+                const isChecked = AppState.selectedPaths.has(fullFolderPath) ? 'checked' : '';
+                
                 const div = document.createElement('div');
-                div.className = 'compact-item';
-                div.id = `row-${img.filename}`;
-                
-                const isChecked = AppState.selectedFiles.has(img.filename) ? 'checked' : '';
-                
+                div.className = 'compact-item folder';
                 div.innerHTML = `
                     <div class="compact-left">
-                        <input type="checkbox" ${isChecked} onchange="toggleFileSelection('${img.filename}', this.checked)" style="width:16px; height:16px; cursor:pointer;">
-                        <span class="badge ${isApproved ? 'approved' : 'pending'}">${img.status.toUpperCase()}</span>
-                        <span title="${img.filename}">${img.filename}</span>
+                        <input type="checkbox" ${isChecked} onclick="event.stopPropagation()" onchange="toggleSelection('${fullFolderPath}', this.checked)" style="cursor:pointer;">
+                        <span style="font-size:20px;">📁</span>
+                        <span><b>${name}</b> <span style="color:#888; font-size:12px;">(${contents.length} items)</span></span>
                     </div>
-                    <button onclick="loadImageIntoStudio('${img.filename}')" style="padding: 6px 12px; font-size: 12px;">Open Studio ➔</button>
+                    <span class="badge ${isApproved ? 'approved' : 'pending'}">${isApproved ? 'APPROVED' : 'PENDING'}</span>
                 `;
+                div.onclick = (e) => { if(e.target.tagName !== 'INPUT') navigatePath(fullFolderPath); };
                 container.appendChild(div);
             });
 
-            // Update Counts
-            document.getElementById('count-pending').innerText = AppState.gallery.filter(i=>i.status==='pending').length;
-            document.getElementById('count-approved').innerText = AppState.gallery.filter(i=>i.status==='approved').length;
-            document.getElementById('count-all').innerText = AppState.gallery.length;
+            // Process Files
+            items.forEach(img => {
+                const isApproved = img.status === 'approved';
+                if(filter === 'pending' && isApproved) return;
+                if(filter === 'approved' && !isApproved) return;
+
+                const isChecked = AppState.selectedPaths.has(img.filename) ? 'checked' : '';
+                const baseName = img.filename.substring(AppState.currentPath.length);
+                
+                const div = document.createElement('div');
+                div.className = 'compact-item';
+                div.innerHTML = `
+                    <div class="compact-left">
+                        <input type="checkbox" ${isChecked} onchange="toggleSelection('${img.filename}', this.checked)" style="cursor:pointer;">
+                        <span style="font-size:20px;">🖼️</span>
+                        <span>${baseName}</span>
+                    </div>
+                    <span class="badge ${isApproved ? 'approved' : 'pending'}">${isApproved ? 'APPROVED' : 'PENDING'}</span>
+                `;
+                container.appendChild(div);
+            });
+            
+            if(container.innerHTML === '') {
+                container.innerHTML = `<div style="padding: 20px; text-align:center; color:#666;">No items found in this view.</div>`;
+            }
         }
 
-        function toggleFileSelection(filename, isChecked) {
-            if(isChecked) AppState.selectedFiles.add(filename);
-            else AppState.selectedFiles.delete(filename);
+        function toggleSelection(path, isChecked) {
+            if(isChecked) AppState.selectedPaths.add(path);
+            else AppState.selectedPaths.delete(path);
             updateBulkActionBar();
         }
 
         function updateBulkActionBar() {
             const bar = document.getElementById('bulkActionBar');
-            const countSpan = document.getElementById('bulkCount');
-            if(AppState.selectedFiles.size > 0) {
-                countSpan.innerText = AppState.selectedFiles.size;
+            if(AppState.selectedPaths.size > 0) {
+                document.getElementById('bulkCount').innerText = AppState.selectedPaths.size;
                 bar.style.display = 'flex';
             } else {
                 bar.style.display = 'none';
             }
         }
 
-        async function bulkDelete() {
-            if(!confirm(`Are you sure you want to delete ${AppState.selectedFiles.size} files?`)) return;
-            
-            const filenames = Array.from(AppState.selectedFiles);
-            
-            // Optimistic DOM removal
-            filenames.forEach(f => {
-                const el = document.getElementById(`row-${f}`);
-                if(el) el.style.display = 'none';
+        function getFilesFromSelections() {
+            let filesToProcess = new Set();
+            AppState.selectedPaths.forEach(path => {
+                if(path.endsWith('/')) {
+                    // It's a folder, get all nested files
+                    AppState.gallery.forEach(img => {
+                        if(img.filename.startsWith(path)) filesToProcess.add(img.filename);
+                    });
+                } else {
+                    filesToProcess.add(path);
+                }
             });
+            return Array.from(filesToProcess);
+        }
+
+        function loadSelectedIntoStudio() {
+            const files = getFilesFromSelections();
+            if(files.length === 0) return;
+            AppState.queue = files;
+            AppState.queueIndex = 0;
+            switchView('studio');
+            loadQueueItem();
+            showToast(`Loaded ${files.length} items into Studio Queue`);
+        }
+
+        async function bulkDelete() {
+            const files = getFilesFromSelections();
+            if(!confirm(`Delete ${files.length} files permanently?`)) return;
 
             try {
-                await Promise.all(filenames.map(f => 
-                    fetch(`/api/image/${f}`, { method: 'DELETE', headers: HEADERS })
-                ));
-                showToast(`Deleted ${filenames.length} files`);
-                AppState.selectedFiles.clear();
+                await Promise.all(files.map(f => fetch(`/api/image/${encodeURIComponent(f)}`, { method: 'DELETE', headers: HEADERS })));
+                showToast(`Deleted ${files.length} files`);
+                AppState.selectedPaths.clear();
                 updateBulkActionBar();
                 refreshGallery(false);
-                
-                if(filenames.includes(AppState.currentFilename)) loadNextPendingImage();
             } catch (e) {
-                showToast("Some deletions failed", "error");
-                refreshGallery(false);
+                showToast("Deletions failed", "error");
             }
         }
 
+        // --- Upload Logic ---
         async function handleUpload(e) {
             const files = e.target.files;
             if(files.length === 0) return;
 
             const formData = new FormData();
-            for(let i=0; i<files.length; i++) formData.append('images', files[i]);
+            for(let i=0; i<files.length; i++) {
+                const path = files[i].webkitRelativePath || files[i].name;
+                formData.append('images', files[i], path);
+            }
 
-            showToast(`Uploading ${files.length} images...`);
+            showToast(`Uploading ${files.length} files...`);
             try {
                 const res = await fetch('/api/upload', { method: 'POST', headers: HEADERS, body: formData });
                 const data = await res.json();
-                if(data.success) {
-                    showToast(`Successfully uploaded ${data.uploaded} images!`);
-                    refreshGallery(false);
-                } else throw new Error(data.error);
-            } catch(err) {
-                showToast(err.message, "error");
-            }
-            e.target.value = ""; // Reset
+                if(data.success) { showToast(`Uploaded ${data.uploaded} files!`); refreshGallery(false); }
+            } catch(err) { showToast(err.message, "error"); }
+            e.target.value = "";
+        }
+
+        async function handleZipUpload(e) {
+            const file = e.target.files[0];
+            if(!file) return;
+            const formData = new FormData();
+            formData.append('zip', file);
+            showToast(`Extracting ZIP on server...`);
+            try {
+                const res = await fetch('/api/upload_zip', { method: 'POST', headers: HEADERS, body: formData });
+                const data = await res.json();
+                if(data.success) { showToast(`Extracted ${data.uploaded} files!`); refreshGallery(false); }
+            } catch(err) { showToast(err.message, "error"); }
+            e.target.value = "";
         }
 
         // --- Ontology Logic ---
@@ -425,18 +517,12 @@ print("✅ Google Drive mounted successfully!")
                 tbody.appendChild(tr);
             });
         }
-
         function addNewClass() {
             const nextId = AppState.config.classes.length > 0 ? Math.max(...AppState.config.classes.map(c => c.id)) + 1 : 0;
-            AppState.config.classes.push({ id: nextId, name: "New Class", prompt: "describe it here", invert: false, color: "#ffffff" });
+            AppState.config.classes.push({ id: nextId, name: "New Class", prompt: "describe it", invert: false, color: "#ffffff" });
             renderOntology();
         }
-
-        function removeOntologyRow(index) {
-            AppState.config.classes.splice(index, 1);
-            renderOntology();
-        }
-
+        function removeOntologyRow(index) { AppState.config.classes.splice(index, 1); renderOntology(); }
         async function saveConfig() {
             const newClasses = [];
             for(let i=0; i<AppState.config.classes.length; i++) {
@@ -449,17 +535,12 @@ print("✅ Google Drive mounted successfully!")
                 });
             }
             AppState.config.classes = newClasses;
-
-            try {
-                await fetch('/api/config', { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(AppState.config) });
-                showToast("Configuration saved!");
-                renderStudioClasses();
-            } catch(e) {
-                showToast("Failed to save config", "error");
-            }
+            await fetch('/api/config', { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(AppState.config) });
+            showToast("Config saved!");
+            renderStudioClasses();
         }
 
-        // --- Studio & Canvas Logic ---
+        // --- Studio & Queue Logic ---
         const canvas = document.getElementById('editorCanvas');
         const ctx = canvas.getContext('2d');
 
@@ -469,57 +550,44 @@ print("✅ Google Drive mounted successfully!")
             AppState.config.classes.forEach(cls => {
                 const row = document.createElement('div');
                 row.className = `class-row ${AppState.selectedPolyIndex !== -1 && AppState.polygons[AppState.selectedPolyIndex]?.classId === cls.id ? 'selected' : ''}`;
-                
                 const cb = document.createElement('input');
-                cb.type = 'checkbox';
-                cb.className = 'sam-target-cb';
-                cb.value = cls.id;
-                cb.checked = true; // Included in SAM by default
-                cb.title = "Include this class in Auto-Labeling";
-                cb.style.cursor = "pointer";
-
+                cb.type = 'checkbox'; cb.className = 'sam-target-cb'; cb.value = cls.id; cb.checked = true;
                 const btn = document.createElement('button');
                 btn.className = 'class-btn';
-                btn.innerHTML = `
-                    <span style="display:flex; align-items:center; gap:8px;">
-                        <div class="color-box" style="background-color: ${cls.color}"></div> 
-                        ${cls.name} ${cls.invert ? '<span style="color:#f0ad4e; font-size:10px;">(Inv)</span>' : ''}
-                    </span> 
-                    <span style="opacity:0.5; font-size:10px;">ID:${cls.id}</span>
-                `;
+                btn.innerHTML = `<span style="display:flex; align-items:center; gap:8px;"><div class="color-box" style="background-color: ${cls.color}"></div> ${cls.name} ${cls.invert ? '<span style="color:#f0ad4e; font-size:10px;">(Inv)</span>' : ''}</span><span style="opacity:0.5; font-size:10px;">ID:${cls.id}</span>`;
                 btn.onclick = () => assignClassToSelected(cls.id);
-
-                row.appendChild(cb);
-                row.appendChild(btn);
-                container.appendChild(row);
+                row.appendChild(cb); row.appendChild(btn); container.appendChild(row);
             });
         }
+        function toggleAllSAM(checked) { document.querySelectorAll('.sam-target-cb').forEach(cb => cb.checked = checked); }
+        function assignClassToSelected(cid) { if (AppState.selectedPolyIndex !== -1) { AppState.polygons[AppState.selectedPolyIndex].classId = cid; renderStudioClasses(); drawCanvas(); } }
 
-        function toggleAllSAM(checked) {
-            document.querySelectorAll('.sam-target-cb').forEach(cb => cb.checked = checked);
-        }
-
-        function assignClassToSelected(classId) {
-            if (AppState.selectedPolyIndex !== -1) {
-                AppState.polygons[AppState.selectedPolyIndex].classId = classId;
-                renderStudioClasses(); // Update borders
-                drawCanvas();
+        function navQueue(dir) {
+            if(AppState.queue.length === 0) return;
+            AppState.queueIndex += dir;
+            if(AppState.queueIndex < 0) AppState.queueIndex = 0;
+            if(AppState.queueIndex >= AppState.queue.length) {
+                AppState.queueIndex = AppState.queue.length - 1;
+                showToast("End of queue reached.");
+                return;
             }
+            loadQueueItem();
         }
 
-        async function loadImageIntoStudio(filename) {
-            switchView('studio');
+        async function loadQueueItem() {
+            if(AppState.queue.length === 0) return;
+            const filename = AppState.queue[AppState.queueIndex];
+            
+            document.getElementById('queueCount').innerText = `${AppState.queueIndex + 1} / ${AppState.queue.length}`;
             document.getElementById('currentFilename').innerText = "Loading...";
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             try {
-                const res = await fetch(`/api/image/${filename}/data`, { headers: HEADERS });
+                const res = await fetch(`/api/image/${encodeURIComponent(filename)}/data`, { headers: HEADERS });
                 const data = await res.json();
-                
                 if (!data.success) throw new Error(data.error);
 
-                AppState.currentFilename = filename;
                 document.getElementById('currentFilename').innerText = filename;
-                
                 AppState.imageObj = new Image();
                 AppState.imageObj.onload = () => {
                     canvas.width = AppState.imageObj.width;
@@ -530,125 +598,135 @@ print("✅ Google Drive mounted successfully!")
                     drawCanvas();
                 };
                 AppState.imageObj.src = "data:image/jpeg;base64," + data.image_b64;
-            } catch(e) {
-                showToast(e.message, "error");
-                document.getElementById('currentFilename').innerText = "Error loading image";
-            }
+            } catch(e) { showToast(e.message, "error"); }
         }
 
-        function loadNextPendingImage() {
-            const pending = AppState.gallery.find(img => img.status === 'pending');
-            if (pending) {
-                loadImageIntoStudio(pending.filename);
-            } else {
-                document.getElementById('currentFilename').innerText = "🎉 All caught up!";
-                AppState.currentFilename = null;
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-            }
-        }
-
-        async function runSAM3() {
-            if (!AppState.currentFilename) return;
-            
-            // Collect prompts from CHECKED boxes only
+        function getActivePrompts() {
             const activeIds = Array.from(document.querySelectorAll('.sam-target-cb:checked')).map(cb => parseInt(cb.value));
-            const activePrompts = AppState.config.classes.filter(c => activeIds.includes(c.id));
+            return AppState.config.classes.filter(c => activeIds.includes(c.id));
+        }
 
-            if(activePrompts.length === 0) {
-                showToast("Select at least one class checkbox to run SAM", "error");
-                return;
-            }
+        async function runSAM3Single() {
+            if (AppState.queue.length === 0) return;
+            const prompts = getActivePrompts();
+            if(prompts.length === 0) return showToast("Select at least one class checkbox", "error");
             
-            document.getElementById('btnSam').disabled = true;
-            document.getElementById('btnSave').disabled = true;
             document.getElementById('samLoader').style.display = 'flex';
-            
             try {
+                const fname = AppState.queue[AppState.queueIndex];
                 const res = await fetch('/api/auto_label', {
                     method: 'POST', headers: HEADERS_JSON,
-                    body: JSON.stringify({ filename: AppState.currentFilename, prompts: activePrompts })
+                    body: JSON.stringify({ filename: fname, prompts: prompts })
                 });
                 const data = await res.json();
-                if (data.success) {
-                    AppState.polygons.push(...data.polygons);
-                    drawCanvas();
-                    showToast(`Labeled ${data.polygons.length} segments!`);
-                } else throw new Error(data.error);
+                if (data.success) { AppState.polygons.push(...data.polygons); drawCanvas(); }
+            } catch(e) { showToast("SAM Error", "error"); } 
+            finally { document.getElementById('samLoader').style.display = 'none'; }
+        }
+
+        async function startBulkRun() {
+            if(AppState.queue.length === 0) return;
+            const prompts = getActivePrompts();
+            if(prompts.length === 0) return showToast("Select at least one class checkbox", "error");
+            if(!confirm(`Run Auto-Labeler on ${AppState.queue.length} items? This will save directly to disk.`)) return;
+
+            const loader = document.getElementById('bulkLoader');
+            const fill = document.getElementById('bulkProgressFill');
+            const statText = document.getElementById('bulkStatusText');
+            const etaText = document.getElementById('bulkEtaText');
+            
+            loader.style.display = 'flex';
+            fill.style.width = '0%';
+            
+            try {
+                const res = await fetch('/api/auto_label_bulk', {
+                    method: 'POST', headers: HEADERS_JSON,
+                    body: JSON.stringify({ filenames: AppState.queue, prompts: prompts })
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder("utf-8");
+                let startTime = Date.now();
+                let total = AppState.queue.length;
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const chunks = decoder.decode(value).split('\n\n');
+                    for(let chunk of chunks) {
+                        if(!chunk.startsWith('data: ')) continue;
+                        const data = JSON.parse(chunk.replace('data: ', ''));
+                        
+                        if(data.status === 'progress') {
+                            const pct = (data.current / total) * 100;
+                            fill.style.width = pct + '%';
+                            statText.innerText = `Processed ${data.current} / ${total} \n (${data.filename})`;
+                            
+                            const elapsed = (Date.now() - startTime) / 1000;
+                            const avg = elapsed / data.current;
+                            const remain = Math.round(avg * (total - data.current));
+                            
+                            const mins = Math.floor(remain / 60);
+                            const secs = remain % 60;
+                            etaText.innerText = `ETA: ${mins}:${secs.toString().padStart(2, '0')}`;
+                        } else if (data.status === 'error') {
+                            console.error("Error on file:", data.filename, data.error);
+                        }
+                    }
+                }
+                showToast("Bulk processing complete!");
+                refreshGallery(false);
+                loadQueueItem(); // Reload current view to show new polygons
             } catch(e) {
-                showToast(e.message, "error");
+                showToast("Stream disconnected.", "error");
             } finally {
-                document.getElementById('btnSam').disabled = false;
-                document.getElementById('btnSave').disabled = false;
-                document.getElementById('samLoader').style.display = 'none';
+                loader.style.display = 'none';
             }
         }
 
         async function saveAndNext() {
-            if (!AppState.currentFilename) return;
-
+            if (AppState.queue.length === 0) return;
+            const fname = AppState.queue[AppState.queueIndex];
             try {
                 const res = await fetch('/api/save', {
                     method: 'POST', headers: HEADERS_JSON,
-                    body: JSON.stringify({
-                        filename: AppState.currentFilename,
-                        annotations: AppState.polygons
-                    })
+                    body: JSON.stringify({ filename: fname, annotations: AppState.polygons })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    showToast("Saved successfully!");
-                    // Update local gallery state silently
-                    const img = AppState.gallery.find(i => i.filename === AppState.currentFilename);
+                    const img = AppState.gallery.find(i => i.filename === fname);
                     if(img) img.status = 'approved';
-                    
-                    loadNextPendingImage();
-                } else throw new Error(data.error);
-            } catch(e) {
-                showToast(e.message, "error");
-            }
+                    navQueue(1);
+                }
+            } catch(e) {}
         }
 
-        function clearPolygons() {
-            AppState.polygons = [];
-            AppState.selectedPolyIndex = -1;
-            renderStudioClasses();
-            drawCanvas();
-        }
+        function clearPolygons() { AppState.polygons = []; AppState.selectedPolyIndex = -1; renderStudioClasses(); drawCanvas(); }
 
         // Canvas Interaction
         canvas.addEventListener('mousedown', (e) => {
             const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const x = (e.clientX - rect.left) * scaleX / canvas.width;
-            const y = (e.clientY - rect.top) * scaleY / canvas.height;
-
+            const scaleX = canvas.width / rect.width; const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX / canvas.width; const y = (e.clientY - rect.top) * scaleY / canvas.height;
             AppState.selectedPolyIndex = -1;
             for(let i = AppState.polygons.length - 1; i >= 0; i--) {
-                if(pointInPolygon({x, y}, AppState.polygons[i].points)) {
-                    AppState.selectedPolyIndex = i;
-                    break;
-                }
+                if(pointInPolygon({x, y}, AppState.polygons[i].points)) { AppState.selectedPolyIndex = i; break; }
             }
-            renderStudioClasses(); // Update border states
-            drawCanvas();
+            renderStudioClasses(); drawCanvas();
         });
 
         window.addEventListener('keydown', (e) => {
             if ((e.key === 'Delete' || e.key === 'Backspace') && AppState.selectedPolyIndex !== -1) {
                 AppState.polygons.splice(AppState.selectedPolyIndex, 1);
-                AppState.selectedPolyIndex = -1;
-                renderStudioClasses();
-                drawCanvas();
+                AppState.selectedPolyIndex = -1; renderStudioClasses(); drawCanvas();
             }
         });
 
         function pointInPolygon(point, vs) {
-            let x = point.x, y = point.y;
-            let inside = false;
+            let x = point.x, y = point.y, inside = false;
             for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
-                let xi = vs[i].x, yi = vs[i].y;
-                let xj = vs[j].x, yj = vs[j].y;
+                let xi = vs[i].x, yi = vs[i].y, xj = vs[j].x, yj = vs[j].y;
                 let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
                 if (intersect) inside = !inside;
             }
@@ -663,29 +741,19 @@ print("✅ Google Drive mounted successfully!")
             AppState.polygons.forEach((poly, idx) => {
                 ctx.beginPath();
                 poly.points.forEach((p, i) => {
-                    const px = p.x * canvas.width;
-                    const py = p.y * canvas.height;
-                    if (i === 0) ctx.moveTo(px, py);
-                    else ctx.lineTo(px, py);
+                    const px = p.x * canvas.width; const py = p.y * canvas.height;
+                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
                 });
                 ctx.closePath();
 
                 const cls = AppState.config.classes.find(c => c.id === poly.classId);
                 const color = cls ? cls.color : '#ffffff';
                 
-                ctx.fillStyle = color + '66'; // 40% opacity hex
-                ctx.fill();
-
+                ctx.fillStyle = color + '66'; ctx.fill();
                 ctx.lineWidth = idx === AppState.selectedPolyIndex ? 4 : 2;
                 ctx.strokeStyle = idx === AppState.selectedPolyIndex ? '#ffffff' : color;
-                
-                if (idx === AppState.selectedPolyIndex) {
-                    ctx.setLineDash([5, 5]); // Dashed line for selected
-                } else {
-                    ctx.setLineDash([]);
-                }
-                ctx.stroke();
-                ctx.setLineDash([]); // Reset
+                if (idx === AppState.selectedPolyIndex) ctx.setLineDash([5, 5]); else ctx.setLineDash([]);
+                ctx.stroke(); ctx.setLineDash([]);
             });
         }
 
@@ -697,18 +765,21 @@ print("✅ Google Drive mounted successfully!")
 
 ---
 
-### Cell 4: Create the Flask Backend (`app.py`)
-This cell also uses `%%writefile`. It handles the new `invert` mask logic using NumPy arrays and OpenCV's `RETR_LIST` to successfully capture negative space contours.
+### Cell 4: Create the Streaming Flask Backend (`app.py`)
+
+This cell supports recursive directories, path sanitization, streaming chunked responses, and forceful VRAM garbage collection.
 
 ```python
 %%writefile app.py
 import os
 import json
-import glob
 import shutil
 import base64
 import torch
 import cv2
+import zipfile
+import gc
+import urllib.parse
 import numpy as np
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -725,71 +796,55 @@ from sam3.model.sam3_image_processor import Sam3Processor
 
 model = build_sam3_image_model(bpe_path=BPE_PATH).cuda().eval()
 
-# Patch BFloat16 to Float32 for Colab T4 hardware
 def make_fp32_safe(m):
     for name, param in m.named_parameters(recurse=False):
-        if param.dtype in [torch.bfloat16, torch.float16]:
-            param.data = param.data.to(torch.float32)
+        if param.dtype in [torch.bfloat16, torch.float16]: param.data = param.data.to(torch.float32)
     for name, buf in m.named_buffers(recurse=False):
-        if buf.dtype in [torch.bfloat16, torch.float16]:
-            buf.data = buf.data.to(torch.float32)
+        if buf.dtype in [torch.bfloat16, torch.float16]: buf.data = buf.data.to(torch.float32)
 
 for m in model.modules(): make_fp32_safe(m)
 
 processor = Sam3Processor(model)
-if hasattr(processor, 'autocast'):
-    processor.autocast = torch.autocast(device_type="cuda", dtype=torch.float32)
+if hasattr(processor, 'autocast'): processor.autocast = torch.autocast(device_type="cuda", dtype=torch.float32)
 
 print("--> Model loaded successfully!", flush=True)
 
-# --- Configuration & State ---
 CONFIG_FILE = "/content/drive/MyDrive/SAM3_YOLO/config.json"
 DEFAULT_CONFIG = {
     "input_dir": "/content/drive/MyDrive/SAM3_YOLO/raw_images",
     "output_dir": "/content/drive/MyDrive/SAM3_YOLO/dataset",
     "classes": [
-        {"id": 0, "name": "Foreground", "prompt": "the main subject", "invert": False, "color": "#00ff00"},
-        {"id": 1, "name": "Background", "prompt": "the main subject", "invert": True, "color": "#ff0000"}
+        {"id": 0, "name": "Foreground", "prompt": "the main subject", "invert": False, "color": "#00ff00"}
     ]
 }
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+        with open(CONFIG_FILE, 'r') as f: return json.load(f)
     return DEFAULT_CONFIG
 
 def save_config(cfg):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(cfg, f, indent=4)
+    with open(CONFIG_FILE, 'w') as f: json.dump(cfg, f, indent=4)
 
-def setup_dirs(cfg):
-    os.makedirs(cfg['input_dir'], exist_ok=True)
-    os.makedirs(os.path.join(cfg['output_dir'], "images"), exist_ok=True)
-    os.makedirs(os.path.join(cfg['output_dir'], "labels"), exist_ok=True)
+def secure_rel_path(path):
+    # Keep slashes, but prevent directory traversal exploits
+    clean = os.path.normpath(path).replace('..', '')
+    return clean.lstrip('/\\')
 
 def mask_to_yolo_polygons(binary_mask, invert=False):
     binary_mask = np.squeeze(binary_mask)
     if binary_mask.ndim != 2: return []
-    
-    # Invert the boolean mask if requested (0s become 1s, 1s become 0s)
-    if invert:
-        binary_mask = np.logical_not(binary_mask)
-
+    if invert: binary_mask = np.logical_not(binary_mask)
     h, w = binary_mask.shape
     mask_uint8 = np.ascontiguousarray((binary_mask * 255).astype(np.uint8))
-    
-    # RETR_LIST retrieves all contours (including internal holes if inverted)
     contours, _ = cv2.findContours(mask_uint8, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
     polygons = []
     for contour in contours:
         epsilon = 0.002 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         if len(approx) < 3: continue
-        points = [{"x": float(pt[0][0]) / w, "y": float(pt[0][1]) / h} for pt in approx]
-        polygons.append(points)
+        polygons.append([{"x": float(pt[0][0]) / w, "y": float(pt[0][1]) / h} for pt in approx])
     return polygons
 
 def parse_yolo_txt(txt_path):
@@ -806,133 +861,186 @@ def parse_yolo_txt(txt_path):
 
 # --- API Routes ---
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def api_config():
-    if request.method == 'GET':
-        cfg = load_config()
-        setup_dirs(cfg)
-        return jsonify(cfg)
-    else:
-        new_cfg = request.json
-        save_config(new_cfg)
-        setup_dirs(new_cfg)
-        return jsonify({"success": True})
+    if request.method == 'GET': return jsonify(load_config())
+    save_config(request.json); return jsonify({"success": True})
 
 @app.route('/api/gallery', methods=['GET'])
 def api_gallery():
     cfg = load_config()
     images = []
-    for f in sorted(glob.glob(os.path.join(cfg['input_dir'], "*.*"))):
-        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-            fname = os.path.basename(f)
-            txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
-            status = "approved" if os.path.exists(txt_path) else "pending"
-            images.append({"filename": fname, "status": status})
+    input_dir = cfg['input_dir']
+    if not os.path.exists(input_dir): os.makedirs(input_dir)
+    
+    for root, _, files in os.walk(input_dir):
+        for f in files:
+            if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, input_dir).replace('\\', '/')
+                txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(rel_path)[0] + ".txt")
+                status = "approved" if os.path.exists(txt_path) else "pending"
+                images.append({"filename": rel_path, "status": status})
+    
+    # Sort files naturally
+    images = sorted(images, key=lambda x: x['filename'])
     return jsonify({"success": True, "images": images})
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
     cfg = load_config()
-    uploaded_files = request.files.getlist('images')
     count = 0
-    for file in uploaded_files:
+    for file in request.files.getlist('images'):
         if file.filename == '': continue
-        file.save(os.path.join(cfg['input_dir'], file.filename))
+        safe_path = secure_rel_path(file.filename)
+        dest = os.path.join(cfg['input_dir'], safe_path)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        file.save(dest)
         count += 1
     return jsonify({"success": True, "uploaded": count})
 
-@app.route('/api/image/<filename>', methods=['DELETE'])
+@app.route('/api/upload_zip', methods=['POST'])
+def api_upload_zip():
+    cfg = load_config()
+    zip_file = request.files.get('zip')
+    if not zip_file: return jsonify({"success": False})
+    
+    tmp_path = os.path.join(cfg['input_dir'], "temp_upload.zip")
+    zip_file.save(tmp_path)
+    count = 0
+    with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+        for member in zip_ref.namelist():
+            if member.lower().endswith(('.png', '.jpg', '.jpeg')) and not member.startswith('__MACOSX'):
+                safe_name = secure_rel_path(member)
+                dest = os.path.join(cfg['input_dir'], safe_name)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zip_ref.open(member) as src, open(dest, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+                count += 1
+    os.remove(tmp_path)
+    return jsonify({"success": True, "uploaded": count})
+
+@app.route('/api/image/<path:filename>', methods=['DELETE'])
 def api_delete(filename):
     cfg = load_config()
-    img_path = os.path.join(cfg['input_dir'], filename)
-    txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(filename)[0] + ".txt")
-    out_img_path = os.path.join(cfg['output_dir'], "images", filename)
+    fname = urllib.parse.unquote(filename)
     
-    if os.path.exists(img_path): os.remove(img_path)
-    if os.path.exists(txt_path): os.remove(txt_path)
-    if os.path.exists(out_img_path): os.remove(out_img_path)
-        
+    paths_to_delete = [
+        os.path.join(cfg['input_dir'], fname),
+        os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt"),
+        os.path.join(cfg['output_dir'], "images", fname)
+    ]
+    for p in paths_to_delete:
+        if os.path.exists(p): os.remove(p)
     return jsonify({"success": True})
 
-@app.route('/api/image/<filename>/data', methods=['GET'])
+@app.route('/api/image/<path:filename>/data', methods=['GET'])
 def api_image_data(filename):
     cfg = load_config()
-    img_path = os.path.join(cfg['input_dir'], filename)
-    txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(filename)[0] + ".txt")
+    fname = urllib.parse.unquote(filename)
+    img_path = os.path.join(cfg['input_dir'], fname)
+    txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
     
-    if not os.path.exists(img_path):
-        return jsonify({"success": False, "error": "File not found"})
+    if not os.path.exists(img_path): return jsonify({"success": False, "error": "Not found"})
+    with open(img_path, "rb") as f: b64_string = base64.b64encode(f.read()).decode('utf-8')
+    return jsonify({"success": True, "image_b64": b64_string, "annotations": parse_yolo_txt(txt_path)})
 
-    with open(img_path, "rb") as img_file:
-        b64_string = base64.b64encode(img_file.read()).decode('utf-8')
-        
-    annotations = parse_yolo_txt(txt_path)
-    return jsonify({"success": True, "image_b64": b64_string, "annotations": annotations})
+# Base logic for single inference
+def infer_image(img_path, prompts):
+    image = Image.open(img_path).convert("RGB")
+    results = []
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float32):
+        inference_state = processor.set_image(image)
+        for cls in prompts:
+            output = processor.set_text_prompt(state=inference_state, prompt=cls['prompt'])
+            masks = output["masks"].cpu().numpy()
+            scores = output["scores"].cpu().numpy()
+            for i, mask in enumerate(masks):
+                if scores[i] < 0.50: continue
+                polys = mask_to_yolo_polygons(mask, invert=cls.get('invert', False))
+                for p in polys: results.append({"classId": cls['id'], "points": p})
+    del image; del inference_state
+    return results
 
 @app.route('/api/auto_label', methods=['POST'])
 def api_auto_label():
     data = request.json
-    fname = data['filename']
-    prompts = data['prompts'] # Filtered active prompts sent from UI
-    
-    cfg = load_config()
-    img_path = os.path.join(cfg['input_dir'], fname)
-
     try:
-        image = Image.open(img_path).convert("RGB")
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float32):
-            inference_state = processor.set_image(image)
-            results = []
-            
-            for cls in prompts:
-                output = processor.set_text_prompt(state=inference_state, prompt=cls['prompt'])
-                masks = output["masks"].cpu().numpy()
-                scores = output["scores"].cpu().numpy()
-                invert_flag = cls.get('invert', False)
-
-                for i, mask in enumerate(masks):
-                    if scores[i] < 0.50: continue
-                    polys = mask_to_yolo_polygons(mask, invert=invert_flag)
-                    for p in polys:
-                        results.append({"classId": cls['id'], "points": p})
-
-        torch.cuda.empty_cache()
+        results = infer_image(os.path.join(load_config()['input_dir'], data['filename']), data['prompts'])
+        torch.cuda.empty_cache(); gc.collect()
         return jsonify({"success": True, "polygons": results})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
+# SSE Streaming Endpoint for bulk processing
+@app.route('/api/auto_label_bulk', methods=['POST'])
+def api_auto_label_bulk():
+    data = request.json
+    files = data['filenames']
+    prompts = data['prompts']
+    cfg = load_config()
+
+    def generate():
+        yield f"data: {json.dumps({'status': 'start', 'total': len(files)})}\n\n"
+        for i, fname in enumerate(files):
+            try:
+                results = infer_image(os.path.join(cfg['input_dir'], fname), prompts)
+                
+                # Save to specific subdirectories
+                out_lbl_dir = os.path.join(cfg['output_dir'], "labels", os.path.dirname(fname))
+                out_img_dir = os.path.join(cfg['output_dir'], "images", os.path.dirname(fname))
+                os.makedirs(out_lbl_dir, exist_ok=True)
+                os.makedirs(out_img_dir, exist_ok=True)
+
+                dst_img = os.path.join(cfg['output_dir'], "images", fname)
+                src_img = os.path.join(cfg['input_dir'], fname)
+                if not os.path.exists(dst_img) and os.path.exists(src_img): shutil.copy(src_img, dst_img)
+
+                txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
+                with open(txt_path, 'w') as f:
+                    for ann in results:
+                        pstr = " ".join([f"{pt['x']:.6f} {pt['y']:.6f}" for pt in ann['points']])
+                        f.write(f"{ann['classId']} {pstr}\n")
+
+                yield f"data: {json.dumps({'status': 'progress', 'current': i+1, 'filename': fname})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'status': 'error', 'filename': fname, 'error': str(e)})}\n\n"
+            finally:
+                torch.cuda.empty_cache()
+                gc.collect() # Extremely important to prevent T4 OOM in bulk runs
+        
+        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+
+    return app.response_class(generate(), mimetype='text/event-stream')
 
 @app.route('/api/save', methods=['POST'])
 def api_save():
     data = request.json
     fname = data['filename']
-    annotations = data['annotations']
-
     cfg = load_config()
-    src_img = os.path.join(cfg['input_dir'], fname)
-    dst_img = os.path.join(cfg['output_dir'], "images", fname)
-    txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
+    
+    out_lbl_dir = os.path.join(cfg['output_dir'], "labels", os.path.dirname(fname))
+    out_img_dir = os.path.join(cfg['output_dir'], "images", os.path.dirname(fname))
+    os.makedirs(out_lbl_dir, exist_ok=True)
+    os.makedirs(out_img_dir, exist_ok=True)
 
     try:
-        if not os.path.exists(dst_img) and os.path.exists(src_img):
-            shutil.copy(src_img, dst_img)
+        src_img = os.path.join(cfg['input_dir'], fname)
+        dst_img = os.path.join(cfg['output_dir'], "images", fname)
+        if not os.path.exists(dst_img) and os.path.exists(src_img): shutil.copy(src_img, dst_img)
 
+        txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt")
         with open(txt_path, 'w') as f:
-            for ann in annotations:
-                class_id = ann['classId']
-                points_str = " ".join([f"{pt['x']:.6f} {pt['y']:.6f}" for pt in ann['points']])
-                f.write(f"{class_id} {points_str}\n")
-                
+            for ann in data['annotations']:
+                pstr = " ".join([f"{pt['x']:.6f} {pt['y']:.6f}" for pt in ann['points']])
+                f.write(f"{ann['classId']} {pstr}\n")
         return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
+    except Exception as e: return jsonify({"success": False, "error": str(e)})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
-print("✅ Robust Backend server generated!")
 ```
 
 ---
