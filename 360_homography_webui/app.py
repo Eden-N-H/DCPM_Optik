@@ -39,8 +39,9 @@ def process():
         f.save(filepath)
         
         lat, lon = get_exif_gps(filepath)
+
         dynamic_pitch = extract_gpmf_pitch(filepath)
-        
+
         image_data.append({
             "filename": filename, 
             "original_name": f.filename,
