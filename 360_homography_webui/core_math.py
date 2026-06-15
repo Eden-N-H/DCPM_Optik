@@ -126,7 +126,7 @@ def get_bev_homography(K, cam_height_m, pitch_deg, gsd=0.01, z_near=2.0, z_far=8
     H_mat = cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts)
     return H_mat, bev_w, bev_h, gsd, x_range, z_far
 
-def process_single_image(equi_img_path, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch):
+def process_single_image(equi_img_path, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, model_lock):
     equi_img = cv2.imread(equi_img_path)
     
     all_defects = {'front': [], 'rear': []}
@@ -140,12 +140,22 @@ def process_single_image(equi_img_path, model, base_filename, output_dir, gps_la
     for view_name, config in views.items():
         rect_img, K = equirectangular_to_rectilinear(equi_img, pitch_deg=pitch, yaw_deg=config['yaw'])
         
-        results = model.predict(source=rect_img, conf=0.25, save=False)
-        annotated_rect = rect_img.copy()
+        raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
+        cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
         
+        with model_lock:
+            results = model.predict(source=rect_img, conf=0.25, save=False, verbose=False)
+            
+        annotated_rect = rect_img.copy()
         H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
         
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        
+        # --- NEW: Save the raw, unannotated flattened square ---
+        raw_bev_filename = f"raw_bev_{view_name}_{base_filename}"
+        cv2.imwrite(os.path.join(output_dir, raw_bev_filename), bev_img)
+        # -------------------------------------------------------
+        
         bev_overlay = bev_img.copy() 
         rect_h, rect_w = rect_img.shape[:2]
         
@@ -158,7 +168,11 @@ def process_single_image(equi_img_path, model, base_filename, output_dir, gps_la
                     cls_id = int(r.boxes.cls[i])
                     class_name = model.names[cls_id]
                     conf = float(r.boxes.conf[i])
-                    mask_color = colors(cls_id, bgr=True)
+                    
+                    mask_color_bgr = colors(cls_id, bgr=True)
+                    # Convert YOLO's BGR color to HEX for the Map UI & HTML Table
+                    b, g, r_color = mask_color_bgr
+                    hex_color = f"#{int(r_color):02x}{int(g):02x}{int(b):02x}"
                     
                     mask_canvas = np.zeros((rect_h, rect_w), dtype=np.uint8)
                     int_mask_pts = np.array(mask_pts, dtype=np.int32)
@@ -172,7 +186,7 @@ def process_single_image(equi_img_path, model, base_filename, output_dir, gps_la
                         if area_sqm <= 0.0001: 
                             continue
                             
-                        cv2.fillPoly(bev_overlay, [contour], color=mask_color)
+                        cv2.fillPoly(bev_overlay, [contour], color=mask_color_bgr)
                         
                         geo_coords = []
                         for pt in contour:
@@ -185,16 +199,27 @@ def process_single_image(equi_img_path, model, base_filename, output_dir, gps_la
                         if len(geo_coords) > 0 and geo_coords[0] != geo_coords[-1]:
                             geo_coords.append(geo_coords[0])
 
-                        all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4)})
+                        # Pass the exact hex color to the HTML table
+                        all_defects[view_name].append({
+                            "class": class_name, 
+                            "conf": round(conf, 2), 
+                            "area_sqm": round(area_sqm, 4),
+                            "color": hex_color
+                        })
+                        
+                        # Pass the exact hex color to the Map
                         all_geojson_features.append({
                             "type": "Feature",
-                            "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name},
+                            "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color},
                             "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                         })
 
         cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
         
-        cv2.imwrite(os.path.join(output_dir, f"rect_{view_name}_{base_filename}"), annotated_rect)
-        cv2.imwrite(os.path.join(output_dir, f"bev_{view_name}_{base_filename}"), bev_img)
+        annotated_rect_filename = f"rect_{view_name}_{base_filename}"
+        bev_filename = f"bev_{view_name}_{base_filename}"
         
-    return all_defects, all_geojson_features
+        cv2.imwrite(os.path.join(output_dir, annotated_rect_filename), annotated_rect)
+        cv2.imwrite(os.path.join(output_dir, bev_filename), bev_img)
+        
+    return all_defects, all_geojson_features, base_filename

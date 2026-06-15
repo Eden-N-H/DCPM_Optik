@@ -1,0 +1,101 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>DCPM Data Pipeline Manifest</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f7f9fc;
+        }
+
+        h1 {
+            color: #1f4e79;
+            margin-bottom: 5px;
+        }
+
+        .summary {
+            margin-bottom: 15px;
+            padding: 12px;
+            background-color: #e8f1fb;
+            border-left: 5px solid #1f4e79;
+            line-height: 1.5;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            border: 1px solid #ccc;
+            background-color: white;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+            min-width: 1300px;
+        }
+
+        th {
+            background-color: #1f4e79;
+            color: white;
+            padding: 8px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+
+        td {
+            border: 1px solid #ddd;
+            padding: 7px;
+            white-space: nowrap;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f6fb;
+        }
+
+        tr:hover {
+            background-color: #dbeafe;
+        }
+
+        .ready {
+            color: green;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>DCPM Data Pipeline Manifest</h1>
+
+    <div class="summary">
+        <strong>Total records:</strong> 9<br>
+        <strong>Purpose:</strong> Frame and metadata control file for homography, segmentation, and area/depth calculation.<br>
+        <strong>Output files:</strong> manifest.csv and manifest_table.html
+    </div>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr><th>frame_id</th><th>image_path</th><th>timestamp</th><th>latitude</th><th>longitude</th><th>camera_height_m</th><th>pitch</th><th>roll</th><th>yaw</th><th>source_video</th><th>source_time_sec</th><th>altitude_m</th><th>status</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>image_000001</td><td>frames\images\image_000001.jpg</td><td></td><td>-32.4072092</td><td>151.7511297</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000002</td><td>frames\images\image_000002.jpg</td><td></td><td>-32.4316821</td><td>151.5528559</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000003</td><td>frames\images\image_000003.jpg</td><td></td><td>-32.3966127</td><td>151.7399992</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000004</td><td>frames\images\image_000004.jpg</td><td></td><td>-32.3965960</td><td>151.7400347</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000005</td><td>frames\images\image_000005.jpg</td><td></td><td>-32.6018783</td><td>151.6187665</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000006</td><td>frames\images\image_000006.jpg</td><td></td><td>-30.1379921</td><td>145.8916005</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000007</td><td>frames\images\image_000007.jpg</td><td></td><td>-31.9445157</td><td>152.4487717</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000008</td><td>frames\images\image_000008.jpg</td><td></td><td>-32.5887770</td><td>151.7784563</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+<tr><td>image_000009</td><td>frames\images\image_000009.jpg</td><td></td><td>-32.4316357</td><td>151.5536076</td><td>1.600</td><td></td><td></td><td></td><td></td><td></td><td></td><td>ready</td></tr>
+
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
