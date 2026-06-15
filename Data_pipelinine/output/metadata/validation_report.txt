@@ -1,0 +1,17 @@
+DCPM Data Pipeline Validation Report
+==========================================
+
+Total frames checked: 9
+Frames ready for homography input: 8
+Frames excluded: 1
+
+Status summary:
+--------------------
+ready_for_basic_homography_needs_orientation_data: 8
+warning_low_quality_blurry: 1
+
+Notes:
+- ready_for_full_homography means image, camera height, and orientation data are available.
+- ready_for_basic_homography_needs_orientation_data means image and camera height are available, but pitch/roll/yaw are missing.
+- warning_low_quality_blurry means the blur score is below the selected threshold.
+- invalid rows should be checked before sending data to the homography module.

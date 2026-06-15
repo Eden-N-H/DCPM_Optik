@@ -1,3 +1,10 @@
+# SAM 3 Dataset Generator
+
+> Note: You will need to use Google Colab
+
+Instructions: [colab-training-server.md](colab-training-server.md)
+
+````markdown
 # SAM 3 Colab API Reference
 
 This document outlines how to interact with your SAM 3 Colab API from a local machine. The API supports two distinct operating modes:
@@ -262,3 +269,4 @@ def track_video():
 if __name__ == "__main__":
     track_video()
 ```
+````

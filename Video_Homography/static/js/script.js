@@ -1,168 +1,418 @@
-document.addEventListener("DOMContentLoaded", () => {
-    let modelFile = null;
-    let imageFiles = [];
-    
-    let map = null;
-    let geoJsonLayer = null;
-    let mapMarkers = {}; // Stores { "filename.jpg": leaflet_marker_object }
-    
-    let appResults = [];
-    let currentIndex = 0;
+// Video_Homography/static/js/script.js
 
-    const btnProcess = document.getElementById("process-btn");
+let modelFile = null;
+let imageFiles = [];
+let manifestFile = null;
 
-    function initMap() {
-        if (!map) {
-            map = L.map('map').setView([-32.06, 151.90], 15);
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                maxZoom: 19
-            }).addTo(map);
-        }
+let results = [];
+let currentIndex = 0;
+
+let map = null;
+let geojsonLayer = null;
+
+// ---------------------------------------------------------------------
+// Page elements
+// ---------------------------------------------------------------------
+
+const btnProcess = document.getElementById("process-btn");
+const loading = document.getElementById("loading");
+const workspace = document.getElementById("workspace");
+
+const btnPrev = document.getElementById("btn-prev");
+const btnNext = document.getElementById("btn-next");
+
+const carouselCounter = document.getElementById("carousel-counter");
+const carouselFilename = document.getElementById("carousel-filename");
+const carouselTelemetry = document.getElementById("carousel-telemetry");
+
+const imgRect = document.getElementById("img-rect");
+const imgBev = document.getElementById("img-bev");
+const tableDefects = document.getElementById("table-defects");
+
+// ---------------------------------------------------------------------
+// Dropzone setup
+// ---------------------------------------------------------------------
+
+function setupDz(dropzoneId, inputId, nameId, multiple, callback) {
+    const dropzone = document.getElementById(dropzoneId);
+    const input = document.getElementById(inputId);
+    const nameLabel = document.getElementById(nameId);
+
+    if (!dropzone || !input || !nameLabel) {
+        console.warn(`Missing dropzone setup element: ${dropzoneId}`);
+        return;
     }
 
-    const setupDz = (dzId, inId, nameId, isMulti, callback) => {
-        const dz = document.getElementById(dzId);
-        const inp = document.getElementById(inId);
-        const nm = document.getElementById(nameId);
+    dropzone.addEventListener("click", () => {
+        input.click();
+    });
 
-        dz.onclick = () => inp.click();
-        dz.ondragover = (e) => { e.preventDefault(); dz.classList.add("border-blue-500"); };
-        dz.ondragleave = () => dz.classList.remove("border-blue-500");
-        dz.ondrop = (e) => {
-            e.preventDefault(); dz.classList.remove("border-blue-500");
-            handleFiles(e.dataTransfer.files, isMulti, callback, nm);
-        };
-        inp.onchange = (e) => handleFiles(e.target.files, isMulti, callback, nm);
-    };
+    input.addEventListener("change", () => {
+        handleFiles(input.files, multiple, nameLabel, callback);
+    });
 
-    const handleFiles = (files, isMulti, callback, nameElement) => {
-        if (!files.length) return;
-        if (isMulti) {
-            callback(Array.from(files));
-            nameElement.textContent = `${files.length} images queued`;
-        } else {
-            callback(files[0]);
-            nameElement.textContent = files[0].name;
-        }
-        nameElement.classList.remove("hidden");
-        if (modelFile && imageFiles.length > 0) btnProcess.disabled = false;
-    };
+    dropzone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        dropzone.classList.add("active");
+    });
 
-    setupDz("dz-model", "in-model", "name-model", false, f => modelFile = f);
-    setupDz("dz-image", "in-image", "name-image", true, f => imageFiles = f);
+    dropzone.addEventListener("dragleave", () => {
+        dropzone.classList.remove("active");
+    });
 
-    btnProcess.onclick = async () => {
-        const fd = new FormData();
-        fd.append("model", modelFile);
-        imageFiles.forEach(f => fd.append("images", f));
-        fd.append("cam_height", document.getElementById("cam-height").value);
-        fd.append("gps_snap", document.getElementById("gps-snap").checked ? "true" : "false");
+    dropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("active");
 
-        document.getElementById("loading").classList.remove("hidden");
-        document.getElementById("workspace").classList.add("hidden");
-        btnProcess.disabled = true;
+        const droppedFiles = event.dataTransfer.files;
+        input.files = droppedFiles;
 
-        try {
-            const res = await fetch("/process", { method: "POST", body: fd });
-            const data = await res.json();
-            if (data.error) throw new Error(data.error);
+        handleFiles(droppedFiles, multiple, nameLabel, callback);
+    });
+}
 
-            appResults = data.results;
-            currentIndex = 0;
 
-            initMap();
-            document.getElementById("workspace").classList.remove("hidden");
-            
-            // FIX: Force Leaflet to recalculate bounds after un-hiding the div
-            setTimeout(() => { map.invalidateSize(); }, 200);
-
-            renderMap(data.geojson);
-            updateCarousel();
-
-        } catch (e) {
-            alert(e.message);
-        } finally {
-            document.getElementById("loading").classList.add("hidden");
-            btnProcess.disabled = false;
-        }
-    };
-
-    function renderMap(geoJsonData) {
-        if (geoJsonLayer) map.removeLayer(geoJsonLayer);
-        mapMarkers = {}; // Reset markers
-
-        geoJsonLayer = L.geoJSON(geoJsonData, {
-            style: function(feature) {
-                if (feature.geometry.type === 'Polygon') {
-                    return { color: "#ff0000", weight: 2, fillColor: "#ffaa00", fillOpacity: 0.5 };
-                }
-                if (feature.geometry.type === 'LineString') {
-                    return { color: "#00b4d8", weight: 3, dashArray: "5, 10" }; // The driving trail
-                }
-            },
-            pointToLayer: function(feature, latlng) {
-                const marker = L.circleMarker(latlng, {
-                    radius: 5, fillColor: "#3b82f6", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
-                });
-                if (feature.properties.type === 'camera') {
-                    mapMarkers[feature.properties.filename] = marker;
-                }
-                return marker;
-            },
-            onEachFeature: function(feature, layer) {
-                if (feature.geometry.type === 'Polygon') {
-                    layer.bindPopup(`<b>${feature.properties.class}</b><br>Area: ${feature.properties.area_sqm} m²`);
-                } else if (feature.geometry.type === 'Point') {
-                    layer.bindPopup(`<b>Photo Location</b><br>${feature.properties.filename}`);
-                }
-            }
-        }).addTo(map);
-
-        if(geoJsonData.features.length > 0) {
-            map.fitBounds(geoJsonLayer.getBounds(), { padding: [50, 50] });
-        }
+function handleFiles(files, multiple, nameLabel, callback) {
+    if (!files || files.length === 0) {
+        return;
     }
 
-    function updateCarousel() {
-        if (appResults.length === 0) return;
-        const current = appResults[currentIndex];
+    let selected;
 
-        // Update Text
-        document.getElementById("carousel-counter").textContent = `Image ${currentIndex + 1} of ${appResults.length}`;
-        document.getElementById("carousel-filename").textContent = current.original_name;
-        document.getElementById("carousel-telemetry").textContent = `Auto-Pitch: ${current.pitch}°`;
-
-        // Update Images
-        document.getElementById("img-rect").src = current.rect_url;
-        document.getElementById("img-bev").src = current.bev_url;
-
-        // Update Table
-        const tbody = document.getElementById("table-defects");
-        tbody.innerHTML = current.defects.map(d => `
-            <tr>
-                <td class="p-2">${d.class}</td>
-                <td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td>
-                <td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td>
-            </tr>
-        `).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No defects detected</td></tr>`;
-
-        // Sync Map! Pan to the camera dot and open popup
-        const activeMarker = mapMarkers[current.original_name];
-        if (activeMarker) {
-            map.setView(activeMarker.getLatLng(), 18, { animate: true });
-            activeMarker.openPopup();
-        }
-
-        // Handle button states
-        document.getElementById("btn-prev").disabled = (currentIndex === 0);
-        document.getElementById("btn-next").disabled = (currentIndex === appResults.length - 1);
+    if (multiple) {
+        selected = Array.from(files);
+        nameLabel.textContent = `${selected.length} file(s) selected`;
+    } else {
+        selected = files[0];
+        nameLabel.textContent = selected.name;
     }
 
-    // Carousel Navigation
-    document.getElementById("btn-prev").onclick = () => {
-        if (currentIndex > 0) { currentIndex--; updateCarousel(); }
-    };
-    document.getElementById("btn-next").onclick = () => {
-        if (currentIndex < appResults.length - 1) { currentIndex++; updateCarousel(); }
-    };
+    nameLabel.classList.remove("hidden");
+
+    callback(selected);
+    updateProcessButton();
+}
+
+
+function updateProcessButton() {
+    const hasModel = modelFile !== null;
+    const hasManualInput = imageFiles.length > 0;
+    const hasManifest = manifestFile !== null;
+
+    btnProcess.disabled = !(hasModel && (hasManualInput || hasManifest));
+}
+
+// ---------------------------------------------------------------------
+// Initialise upload boxes
+// ---------------------------------------------------------------------
+
+setupDz("dz-model", "in-model", "name-model", false, (file) => {
+    modelFile = file;
 });
+
+setupDz("dz-image", "in-image", "name-image", true, (files) => {
+    imageFiles = files;
+});
+
+setupDz("dz-manifest", "in-manifest", "name-manifest", false, (file) => {
+    manifestFile = file;
+});
+
+// ---------------------------------------------------------------------
+// Pipeline submit
+// ---------------------------------------------------------------------
+
+btnProcess.addEventListener("click", async () => {
+    if (!modelFile) {
+        alert("Please upload a YOLO model file first.");
+        return;
+    }
+
+    if (!manifestFile && imageFiles.length === 0) {
+        alert("Please upload either images/video or a homography manifest CSV.");
+        return;
+    }
+
+    const formData = new FormData();
+
+    formData.append("model", modelFile);
+
+    const camHeight = document.getElementById("cam-height").value || "1.6";
+    formData.append("cam_height", camHeight);
+
+    let endpoint = "/process";
+
+    if (manifestFile) {
+        endpoint = "/process_manifest";
+        formData.append("manifest", manifestFile);
+        console.log("Running manifest pipeline mode...");
+    } else {
+        endpoint = "/process";
+
+        imageFiles.forEach((file) => {
+            formData.append("files", file);
+        });
+
+        const gpsSnapElement = document.getElementById("gps-snap");
+        if (gpsSnapElement) {
+            formData.append("gps_snap", gpsSnapElement.checked ? "true" : "false");
+        }
+
+        console.log("Running manual image/video upload mode...");
+    }
+
+    loading.classList.remove("hidden");
+    workspace.classList.add("hidden");
+    btnProcess.disabled = true;
+
+    try {
+        const response = await fetch(endpoint, {
+            method: "POST",
+            body: formData,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || "Unknown server error");
+        }
+
+        console.log("Server response:", data);
+
+        results = data.results || [];
+        currentIndex = 0;
+
+        if (results.length === 0) {
+            alert("Processing finished, but no valid results were returned. Check the terminal for skipped frames or errors.");
+            return;
+        }
+
+        workspace.classList.remove("hidden");
+
+        renderCurrentResult();
+        initialiseMap();
+        renderMap(data.geojson);
+
+        if (data.skipped_count && data.skipped_count > 0) {
+            console.warn("Skipped frames:", data.skipped_frames);
+            alert(`Processing completed with ${data.skipped_count} skipped frame(s). Check the browser console or Flask terminal for details.`);
+        }
+
+    } catch (error) {
+        console.error(error);
+        alert(`Processing failed: ${error.message}`);
+    } finally {
+        loading.classList.add("hidden");
+        updateProcessButton();
+    }
+});
+
+// ---------------------------------------------------------------------
+// Carousel rendering
+// ---------------------------------------------------------------------
+
+function renderCurrentResult() {
+    if (!results || results.length === 0) {
+        return;
+    }
+
+    const item = results[currentIndex];
+
+    carouselCounter.textContent = `Item ${currentIndex + 1} of ${results.length}`;
+    carouselFilename.textContent = item.original_name || "Unknown frame";
+
+    const pitch = item.pitch !== undefined ? item.pitch : "N/A";
+    const lat = item.lat !== undefined ? item.lat : "N/A";
+    const lon = item.lon !== undefined ? item.lon : "N/A";
+
+    carouselTelemetry.textContent = `Pitch: ${pitch}° | Lat: ${lat} | Lon: ${lon}`;
+
+    imgRect.src = item.rect_url || "";
+    imgBev.src = item.bev_url || "";
+
+    renderDefectsTable(item.defects || []);
+
+    btnPrev.disabled = currentIndex === 0;
+    btnNext.disabled = currentIndex === results.length - 1;
+}
+
+
+function renderDefectsTable(defects) {
+    tableDefects.innerHTML = "";
+
+    if (!defects || defects.length === 0) {
+        tableDefects.innerHTML = `
+            <tr>
+                <td class="p-2 text-gray-500">No defects detected in this frame.</td>
+            </tr>
+        `;
+        return;
+    }
+
+    defects.forEach((defect, index) => {
+        const row = document.createElement("tr");
+
+        const className =
+            defect.class ||
+            defect.class_name ||
+            defect.name ||
+            defect.label ||
+            `Defect ${index + 1}`;
+
+        const confidence =
+            defect.confidence !== undefined
+                ? Number(defect.confidence).toFixed(2)
+                : defect.conf !== undefined
+                    ? Number(defect.conf).toFixed(2)
+                    : "N/A";
+
+        const area =
+            defect.area_m2 !== undefined
+                ? `${Number(defect.area_m2).toFixed(3)} m²`
+                : defect.area !== undefined
+                    ? `${Number(defect.area).toFixed(3)}`
+                    : "N/A";
+
+        const depth =
+            defect.depth_mm !== undefined
+                ? `${Number(defect.depth_mm).toFixed(1)} mm`
+                : defect.depth !== undefined
+                    ? `${Number(defect.depth).toFixed(1)}`
+                    : "N/A";
+
+        row.innerHTML = `
+            <td class="p-2 font-medium text-gray-700">${index + 1}. ${escapeHtml(className)}</td>
+            <td class="p-2 text-gray-600">Conf: ${confidence}</td>
+            <td class="p-2 text-gray-600">Area: ${area}</td>
+            <td class="p-2 text-gray-600">Depth: ${depth}</td>
+        `;
+
+        tableDefects.appendChild(row);
+    });
+}
+
+
+btnPrev.addEventListener("click", () => {
+    if (currentIndex > 0) {
+        currentIndex--;
+        renderCurrentResult();
+    }
+});
+
+
+btnNext.addEventListener("click", () => {
+    if (currentIndex < results.length - 1) {
+        currentIndex++;
+        renderCurrentResult();
+    }
+});
+
+// ---------------------------------------------------------------------
+// Map rendering
+// ---------------------------------------------------------------------
+
+function initialiseMap() {
+    if (map !== null) {
+        return;
+    }
+
+    map = L.map("map").setView([-33.8688, 151.2093], 13);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 22,
+        attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+}
+
+
+function renderMap(geojson) {
+    if (!map) {
+        initialiseMap();
+    }
+
+    if (geojsonLayer) {
+        map.removeLayer(geojsonLayer);
+    }
+
+    if (!geojson || !geojson.features || geojson.features.length === 0) {
+        return;
+    }
+
+    geojsonLayer = L.geoJSON(geojson, {
+        pointToLayer: function (feature, latlng) {
+            const type = feature.properties?.type || "";
+
+            if (type === "camera") {
+                return L.circleMarker(latlng, {
+                    radius: 5,
+                    color: "#2563eb",
+                    fillColor: "#3b82f6",
+                    fillOpacity: 0.9,
+                });
+            }
+
+            return L.circleMarker(latlng, {
+                radius: 6,
+                color: "#dc2626",
+                fillColor: "#ef4444",
+                fillOpacity: 0.9,
+            });
+        },
+
+        style: function (feature) {
+            const type = feature.properties?.type || "";
+
+            if (type === "trail") {
+                return {
+                    color: "#2563eb",
+                    weight: 4,
+                    opacity: 0.8,
+                };
+            }
+
+            return {
+                color: "#dc2626",
+                weight: 2,
+                opacity: 0.8,
+            };
+        },
+
+        onEachFeature: function (feature, layer) {
+            const props = feature.properties || {};
+            let popup = "";
+
+            Object.keys(props).forEach((key) => {
+                popup += `<strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(props[key]))}<br>`;
+            });
+
+            if (popup) {
+                layer.bindPopup(popup);
+            }
+        },
+    }).addTo(map);
+
+    try {
+        const bounds = geojsonLayer.getBounds();
+
+        if (bounds.isValid()) {
+            map.fitBounds(bounds, {
+                padding: [30, 30],
+            });
+        }
+    } catch (error) {
+        console.warn("Could not fit map bounds:", error);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------
+
+function escapeHtml(value) {
+    return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
