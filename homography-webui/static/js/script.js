@@ -1,26 +1,189 @@
 document.addEventListener("DOMContentLoaded", () => {
+    console.log("script.js loaded successfully");
+
     let modelFile = null;
     let imageFiles = [];
-    let manifestFile = null;
 
     let map = null;
     let geoJsonLayer = null;
     let mapMarkers = {};
 
     let fullResults = [];
-    let fullGeojson = null;
+    let fullGeojson = {
+        type: "FeatureCollection",
+        features: []
+    };
+
     let appResults = [];
     let currentIndex = 0;
     let currentDirection = "front";
 
-    const btnProcess = document.getElementById("process-btn");
-    const selLocation = document.getElementById("sel-location");
+    // -----------------------------------------------------------------
+    // Safe DOM helpers
+    // -----------------------------------------------------------------
+
+    function byId(id) {
+        return document.getElementById(id);
+    }
+
+    function firstExisting(ids) {
+        for (const id of ids) {
+            const el = byId(id);
+            if (el) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function buttonByText(text) {
+        const buttons = Array.from(document.querySelectorAll("button"));
+
+        return buttons.find((btn) => {
+            return btn.textContent.trim().toLowerCase().includes(text.toLowerCase());
+        }) || null;
+    }
+
+    function show(el) {
+        if (el) {
+            el.classList.remove("hidden");
+        }
+    }
+
+    function hide(el) {
+        if (el) {
+            el.classList.add("hidden");
+        }
+    }
+
+    function setDisabled(el, disabled) {
+        if (el) {
+            el.disabled = disabled;
+        }
+    }
+
+    function valueOf(ids, fallback = "") {
+        const el = firstExisting(ids);
+        return el ? el.value : fallback;
+    }
+
+    function checkedOf(ids, fallback = false) {
+        const el = firstExisting(ids);
+        return el ? el.checked : fallback;
+    }
+
+    function safeOn(el, event, handler) {
+        if (el) {
+            el.addEventListener(event, handler);
+        }
+    }
+
+    function safeSetText(ids, value) {
+        const el = Array.isArray(ids) ? firstExisting(ids) : byId(ids);
+        if (el) {
+            el.textContent = value;
+        }
+    }
+
+    function safeSetSrc(ids, value) {
+        const el = Array.isArray(ids) ? firstExisting(ids) : byId(ids);
+        if (el) {
+            el.src = value || "";
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Main UI element detection
+    // -----------------------------------------------------------------
+
+    const btnProcess =
+        firstExisting([
+            "process-btn",
+            "btn-process",
+            "process-uploads-btn",
+            "btn-process-uploads",
+            "btn-process-upload"
+        ]) || buttonByText("Process Uploads");
+
+    const btnScanPipeline =
+        firstExisting([
+            "scan-pipeline-btn",
+            "btn-scan-pipeline",
+            "btn-scan",
+            "pipeline-btn",
+            "process-pipeline-btn"
+        ]) || buttonByText("Scan Pipeline");
+
+    const btnNewJob =
+        firstExisting([
+            "btn-new-job",
+            "new-job-btn",
+            "btn-reset"
+        ]) || buttonByText("New Job");
+
+    const btnSaveProject =
+        firstExisting([
+            "btn-save-project",
+            "save-project-btn"
+        ]);
+
+    const inputLoadProject =
+        firstExisting([
+            "in-load-project",
+            "load-project-input"
+        ]);
+
+    const selLocation =
+        firstExisting([
+            "sel-location",
+            "location-select"
+        ]);
+
+    const uploadPanel =
+        firstExisting([
+            "upload-panel",
+            "panel-upload",
+            "main-panel"
+        ]);
+
+    const workspace =
+        firstExisting([
+            "workspace",
+            "results-panel"
+        ]);
+
+    const loading =
+        firstExisting([
+            "loading",
+            "loading-panel",
+            "loader"
+        ]);
+
+    if (!btnProcess) {
+        console.error("Process Uploads button was not found. Check the button ID in index.html.");
+    }
+
+    if (!btnScanPipeline) {
+        console.warn("Scan Pipeline button was not found. Pipeline scan will be unavailable.");
+    }
 
     // -----------------------------------------------------------------
     // Map setup
     // -----------------------------------------------------------------
 
     function initMap() {
+        const mapEl = byId("map");
+
+        if (!mapEl) {
+            console.warn("Map element not found. Skipping map setup.");
+            return;
+        }
+
+        if (typeof L === "undefined") {
+            console.warn("Leaflet is not loaded. Skipping map setup.");
+            return;
+        }
+
         if (!map) {
             map = L.map("map").setView([-32.06, 151.90], 15);
 
@@ -37,12 +200,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // -----------------------------------------------------------------
 
     function setupDz(dzId, inputId, nameId, isMulti, callback) {
-        const dz = document.getElementById(dzId);
-        const input = document.getElementById(inputId);
-        const nameLabel = document.getElementById(nameId);
+        const dz = byId(dzId);
+        const input = byId(inputId);
+        const nameLabel = byId(nameId);
 
         if (!dz || !input || !nameLabel) {
-            console.warn(`Missing upload element: ${dzId}`);
+            console.warn(`Missing upload element: ${dzId}, ${inputId}, or ${nameId}`);
             return;
         }
 
@@ -67,6 +230,7 @@ document.addEventListener("DOMContentLoaded", () => {
             event.preventDefault();
             dz.classList.remove("active");
 
+            input.files = event.dataTransfer.files;
             handleFiles(event.dataTransfer.files, isMulti, nameLabel, callback);
         });
     }
@@ -89,121 +253,112 @@ document.addEventListener("DOMContentLoaded", () => {
         nameLabel.classList.remove("hidden");
 
         callback(selected);
-        updateProcessButton();
+        updateButtons();
     }
 
-    function updateProcessButton() {
+    function updateButtons() {
         const hasModel = modelFile !== null;
         const hasImages = imageFiles.length > 0;
-        const hasManifest = manifestFile !== null;
 
-        btnProcess.disabled = !(hasModel && (hasImages || hasManifest));
-    }
-
-    function clearManifestSelection() {
-        manifestFile = null;
-
-        const manifestInput = document.getElementById("in-manifest");
-        const manifestLabel = document.getElementById("name-manifest");
-
-        if (manifestInput) {
-            manifestInput.value = "";
-        }
-
-        if (manifestLabel) {
-            manifestLabel.textContent = "";
-            manifestLabel.classList.add("hidden");
-        }
-    }
-
-    function clearManualSelection() {
-        imageFiles = [];
-
-        const imageInput = document.getElementById("in-image");
-        const imageLabel = document.getElementById("name-image");
-
-        if (imageInput) {
-            imageInput.value = "";
-        }
-
-        if (imageLabel) {
-            imageLabel.textContent = "";
-            imageLabel.classList.add("hidden");
-        }
+        setDisabled(btnProcess, !(hasModel && hasImages));
+        setDisabled(btnScanPipeline, !hasModel);
     }
 
     setupDz("dz-model", "in-model", "name-model", false, (file) => {
         modelFile = file;
-        updateProcessButton();
+        console.log("Model selected:", file.name);
+        updateButtons();
     });
 
     setupDz("dz-image", "in-image", "name-image", true, (files) => {
-        // Manual 360 image upload mode selected
         imageFiles = files;
-
-        // Clear manifest mode so old pipeline data is not used accidentally
-        clearManifestSelection();
-
-        console.log("Manual 360 image mode selected. Manifest cleared.");
-        updateProcessButton();
+        console.log("Manual media selected:", files.map((f) => f.name));
+        updateButtons();
     });
 
-    setupDz("dz-manifest", "in-manifest", "name-manifest", false, (file) => {
-        // Manifest pipeline mode selected
-        manifestFile = file;
-
-        // Clear manual image uploads so the mode is not ambiguous
-        clearManualSelection();
-
-        console.log("Manifest mode selected. Manual images cleared.");
-        updateProcessButton();
-    });
+    updateButtons();
 
     // -----------------------------------------------------------------
-    // Submit processing request
+    // Settings form data
     // -----------------------------------------------------------------
 
-    btnProcess.onclick = async () => {
+    function appendCommonSettings(formData) {
+        formData.append("cam_height", valueOf(["cam-height", "cam_height"], "1.6"));
+        formData.append("frame_skip", valueOf(["frame-skip", "frame_skip"], "30"));
+
+        formData.append("is_360", checkedOf([
+            "is-360",
+            "is_360",
+            "chk-360",
+            "check-360",
+            "equirectangular-360"
+        ], true));
+
+        formData.append("gps_snap", checkedOf([
+            "gps-snap",
+            "gps_snap",
+            "chk-gps-snap",
+            "video-gps-snap-sync"
+        ], false));
+
+        formData.append("last_lat", "0.0");
+        formData.append("last_lon", "0.0");
+        formData.append("last_loc_id", "1");
+    }
+
+    // -----------------------------------------------------------------
+    // Button actions
+    // -----------------------------------------------------------------
+
+    safeOn(btnProcess, "click", async () => {
         if (!modelFile) {
-            alert("Please upload a YOLO model first.");
+            alert("Please upload a YOLO .pt model first.");
             return;
         }
 
-        if (!manifestFile && imageFiles.length === 0) {
-            alert("Please upload 360 images or a homography manifest CSV.");
+        if (imageFiles.length === 0) {
+            alert("Please upload images or a video first.");
             return;
         }
 
         const formData = new FormData();
 
         formData.append("model", modelFile);
-        formData.append("cam_height", document.getElementById("cam-height").value || "1.6");
 
-        let endpoint = "";
+        imageFiles.forEach((file) => {
+            formData.append("images", file);
+        });
 
-        if (manifestFile && imageFiles.length === 0) {
-            endpoint = "/process_manifest";
-            formData.append("manifest", manifestFile);
+        appendCommonSettings(formData);
 
-            console.log("Running manifest mode...");
-        } else if (!manifestFile && imageFiles.length > 0) {
-            endpoint = "/process";
+        await startProcessingRequest("/process_uploads", formData);
+    });
 
-            imageFiles.forEach((file) => {
-                formData.append("images", file);
-            });
-
-            console.log("Running manual 360 image mode...");
-        } else {
-            alert("Please choose either manifest mode or manual upload mode, not both.");
-            updateProcessButton();
+    safeOn(btnScanPipeline, "click", async () => {
+        if (!modelFile) {
+            alert("Please upload a YOLO .pt model first.");
             return;
         }
 
-        document.getElementById("loading").classList.remove("hidden");
-        document.getElementById("upload-panel").classList.add("hidden");
-        document.getElementById("workspace").classList.add("hidden");
-        btnProcess.disabled = true;
+        const formData = new FormData();
+
+        formData.append("model", modelFile);
+        appendCommonSettings(formData);
+
+        await startProcessingRequest("/process_pipeline_folder", formData);
+    });
+
+    safeOn(btnNewJob, "click", () => {
+        location.reload();
+    });
+
+    async function startProcessingRequest(endpoint, formData) {
+        console.log("Sending request to:", endpoint);
+
+        show(loading);
+        hide(workspace);
+        setDisabled(btnProcess, true);
+        setDisabled(btnScanPipeline, true);
 
         try {
             const response = await fetch(endpoint, {
@@ -217,35 +372,118 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(data.error || "Unknown server error");
             }
 
-            if (!data.results || data.results.length === 0) {
-                throw new Error("Processing finished, but no valid results were returned.");
+            console.log("Initial server response:", data);
+
+            if (data.results && data.geojson) {
+                loadWorkspace(data.results, data.geojson);
+                return;
             }
 
-            console.log("Server response:", data);
-
-            loadWorkspace(data.results, data.geojson);
-
-            if (data.skipped_count && data.skipped_count > 0) {
-                console.warn("Skipped frames:", data.skipped_frames);
-                alert(`Processing completed with ${data.skipped_count} skipped frame(s). Check the browser console or Flask terminal for details.`);
+            if (!data.task_id) {
+                throw new Error("Server did not return a task_id.");
             }
+
+            await listenToProcessingStream(data);
 
         } catch (error) {
             console.error(error);
             alert("Processing failed: " + error.message);
-            document.getElementById("upload-panel").classList.remove("hidden");
+            show(uploadPanel);
+            hide(workspace);
         } finally {
-            document.getElementById("loading").classList.add("hidden");
-            updateProcessButton();
+            hide(loading);
+            updateButtons();
         }
-    };
+    }
+
+    function listenToProcessingStream(initialData) {
+        return new Promise((resolve, reject) => {
+            fullResults = [];
+
+            fullGeojson = initialData.initial_trail || {
+                type: "FeatureCollection",
+                features: []
+            };
+
+            const taskId = initialData.task_id;
+            const total = initialData.total_images || 0;
+
+            console.log("Listening to task stream:", taskId);
+
+            const source = new EventSource(`/stream/${taskId}`);
+
+            source.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+
+                console.log("Stream message:", msg);
+
+                if (msg.type === "update") {
+                    const result = msg.data;
+
+                    fullResults.push(result);
+
+                    if (result.geojson) {
+                        mergeGeojson(fullGeojson, result.geojson);
+                    }
+
+                    safeSetText(
+                        ["loading-text", "progress-text"],
+                        `Processing ${fullResults.length} of ${total || "?"}`
+                    );
+                }
+
+                if (msg.type === "complete") {
+                    source.close();
+
+                    if (fullResults.length === 0) {
+                        reject(new Error("Processing completed, but no results were returned."));
+                        return;
+                    }
+
+                    loadWorkspace(fullResults, fullGeojson);
+                    resolve();
+                }
+
+                if (msg.type === "error") {
+                    source.close();
+                    reject(new Error(msg.message || "Processing stream failed."));
+                }
+            };
+
+            source.onerror = () => {
+                source.close();
+                reject(new Error("Connection to processing stream was lost."));
+            };
+        });
+    }
+
+    function mergeGeojson(target, incoming) {
+        if (!incoming) {
+            return;
+        }
+
+        if (Array.isArray(incoming)) {
+            target.features.push(...incoming);
+            return;
+        }
+
+        if (incoming.type === "FeatureCollection") {
+            target.features.push(...(incoming.features || []));
+            return;
+        }
+
+        if (incoming.type === "Feature") {
+            target.features.push(incoming);
+        }
+    }
 
     // -----------------------------------------------------------------
-    // Save / load project JSON
+    // Save / load state JSON
     // -----------------------------------------------------------------
 
-    document.getElementById("btn-save-project").onclick = () => {
+    safeOn(btnSaveProject, "click", () => {
         if (fullResults.length === 0) {
+            alert("No results available to save.");
             return;
         }
 
@@ -263,13 +501,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const a = document.createElement("a");
 
         a.href = url;
-        a.download = "dcpm_360_project.json";
+        a.download = "dcpm_project_state.json";
         a.click();
 
         URL.revokeObjectURL(url);
-    };
+    });
 
-    document.getElementById("in-load-project").addEventListener("change", (event) => {
+    safeOn(inputLoadProject, "change", (event) => {
         const file = event.target.files[0];
 
         if (!file) {
@@ -301,18 +539,25 @@ document.addEventListener("DOMContentLoaded", () => {
     // -----------------------------------------------------------------
 
     function loadWorkspace(resultsData, geojsonData) {
-        fullResults = resultsData;
-        fullGeojson = geojsonData;
+        fullResults = resultsData || [];
+        fullGeojson = geojsonData || {
+            type: "FeatureCollection",
+            features: []
+        };
+
+        console.log("Loading workspace:", fullResults, fullGeojson);
 
         initMap();
 
-        document.getElementById("upload-panel").classList.add("hidden");
-        document.getElementById("workspace").classList.remove("hidden");
-        document.getElementById("btn-save-project").classList.remove("hidden");
+        hide(uploadPanel);
+        show(workspace);
+        show(btnSaveProject);
 
-        setTimeout(() => {
-            map.invalidateSize();
-        }, 200);
+        if (map) {
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 200);
+        }
 
         renderMap(fullGeojson);
         populateLocations();
@@ -320,7 +565,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function populateLocations() {
-        const locations = [...new Set(fullResults.map((result) => result.location || "Location 1"))];
+        if (!selLocation) {
+            console.warn("Location selector not found.");
+            appResults = fullResults;
+            currentIndex = 0;
+            updateCarousel(true);
+            return;
+        }
+
+        const locations = [...new Set(
+            fullResults.map((result) => result.location || "Location 1")
+        )];
 
         selLocation.innerHTML = locations
             .map((location) => `<option value="${escapeHtml(location)}">${escapeHtml(location)}</option>`)
@@ -347,7 +602,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderMap(geoJsonData) {
         if (!map) {
-            initMap();
+            return;
         }
 
         if (geoJsonLayer) {
@@ -396,32 +651,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 if (feature.properties && feature.properties.type === "camera") {
                     mapMarkers[feature.properties.filename] = marker;
-
-                    marker.on("click", () => {
-                        const target = fullResults.find((result) => {
-                            return result.original_name === feature.properties.filename;
-                        });
-
-                        if (target) {
-                            if (selLocation.value !== target.location) {
-                                selLocation.value = target.location;
-
-                                appResults = fullResults.filter((result) => {
-                                    return result.location === target.location;
-                                });
-                            }
-
-                            currentIndex = appResults.findIndex((result) => {
-                                return result.original_name === target.original_name;
-                            });
-
-                            if (currentIndex < 0) {
-                                currentIndex = 0;
-                            }
-
-                            updateCarousel(false);
-                        }
-                    });
                 }
 
                 return marker;
@@ -463,38 +692,44 @@ document.addEventListener("DOMContentLoaded", () => {
     function setView(direction) {
         currentDirection = direction;
 
-        const frontContainer = document.getElementById("container-bev-front");
-        const rearContainer = document.getElementById("container-bev-rear");
-        const activeLabel = document.getElementById("label-active-view");
+        const frontContainer = byId("container-bev-front");
+        const rearContainer = byId("container-bev-rear");
+        const activeLabel = byId("label-active-view");
 
-        if (direction === "front") {
-            frontContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
-            frontContainer.classList.remove("border-transparent");
+        if (frontContainer && rearContainer) {
+            if (direction === "front") {
+                frontContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
+                frontContainer.classList.remove("border-transparent");
 
-            rearContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
-            rearContainer.classList.add("border-transparent");
+                rearContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
+                rearContainer.classList.add("border-transparent");
 
-            activeLabel.textContent = "Front View Active";
-        } else {
-            rearContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
-            rearContainer.classList.remove("border-transparent");
+                if (activeLabel) {
+                    activeLabel.textContent = "Front View Active";
+                }
+            } else {
+                rearContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
+                rearContainer.classList.remove("border-transparent");
 
-            frontContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
-            frontContainer.classList.add("border-transparent");
+                frontContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
+                frontContainer.classList.add("border-transparent");
 
-            activeLabel.textContent = "Rear View Active";
+                if (activeLabel) {
+                    activeLabel.textContent = "Rear View Active";
+                }
+            }
         }
 
         updateCarousel(false);
     }
 
-    document.getElementById("container-bev-front").onclick = () => {
+    safeOn(byId("container-bev-front"), "click", () => {
         setView("front");
-    };
+    });
 
-    document.getElementById("container-bev-rear").onclick = () => {
+    safeOn(byId("container-bev-rear"), "click", () => {
         setView("rear");
-    };
+    });
 
     // -----------------------------------------------------------------
     // Carousel update
@@ -511,23 +746,24 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        const activeViewData = current.views[currentDirection];
+        const activeViewData = current.views[currentDirection] || current.views.front;
 
-        document.getElementById("carousel-counter").textContent = `Image ${currentIndex + 1} of ${appResults.length}`;
-        document.getElementById("carousel-filename").textContent = current.original_name || "Unknown image";
-        document.getElementById("carousel-telemetry").textContent =
-            `Pitch: ${current.pitch}° | Lat: ${current.lat} | Lon: ${current.lon}`;
+        safeSetText("carousel-counter", `Image ${currentIndex + 1} of ${appResults.length}`);
+        safeSetText("carousel-filename", current.original_name || "Unknown image");
+        safeSetText(
+            "carousel-telemetry",
+            `Pitch: ${current.pitch}° | Lat: ${current.lat} | Lon: ${current.lon}`
+        );
 
-        document.getElementById("img-bev-front").src = current.views.front.bev_url || "";
-        document.getElementById("img-bev-rear").src = current.views.rear.bev_url || "";
+        safeSetSrc("img-bev-front", current.views.front ? current.views.front.bev_url : "");
+        safeSetSrc("img-bev-rear", current.views.rear ? current.views.rear.bev_url : "");
+        safeSetSrc("img-rect", activeViewData ? activeViewData.rect_url : "");
 
-        document.getElementById("img-rect").src = activeViewData.rect_url || "";
+        renderDefectsTable(activeViewData ? activeViewData.defects || [] : []);
 
-        renderDefectsTable(activeViewData.defects || []);
+        const activeMarker = mapMarkers[current.original_name] || mapMarkers[current.filename];
 
-        const activeMarker = mapMarkers[current.original_name];
-
-        if (activeMarker) {
+        if (map && activeMarker) {
             if (panMap) {
                 map.setView(activeMarker.getLatLng(), 20, {
                     animate: true
@@ -537,12 +773,17 @@ document.addEventListener("DOMContentLoaded", () => {
             activeMarker.openPopup();
         }
 
-        document.getElementById("btn-prev").disabled = currentIndex === 0;
-        document.getElementById("btn-next").disabled = currentIndex === appResults.length - 1;
+        setDisabled(byId("btn-prev"), currentIndex === 0);
+        setDisabled(byId("btn-next"), currentIndex === appResults.length - 1);
     }
 
     function renderDefectsTable(defects) {
-        const tbody = document.getElementById("table-defects");
+        const tbody = byId("table-defects");
+
+        if (!tbody) {
+            return;
+        }
+
         tbody.innerHTML = "";
 
         if (!defects || defects.length === 0) {
@@ -577,19 +818,19 @@ document.addEventListener("DOMContentLoaded", () => {
     // Carousel navigation
     // -----------------------------------------------------------------
 
-    document.getElementById("btn-prev").onclick = () => {
+    safeOn(byId("btn-prev"), "click", () => {
         if (currentIndex > 0) {
             currentIndex--;
             updateCarousel(true);
         }
-    };
+    });
 
-    document.getElementById("btn-next").onclick = () => {
+    safeOn(byId("btn-next"), "click", () => {
         if (currentIndex < appResults.length - 1) {
             currentIndex++;
             updateCarousel(true);
         }
-    };
+    });
 
     // -----------------------------------------------------------------
     // Utility
