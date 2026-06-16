@@ -1,204 +1,579 @@
 import os
 import time
-import json
-import uuid
-import threading
-import queue
-import zipfile
-from io import BytesIO
-from flask import Flask, request, jsonify, render_template, Response, send_file
+import csv
+from pathlib import Path
+from threading import Lock
+
+from flask import Flask, request, jsonify, render_template, url_for
 from werkzeug.utils import secure_filename
 from ultralytics import YOLO
-from core_math import process_single_image, get_exif_gps, calculate_bearing, extract_gpmf_pitch, haversine_distance
+
+from core_math import (
+    process_single_image,
+    get_exif_gps,
+    calculate_bearing,
+    extract_gpmf_pitch,
+    haversine_distance,
+)
+
+# ---------------------------------------------------------------------
+# Flask app setup
+# ---------------------------------------------------------------------
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Global variables to retain model state and manage background tasks
-global_model = None
-model_lock = threading.Lock()
-active_tasks = {}
+# Required by 360_homography_webui/core_math.py
+model_lock = Lock()
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
 
-@app.route('/process', methods=['POST'])
-def process():
-    global global_model
+app.config["UPLOAD_FOLDER"] = str(BASE_DIR / "static" / "uploads")
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-    if 'images' not in request.files:
-        return jsonify({"error": "Missing image files"}), 400
+ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
-    # Load Model (only required if not previously loaded)
-    if 'model' in request.files and request.files['model'].filename != '':
-        model_file = request.files['model']
-        model_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(model_file.filename))
-        model_file.save(model_path)
-        global_model = YOLO(model_path)
+PIPELINE_OUTPUT_ROOTS = [
+    PROJECT_ROOT / "Data_pipelinine" / "output",
+    PROJECT_ROOT / "Data_pipeline" / "output",
+]
 
-    if global_model is None:
-        return jsonify({"error": "No ML model loaded into memory"}), 400
 
-    img_files = request.files.getlist('images')
-    if not img_files or img_files[0].filename == '':
-        return jsonify({"error": "No files selected"}), 400
+# ---------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------
 
-    # Form parameters for incremental adding
-    cam_height = float(request.form.get('cam_height', 1.6))
-    last_lat = float(request.form.get('last_lat', 0.0))
-    last_lon = float(request.form.get('last_lon', 0.0))
-    loc_id = int(request.form.get('last_loc_id', 1))
+def safe_float(value, default=0.0):
+    """Safely convert values from CSV/form input into float."""
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
-    image_data = []
+
+def has_valid_gps(lat, lon):
+    """Check whether GPS values are usable."""
+    return lat not in (None, 0.0) and lon not in (None, 0.0)
+
+
+def normalise_manifest_path(path_value):
+    """
+    Normalise Windows/Linux paths from CSV.
+
+    Example:
+    frames\\hero5\\frame.jpg
+    frames/hero5/frame.jpg
+    """
+    return str(path_value).strip().replace("\\", os.sep).replace("/", os.sep)
+
+
+def resolve_manifest_image_path(image_path_value):
+    """
+    Resolve image_path from homography_input_manifest.csv.
+
+    Manifest usually stores:
+    frames/hero5/hero5_frame_000001.jpg
+
+    Real file is usually:
+    Data_pipelinine/output/frames/hero5/hero5_frame_000001.jpg
+    """
+    if not image_path_value:
+        return None
+
+    cleaned_path = normalise_manifest_path(image_path_value)
+    image_path = Path(cleaned_path)
+
+    if image_path.is_absolute() and image_path.exists():
+        return image_path
+
+    for output_root in PIPELINE_OUTPUT_ROOTS:
+        candidate = output_root / image_path
+        if candidate.exists():
+            return candidate
+
+    candidate = PROJECT_ROOT / image_path
+    if candidate.exists():
+        return candidate
+
+    candidate = BASE_DIR / image_path
+    if candidate.exists():
+        return candidate
+
+    return PIPELINE_OUTPUT_ROOTS[0] / image_path
+
+
+def save_uploaded_file(file_storage, prefix=""):
+    """Save uploaded file to static/uploads and return saved path."""
+    filename = secure_filename(file_storage.filename)
+
+    if prefix:
+        filename = f"{prefix}_{filename}"
+
+    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    file_storage.save(save_path)
+
+    return save_path
+
+
+def run_process_single_image(
+    image_path,
+    model,
+    filename,
+    upload_folder,
+    lat,
+    lon,
+    heading,
+    cam_height,
+    pitch,
+):
+    """
+    Runs 360 core_math.process_single_image safely.
+
+    Some versions return:
+    - defects, geo_feats
+
+    Other versions return:
+    - defects, geo_feats, extra_value
+
+    This wrapper accepts both and uses the first two values.
+    """
+    result = process_single_image(
+        image_path,
+        model,
+        filename,
+        upload_folder,
+        lat,
+        lon,
+        heading,
+        cam_height,
+        pitch,
+        model_lock,
+    )
+
+    if isinstance(result, tuple) and len(result) >= 2:
+        defects = result[0]
+        geo_feats = result[1]
+        return defects, geo_feats
+
+    raise RuntimeError(
+        "process_single_image did not return defects and geojson features correctly"
+    )
+
+
+def assign_headings_and_locations(image_data):
+    """
+    Assign heading and location grouping to image records.
+
+    A new location group starts when distance between GPS points is over 50 m.
+    """
     trail_coordinates = []
 
-    # Fast initial extraction loop (No ML, just GPS and Telemetry)
-    for f in img_files:
-        filename = f"{int(time.time()*100)}_{secure_filename(f.filename)}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        f.save(filepath)
-        
-        lat, lon = get_exif_gps(filepath)
-        dynamic_pitch = extract_gpmf_pitch(filepath)
-        
-        image_data.append({
-            "filename": filename, 
-            "original_name": f.filename,
-            "path": filepath, 
-            "lat": lat, 
-            "lon": lon,
-            "pitch": dynamic_pitch
-        })
-    
-    image_data = sorted(image_data, key=lambda x: x['filename'])
+    loc_id = 1
+    last_valid_lat = None
+    last_valid_lon = None
+    previous_heading = 0.0
 
     for i in range(len(image_data)):
-        if i < len(image_data) - 1:
-            heading = calculate_bearing(image_data[i]['lat'], image_data[i]['lon'], image_data[i+1]['lat'], image_data[i+1]['lon'])
-        else:
-            heading = image_data[i-1]['heading'] if i > 0 else 0.0
-        image_data[i]['heading'] = heading
-        
-        lat, lon = image_data[i]['lat'], image_data[i]['lon']
-        if lat != 0.0 and lon != 0.0:
+        current = image_data[i]
+
+        lat = current["lat"]
+        lon = current["lon"]
+
+        heading = previous_heading
+
+        if has_valid_gps(lat, lon):
+            for j in range(i + 1, len(image_data)):
+                next_lat = image_data[j]["lat"]
+                next_lon = image_data[j]["lon"]
+
+                if has_valid_gps(next_lat, next_lon):
+                    heading = calculate_bearing(lat, lon, next_lat, next_lon)
+                    previous_heading = heading
+                    break
+
+        current["heading"] = heading
+
+        if has_valid_gps(lat, lon):
             trail_coordinates.append([lon, lat])
-            
-            if last_lat != 0.0 and last_lon != 0.0:
-                dist = haversine_distance(last_lat, last_lon, lat, lon)
-                if dist > 50.0:
+
+            if last_valid_lat is not None and last_valid_lon is not None:
+                distance = haversine_distance(last_valid_lat, last_valid_lon, lat, lon)
+
+                if distance > 50.0:
                     loc_id += 1
-            last_lat, last_lon = lat, lon
-            
-        image_data[i]['location'] = f"Location {loc_id}"
 
-    # Initialize Background Task Tracking
-    task_id = str(uuid.uuid4())
-    active_tasks[task_id] = queue.Queue()
+            last_valid_lat = lat
+            last_valid_lon = lon
 
-    def process_worker(images, t_id, height):
-        try:
-            for img in images:
-                defects, geo_feats, base_filename = process_single_image(
-                    img['path'], global_model, img['filename'], app.config['UPLOAD_FOLDER'], 
-                    img['lat'], img['lon'], img['heading'], height, img['pitch'], model_lock
-                )
-                
-                # Removed Flask url_for() here to prevent Application Context errors in the background thread.
-                # Constructing the static URL manually instead.
-                result_payload = {
-                    "original_name": img['original_name'],
-                    "filename": img['filename'],
-                    "lat": round(img['lat'], 6),
-                    "lon": round(img['lon'], 6),
-                    "pitch": round(img['pitch'], 2),
-                    "location": img['location'],
-                    "geojson": geo_feats,
-                    "views": {
-                        "front": {
-                            "raw_filename": f"raw_rect_front_{base_filename}",
-                            "rect_url": f"/static/uploads/rect_front_{base_filename}",
-                            "bev_url": f"/static/uploads/bev_front_{base_filename}",
-                            "defects": defects['front']
-                        },
-                        "rear": {
-                            "raw_filename": f"raw_rect_rear_{base_filename}",
-                            "rect_url": f"/static/uploads/rect_rear_{base_filename}",
-                            "bev_url": f"/static/uploads/bev_rear_{base_filename}",
-                            "defects": defects['rear']
-                        }
-                    }
-                }
-                active_tasks[t_id].put({"type": "update", "data": result_payload})
-            
-            active_tasks[t_id].put({"type": "complete"})
-        except Exception as e:
-            active_tasks[t_id].put({"type": "error", "message": str(e)})
+        current["location"] = f"Location {loc_id}"
 
-    # Start the background thread
-    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height)).start()
+    return image_data, trail_coordinates
 
-    # Send back the immediate trajectory payload so UI can render pending grey markers
-    initial_geojson = []
-    if len(trail_coordinates) > 1:
-        initial_geojson.append({
-            "type": "Feature",
-            "properties": {"type": "trail"},
-            "geometry": {"type": "LineString", "coordinates": trail_coordinates}
+
+def build_result_object(img, defects):
+    """Build frontend-compatible result object."""
+    return {
+        "original_name": img["original_name"],
+        "lat": round(img["lat"], 6),
+        "lon": round(img["lon"], 6),
+        "pitch": round(img["pitch"], 2),
+        "location": img["location"],
+        "views": {
+            "front": {
+                "rect_url": url_for("static", filename=f"uploads/rect_front_{img['filename']}"),
+                "bev_url": url_for("static", filename=f"uploads/bev_front_{img['filename']}"),
+                "defects": defects.get("front", []),
+            },
+            "rear": {
+                "rect_url": url_for("static", filename=f"uploads/rect_rear_{img['filename']}"),
+                "bev_url": url_for("static", filename=f"uploads/bev_rear_{img['filename']}"),
+                "defects": defects.get("rear", []),
+            },
+        },
+    }
+
+
+# ---------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/process", methods=["POST"])
+def process():
+    """
+    Manual upload route.
+
+    Input:
+    - model: YOLO .pt file
+    - images: uploaded 360 images
+    - cam_height
+    """
+    print("MANUAL IMAGE PROCESSING STARTED")
+    print("FILES RECEIVED:", list(request.files.keys()))
+    print("FORM DATA:", list(request.form.keys()))
+
+    if "images" not in request.files or "model" not in request.files:
+        return jsonify({"error": "Missing image files or YOLO model"}), 400
+
+    img_files = request.files.getlist("images")
+    model_file = request.files["model"]
+
+    if len(img_files) == 0 or model_file.filename == "":
+        return jsonify({"error": "No files selected"}), 400
+
+    cam_height = safe_float(request.form.get("cam_height"), 1.6)
+
+    timestamp_prefix = str(int(time.time()))
+
+    model_path = save_uploaded_file(model_file, prefix=timestamp_prefix)
+    model = YOLO(model_path)
+
+    image_data = []
+
+    for f in img_files:
+        if not f.filename:
+            continue
+
+        ext = os.path.splitext(f.filename)[1].lower()
+
+        if ext not in ALLOWED_IMAGE_EXT:
+            print(f"[Skipped] Unsupported image file: {f.filename}")
+            continue
+
+        filename = f"{int(time.time())}_{secure_filename(f.filename)}"
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        f.save(filepath)
+
+        lat, lon = get_exif_gps(filepath)
+        dynamic_pitch = extract_gpmf_pitch(filepath)
+
+        image_data.append({
+            "filename": filename,
+            "original_name": f.filename,
+            "path": filepath,
+            "lat": lat,
+            "lon": lon,
+            "pitch": dynamic_pitch,
+            "cam_height": cam_height,
         })
+
+    if not image_data:
+        return jsonify({"error": "No valid images were provided"}), 400
+
+    image_data = sorted(image_data, key=lambda x: x["filename"])
+    image_data, trail_coordinates = assign_headings_and_locations(image_data)
+
+    all_geojson_features = []
+    processed_results = []
+    skipped_frames = []
+
+    if len(trail_coordinates) > 1:
+        all_geojson_features.append({
+            "type": "Feature",
+            "properties": {
+                "type": "trail",
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": trail_coordinates,
+            },
+        })
+
+    for img in image_data:
+        try:
+            defects, geo_feats = run_process_single_image(
+                img["path"],
+                model,
+                img["filename"],
+                app.config["UPLOAD_FOLDER"],
+                img["lat"],
+                img["lon"],
+                img["heading"],
+                img["cam_height"],
+                img["pitch"],
+            )
+
+            if has_valid_gps(img["lat"], img["lon"]):
+                all_geojson_features.extend(geo_feats)
+
+                all_geojson_features.append({
+                    "type": "Feature",
+                    "properties": {
+                        "type": "camera",
+                        "filename": img["original_name"],
+                        "location": img["location"],
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [img["lon"], img["lat"]],
+                    },
+                })
+
+            processed_results.append(build_result_object(img, defects))
+
+            print(f"[Processed] {img['original_name']}")
+
+        except Exception as exc:
+            skipped_frames.append({
+                "frame_id": img["original_name"],
+                "reason": str(exc),
+            })
+
+            print(f"[Error] Failed processing {img['original_name']}: {exc}")
+
+    if len(processed_results) == 0:
+        return jsonify({
+            "success": False,
+            "error": "All manually uploaded images failed during 360 homography processing.",
+            "processed_count": 0,
+            "skipped_count": len(skipped_frames),
+            "skipped_frames": skipped_frames,
+        }), 500
 
     return jsonify({
         "success": True,
-        "task_id": task_id,
-        "total_images": len(image_data),
-        "initial_state": image_data,
-        "initial_trail": {"type": "FeatureCollection", "features": initial_geojson},
-        "last_lat": last_lat,
-        "last_lon": last_lon,
-        "last_loc_id": loc_id
+        "processed_count": len(processed_results),
+        "skipped_count": len(skipped_frames),
+        "skipped_frames": skipped_frames,
+        "results": processed_results,
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": all_geojson_features,
+        },
     })
 
-@app.route('/stream/<task_id>')
-def stream(task_id):
-    def event_stream():
-        q = active_tasks.get(task_id)
-        if not q:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"
-            return
-            
-        while True:
-            msg = q.get()
-            yield f"data: {json.dumps(msg)}\n\n"
-            if msg['type'] in ['complete', 'error']:
-                # Cleanup memory
-                del active_tasks[task_id]
-                break
 
-    return Response(event_stream(), mimetype="text/event-stream")
+@app.route("/process_manifest", methods=["POST"])
+def process_manifest():
+    """
+    Manifest-based route.
 
-@app.route('/export-zip', methods=['POST'])
-def export_zip():
-    project_data = request.json.get('results', [])
-    if not project_data:
-        return jsonify({"error": "No data provided"}), 400
+    Input:
+    - model: YOLO .pt file
+    - manifest: homography_input_manifest.csv
+    - cam_height: fallback camera height
+    """
+    print("MANIFEST PROCESSING STARTED")
+    print("FILES RECEIVED:", list(request.files.keys()))
+    print("FORM DATA:", list(request.form.keys()))
 
-    memory_file = BytesIO()
-    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for r in project_data:
-            loc = r.get('location', 'Unknown Location')
-            for view in ['front', 'rear']:
-                raw_filename = r['views'][view]['raw_filename']
-                original_name = r['original_name']
-                # Create a clean target path inside the ZIP using the user's original filename
-                target_filename = f"{loc}/{view}/RAW_{original_name}"
-                
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_filename)
-                if os.path.exists(file_path):
-                    zf.write(file_path, target_filename)
+    if "manifest" not in request.files or "model" not in request.files:
+        return jsonify({"error": "Missing manifest CSV or YOLO model file"}), 400
 
-    memory_file.seek(0)
-    return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
+    manifest_file = request.files["manifest"]
+    model_file = request.files["model"]
 
-if __name__ == '__main__':
+    if manifest_file.filename == "" or model_file.filename == "":
+        return jsonify({"error": "Manifest file or model file was not selected"}), 400
+
+    cam_height_default = safe_float(request.form.get("cam_height"), 1.6)
+
+    timestamp_prefix = str(int(time.time()))
+
+    model_path = save_uploaded_file(model_file, prefix=timestamp_prefix)
+    model = YOLO(model_path)
+
+    manifest_path = save_uploaded_file(manifest_file, prefix=timestamp_prefix)
+
+    try:
+        with open(manifest_path, "r", newline="", encoding="utf-8") as file:
+            reader = csv.DictReader(file)
+            rows = list(reader)
+    except Exception as exc:
+        return jsonify({"error": f"Could not read manifest CSV: {exc}"}), 400
+
+    if not rows:
+        return jsonify({"error": "Manifest CSV is empty"}), 400
+
+    image_data = []
+    skipped_frames = []
+
+    for index, row in enumerate(rows):
+        frame_id = row.get("frame_id", f"frame_{index + 1}").strip()
+        image_path_value = row.get("image_path", "").strip()
+        homography_status = row.get("homography_status", "").strip()
+
+        if homography_status.startswith("invalid"):
+            skipped_frames.append({
+                "frame_id": frame_id,
+                "reason": homography_status,
+            })
+
+            print(f"[Skipped] {frame_id}: {homography_status}")
+            continue
+
+        frame_path = resolve_manifest_image_path(image_path_value)
+
+        if frame_path is None or not frame_path.exists():
+            skipped_frames.append({
+                "frame_id": frame_id,
+                "reason": f"image_not_found: {frame_path}",
+            })
+
+            print(f"[Skipped] Image not found for {frame_id}: {frame_path}")
+            continue
+
+        lat = safe_float(row.get("latitude"), 0.0)
+        lon = safe_float(row.get("longitude"), 0.0)
+
+        cam_height = safe_float(
+            row.get("camera_height_m"),
+            cam_height_default,
+        )
+
+        # Temporary fallback because current manifest has blank pitch.
+        pitch = safe_float(row.get("pitch"), -15.0)
+
+        safe_frame_id = secure_filename(frame_id)
+
+        # This filename is used to generate rect_front_*, bev_front_*, etc.
+        base_filename = f"{safe_frame_id}.jpg"
+
+        image_data.append({
+            "filename": base_filename,
+            "original_name": frame_id,
+            "path": str(frame_path),
+            "lat": lat,
+            "lon": lon,
+            "pitch": pitch,
+            "cam_height": cam_height,
+        })
+
+    if not image_data:
+        return jsonify({
+            "success": False,
+            "error": "No valid manifest rows were available for processing.",
+            "processed_count": 0,
+            "skipped_count": len(skipped_frames),
+            "skipped_frames": skipped_frames,
+        }), 400
+
+    image_data, trail_coordinates = assign_headings_and_locations(image_data)
+
+    all_geojson_features = []
+    processed_results = []
+
+    if len(trail_coordinates) > 1:
+        all_geojson_features.append({
+            "type": "Feature",
+            "properties": {
+                "type": "trail",
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": trail_coordinates,
+            },
+        })
+
+    for img in image_data:
+        try:
+            defects, geo_feats = run_process_single_image(
+                img["path"],
+                model,
+                img["filename"],
+                app.config["UPLOAD_FOLDER"],
+                img["lat"],
+                img["lon"],
+                img["heading"],
+                img["cam_height"],
+                img["pitch"],
+            )
+
+            if has_valid_gps(img["lat"], img["lon"]):
+                all_geojson_features.extend(geo_feats)
+
+                all_geojson_features.append({
+                    "type": "Feature",
+                    "properties": {
+                        "type": "camera",
+                        "filename": img["original_name"],
+                        "location": img["location"],
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [img["lon"], img["lat"]],
+                    },
+                })
+
+            processed_results.append(build_result_object(img, defects))
+
+            print(f"[Processed] {img['original_name']}")
+
+        except Exception as exc:
+            skipped_frames.append({
+                "frame_id": img["original_name"],
+                "reason": str(exc),
+            })
+
+            print(f"[Error] Failed processing {img['original_name']}: {exc}")
+
+    if len(processed_results) == 0:
+        return jsonify({
+            "success": False,
+            "error": "All manifest frames failed during 360 homography processing.",
+            "processed_count": 0,
+            "skipped_count": len(skipped_frames),
+            "skipped_frames": skipped_frames,
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "processed_count": len(processed_results),
+        "skipped_count": len(skipped_frames),
+        "skipped_frames": skipped_frames,
+        "results": processed_results,
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": all_geojson_features,
+        },
+    })
+
+
+if __name__ == "__main__":
     app.run(debug=True, port=5000)
