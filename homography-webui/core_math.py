@@ -117,7 +117,7 @@ def equirectangular_to_rectilinear(equi_img, fov_deg=100, pitch_deg=-15, yaw_deg
     return cv2.remap(equi_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP), K
 
 def get_bev_homography(K, cam_height_m, pitch_deg, gsd=0.01, z_near=2.0, z_far=8.0, x_range=3.0):
-    pitch_rad = math.radians(pitch_deg)
+    pitch_rad = math.radians(-pitch_deg)
     road_pts = np.array([[-x_range, z_near], [x_range, z_near], [x_range, z_far], [-x_range, z_far]], dtype=np.float32)
     
     bev_w = int((2 * x_range) / gsd)
@@ -139,7 +139,7 @@ def get_bev_homography(K, cam_height_m, pitch_deg, gsd=0.01, z_near=2.0, z_far=8
     H_mat = cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts)
     return H_mat, bev_w, bev_h, gsd, x_range, z_far
 
-def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, model_lock, is_360=True):
+def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, model_lock, is_360=True, original_filename=""):
     if isinstance(img_input, str):
         img_mat = cv2.imread(img_input)
     else:
@@ -157,13 +157,12 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
     for view_name, config in views_to_process.items():
         all_defects[view_name] = []
         
-        # If the image is not 360, skip the equirectangular projection completely
         if is_360:
             rect_img, K = equirectangular_to_rectilinear(img_mat, pitch_deg=pitch, yaw_deg=config['yaw'])
         else:
             rect_img = img_mat.copy()
             h, w = rect_img.shape[:2]
-            f = (w / 2.0) / math.tan(math.radians(100) / 2.0)
+            f = (w / 2.0) / math.tan(math.radians(112) / 2.0)
             K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
 
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
@@ -176,11 +175,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch)
         
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-        
-        raw_bev_filename = f"raw_bev_{view_name}_{base_filename}"
-        cv2.imwrite(os.path.join(output_dir, raw_bev_filename), bev_img)
-        
-        bev_overlay = bev_img.copy() 
         rect_h, rect_w = rect_img.shape[:2]
         
         view_heading = (heading + config['heading_offset']) % 360
@@ -209,7 +203,10 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         if area_sqm <= 0.0001: 
                             continue
                             
-                        cv2.fillPoly(bev_overlay, [contour], color=mask_color_bgr)
+                        # Confidence-based Alpha Blending per mask
+                        mask_overlay = bev_img.copy()
+                        cv2.fillPoly(mask_overlay, [contour], color=mask_color_bgr)
+                        cv2.addWeighted(mask_overlay, conf, bev_img, 1.0 - conf, 0, bev_img)
                         
                         geo_coords = []
                         for pt in contour:
@@ -231,12 +228,17 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         
                         all_geojson_features.append({
                             "type": "Feature",
-                            "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color},
+                            "properties": {
+                                "class": class_name, 
+                                "area_sqm": round(area_sqm, 4), 
+                                "view": view_name, 
+                                "color": hex_color,
+                                "filename": original_filename,
+                                "conf": round(conf, 2)
+                            },
                             "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                         })
 
-        cv2.addWeighted(bev_overlay, 0.5, bev_img, 0.5, 0, bev_img)
-        
         annotated_rect_filename = f"rect_{view_name}_{base_filename}"
         bev_filename = f"bev_{view_name}_{base_filename}"
         
@@ -245,7 +247,59 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     return all_defects, all_geojson_features, base_filename
 
-def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_interp, base_filename, gps_snap, model_lock, is_360, location_str, callback):
+
+def get_video_frame_metadata(video_path, frame_skip, base_filename, gps_snap):
+    """Fast pass to get projected lat/lon strictly for frames that will be processed"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened(): return []
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    
+    gps_interp = None
+    gps_frame_set = None
+    
+    try:
+        from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators
+        streams = extract_streams_with_time(video_path)
+        if "GPS5" in streams:
+            interpolators = get_telemetry_interpolators(streams)
+            gps_interp = interpolators.get("GPS5")
+            if gps_snap:
+                gps_times = [s["time_sec"] for s in streams["GPS5"]]
+                gps_frame_set = set(round(t * fps) for t in gps_times)
+    except Exception:
+        pass
+
+    frames_meta = []
+    base_lat, base_lon = 37.7749, -122.4194
+    for frame_idx in range(total_frames):
+        # Apply the exact same logic filters as the processing loop
+        if frame_idx % frame_skip != 0: 
+            continue
+        if gps_snap and gps_frame_set is not None:
+            if frame_idx not in gps_frame_set: 
+                continue
+                
+        elapsed = frame_idx / fps
+        if gps_interp is not None:
+            try:
+                sample = gps_interp(elapsed)
+                lat, lon = float(sample[0]), float(sample[1])
+            except:
+                lat, lon = base_lat, base_lon
+        else:
+            lat, lon = base_lat, base_lon
+        
+        frames_meta.append({
+            "original_name": f"{base_filename} (Frame {frame_idx})",
+            "lat": lat,
+            "lon": lon
+        })
+    return frames_meta
+
+
+def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_interp, base_filename, gps_snap, frame_skip, model_lock, is_360, location_str, callback):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(base_filename)[0]
 
@@ -275,6 +329,11 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
         if not ret:
             break
 
+        # Respect the frame skip configuration
+        if frame_idx % frame_skip != 0:
+            frame_idx += 1
+            continue
+
         if gps_snap and gps_frame_set is not None:
             if frame_idx not in gps_frame_set:
                 frame_idx += 1
@@ -288,9 +347,16 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
                 gps_sample = gps_interp(elapsed_time_sec)
                 current_lat = float(gps_sample[0])
                 current_lon = float(gps_sample[1])
+                
+                # Look 0.5s ahead to dynamically calculate heading trajectory for BEV Math
+                next_sample = gps_interp(elapsed_time_sec + 0.5)
+                next_lat = float(next_sample[0])
+                next_lon = float(next_sample[1])
+                current_heading = calculate_bearing(current_lat, current_lon, next_lat, next_lon)
             except Exception:
                 current_lat = base_lat + (frame_idx * 0.00001)
                 current_lon = base_lon + (frame_idx * 0.00001)
+                current_heading = 0.0
         else:
             current_lat = base_lat + (frame_idx * 0.00001)
             current_lon = base_lon + (frame_idx * 0.00001)
@@ -300,14 +366,8 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
 
         defects, geo_feats, _ = process_single_image(
             frame, model, frame_base_name, upload_dir,
-            current_lat, current_lon, current_heading, cam_height, current_pitch, model_lock, is_360
+            current_lat, current_lon, current_heading, cam_height, current_pitch, model_lock, is_360, original_frame_name
         )
-
-        geo_feats.append({
-            "type": "Feature",
-            "properties": {"type": "camera", "filename": original_frame_name},
-            "geometry": {"type": "Point", "coordinates": [current_lon, current_lat]}
-        })
         
         result_payload = {
             "original_name": original_frame_name,

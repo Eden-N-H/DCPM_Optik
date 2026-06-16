@@ -52,7 +52,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         return { color: "#00e5ff", weight: 3, dashArray: "5, 10" }; 
                     }
                     const fColor = feature.properties.color || stringToColor(feature.properties.class || "Unknown");
-                    return { color: "#ffffff", weight: 2, opacity: 1, fillColor: fColor, fillOpacity: 0.9 };
+                    // Read confidence percentage for opacity, fallback to 0.4 for older saves
+                    const fOpacity = feature.properties.conf !== undefined ? feature.properties.conf : 0.4;
+                    return { color: "#ffffff", weight: 2, opacity: 1, fillColor: fColor, fillOpacity: fOpacity };
                 },
                 pointToLayer: (feature, latlng) => {
                     const marker = L.circleMarker(latlng, {
@@ -77,6 +79,23 @@ document.addEventListener("DOMContentLoaded", () => {
                 onEachFeature: (feature, layer) => {
                     if (feature.geometry && feature.geometry.type === 'Polygon') {
                         layer.bindPopup(`<b>${feature.properties.class}</b><br>View: ${feature.properties.view}<br>Area: ${feature.properties.area_sqm} m²`);
+                        
+                        // Add click-to-seek to Defect Polygons
+                        layer.on('click', () => {
+                            const fname = feature.properties.filename;
+                            if (fname) {
+                                const target = fullResults.find(r => r.original_name === fname);
+                                if (target) {
+                                    if (selLocation.value !== target.location) {
+                                        selLocation.value = target.location;
+                                        appResults = fullResults.filter(r => r.location === target.location);
+                                    }
+                                    currentIndex = appResults.findIndex(r => r.original_name === target.original_name);
+                                    updateCarousel(false);
+                                }
+                            }
+                        });
+
                     } else if (feature.geometry && feature.geometry.type === 'Point') {
                         layer.bindPopup(`<b>Camera Origin</b><br>${feature.properties.filename || 'Unknown'}`);
                     }
@@ -128,7 +147,6 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDz("dz-model", "in-model", "name-model", false, f => modelFile = f);
     setupDz("dz-image", "in-image", "name-image", true, f => imageFiles = f);
 
-    // Unified Engine Execution Function
     async function executeJob(endpoint, useUploadedFiles) {
         const fd = new FormData();
         if (modelFile) fd.append("model", modelFile);
@@ -136,6 +154,8 @@ document.addEventListener("DOMContentLoaded", () => {
         fd.append("cam_height", document.getElementById("cam-height").value);
         fd.append("is_360", chkIs360.checked ? "true" : "false");
         fd.append("gps_snap", document.getElementById("chk-gps-snap").checked ? "true" : "false");
+        fd.append("frame_skip", document.getElementById("frame-skip").value);
+        
         fd.append("last_lat", stateLastLat);
         fd.append("last_lon", stateLastLon);
         fd.append("last_loc_id", stateLastLocId);
@@ -262,6 +282,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("eta-text").textContent = `ETA: ${mins}m ${secs}s`;
 
                 refreshLocationsUI();
+
+                // Live Update the Carousel status as items stream in
+                if (selLocation.value === r.location) {
+                    appResults = fullResults.filter(x => x.location === r.location);
+                    if (appResults.length > 0) {
+                        document.getElementById("carousel-counter").textContent = `Item ${currentIndex + 1} of ${appResults.length}`;
+                        document.getElementById("btn-next").disabled = (currentIndex === appResults.length - 1);
+                    }
+                }
+
                 if (fullResults.length === 1) updateCarousel(true);
             }
         };
