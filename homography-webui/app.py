@@ -43,7 +43,6 @@ def safe_float(value, default=0.0):
     except (TypeError, ValueError): return default
 
 def handle_model_upload(request_obj):
-    """Saves the uploaded model to disk and loads it globally."""
     global global_model
     if 'model' in request_obj.files and request_obj.files['model'].filename != '':
         model_file = request_obj.files['model']
@@ -56,6 +55,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
     trail_coordinates = []
     
     initial_ui_state = []
+    has_video = any(a['ext'] in ALLOWED_VIDEO_EXT for a in image_data)
 
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
@@ -77,7 +77,6 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
             initial_ui_state.append(image_data[i])
             
         elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
-            # Pass gps_snap flag so it filters identically to the processing loop
             video_frames = get_video_frame_metadata(image_data[i]['path'], frame_skip, image_data[i]['original_name'], gps_snap)
             for vf in video_frames:
                 initial_ui_state.append(vf)
@@ -90,7 +89,6 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
     task_id = str(uuid.uuid4())
     active_tasks[task_id] = queue.Queue()
 
-    # Exact expected total frames is safely exactly the length of initial_ui_state array
     total_est_frames = len(initial_ui_state)
 
     def process_worker(assets, t_id, height, snap, _is_360, f_skip):
@@ -106,7 +104,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         pitch_interp, asset['filename'], asset['original_name'], snap, f_skip, model_lock, _is_360, asset['location'], on_frame_processed
                     )
                 else:
-                    defects, geo_feats, base_filename = process_single_image(
+                    defects, geo_feats, base_filename, footprints = process_single_image(
                         asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
                         asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], model_lock, _is_360, asset['original_name']
                     )
@@ -129,7 +127,8 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                             "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
                             "rect_url": f"/static/uploads/rect_{view}_{base_filename}",
                             "bev_url": f"/static/uploads/bev_{view}_{base_filename}",
-                            "defects": defects[view]
+                            "defects": defects[view],
+                            "footprint": footprints[view]
                         }
                     
                     active_tasks[t_id].put({"type": "update", "data": result_payload})
@@ -152,6 +151,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         "success": True,
         "task_id": task_id,
         "total_images": total_est_frames,
+        "has_video": has_video,
         "initial_state": initial_ui_state,
         "initial_trail": {"type": "FeatureCollection", "features": initial_geojson},
         "last_lat": last_lat,

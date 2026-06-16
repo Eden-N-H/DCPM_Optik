@@ -147,6 +147,7 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     all_defects = {}
     all_geojson_features = []
+    bev_footprints = {}
     
     views_to_process = {
         'front': {'yaw': 0, 'heading_offset': 0}
@@ -179,6 +180,18 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
         view_heading = (heading + config['heading_offset']) % 360
 
+        # Extract BEV geometric footprint data for mapping photogrammetry
+        z_near = z_far - (bev_h * gsd)
+        bev_center_z = (z_near + z_far) / 2.0
+        bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, bev_center_z)
+        bev_footprints[view_name] = {
+            "lat": bev_center_lat,
+            "lon": bev_center_lon,
+            "heading": view_heading,
+            "width_m": 2 * x_range,
+            "height_m": z_far - z_near
+        }
+
         for r in results:
             annotated_rect = r.plot()
             if r.masks is not None:
@@ -203,7 +216,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         if area_sqm <= 0.0001: 
                             continue
                             
-                        # Confidence-based Alpha Blending per mask
                         mask_overlay = bev_img.copy()
                         cv2.fillPoly(mask_overlay, [contour], color=mask_color_bgr)
                         cv2.addWeighted(mask_overlay, conf, bev_img, 1.0 - conf, 0, bev_img)
@@ -245,11 +257,10 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         cv2.imwrite(os.path.join(output_dir, annotated_rect_filename), annotated_rect)
         cv2.imwrite(os.path.join(output_dir, bev_filename), bev_img)
         
-    return all_defects, all_geojson_features, base_filename
+    return all_defects, all_geojson_features, base_filename, bev_footprints
 
 
 def get_video_frame_metadata(video_path, frame_skip, original_name, gps_snap):
-    """Fast pass to get projected lat/lon strictly for frames that will be processed"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return []
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -273,14 +284,13 @@ def get_video_frame_metadata(video_path, frame_skip, original_name, gps_snap):
 
     frames_meta = []
     base_lat, base_lon = 37.7749, -122.4194
-    last_processed_frame = -frame_skip  # Start tracker offset to allow processing frame 0
+    last_processed_frame = -frame_skip
     
     for frame_idx in range(total_frames):
-        # We only consider frames when we've bypassed our skip gap
         if frame_idx - last_processed_frame >= frame_skip:
             if gps_snap and gps_frame_set is not None:
                 if frame_idx not in gps_frame_set: 
-                    continue # Keep checking linearly until we hit a valid snap
+                    continue
             
             last_processed_frame = frame_idx
             elapsed = frame_idx / fps
@@ -338,7 +348,7 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
         if frame_idx - last_processed_frame >= frame_skip:
             if gps_snap and gps_frame_set is not None:
                 if frame_idx not in gps_frame_set:
-                    continue # Bypass & await nearest snap
+                    continue 
 
             last_processed_frame = frame_idx
             
@@ -366,7 +376,7 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
             frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
             original_frame_name = f"{original_name} (Frame {frame_idx})"
 
-            defects, geo_feats, _ = process_single_image(
+            defects, geo_feats, _, footprints = process_single_image(
                 frame, model, frame_base_name, upload_dir,
                 current_lat, current_lon, current_heading, cam_height, current_pitch, model_lock, is_360, original_frame_name
             )
@@ -389,7 +399,8 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
                     "raw_bev_filename": f"raw_bev_{view}_{frame_base_name}",
                     "rect_url": f"/static/uploads/rect_{view}_{frame_base_name}",
                     "bev_url": f"/static/uploads/bev_{view}_{frame_base_name}",
-                    "defects": defects[view]
+                    "defects": defects[view],
+                    "footprint": footprints[view]
                 }
 
             callback(result_payload)

@@ -243,4 +243,3 @@ def get_telemetry_interpolators(streams: dict):
 
         interpolators[stream_name] = interp_func
     return interpolators
-  
