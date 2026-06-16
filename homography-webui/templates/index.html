@@ -64,6 +64,11 @@
                         <input type="number" id="cam-height" value="1.6" step="0.1" class="w-16 text-sm p-1 border rounded" title="Camera Height (m)">
                         <span class="text-xs text-gray-600">Cam Height (m)</span>
                     </div>
+
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="frame-skip" value="30" min="1" step="1" class="w-16 text-sm p-1 border rounded" title="Process every Nth video frame">
+                        <span class="text-xs text-gray-600">Video Frame Skip</span>
+                    </div>
                     
                     <div class="flex items-center gap-2">
                         <input type="checkbox" id="chk-is-360" class="w-4 h-4 accent-blue-600" checked>

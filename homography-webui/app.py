@@ -5,7 +5,7 @@ import uuid
 import threading
 import queue
 import zipfile
-import cv2  # Fix applied here
+import cv2  
 from io import BytesIO
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, Response, send_file
@@ -14,7 +14,8 @@ from ultralytics import YOLO
 
 from core_math import (
     process_single_image, get_exif_gps, calculate_bearing, extract_gpmf_pitch, 
-    haversine_distance, extract_video_gpmf_pitch_track, process_video_frames_async
+    haversine_distance, extract_video_gpmf_pitch_track, process_video_frames_async,
+    get_video_frame_metadata
 )
 
 app = Flask(__name__)
@@ -50,14 +51,12 @@ def handle_model_upload(request_obj):
         model_file.save(model_path)
         global_model = YOLO(model_path)
 
-def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id):
-    """
-    Unified engine starter. Calculates groupings, estimates frames, and spins up the background thread.
-    """
+def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
+    
+    initial_ui_state = []
 
-    # Assign Heading & Locations
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
             if i < len(image_data) - 1 and image_data[i+1]['lat'] != 0.0:
@@ -75,22 +74,26 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         loc_id += 1
                 last_lat, last_lon = lat, lon
                 
+            initial_ui_state.append(image_data[i])
+            
+        elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
+            # Pass gps_snap flag so it filters identically to the processing loop
+            video_frames = get_video_frame_metadata(image_data[i]['path'], frame_skip, image_data[i]['original_name'], gps_snap)
+            for vf in video_frames:
+                initial_ui_state.append(vf)
+                if vf['lat'] != 0.0 and vf['lon'] != 0.0:
+                    trail_coordinates.append([vf['lon'], vf['lat']])
+                    last_lat, last_lon = vf['lat'], vf['lon']
+
         image_data[i]['location'] = f"Location {loc_id}"
 
     task_id = str(uuid.uuid4())
     active_tasks[task_id] = queue.Queue()
 
-    # Determine rough frame estimates for Videos to seed UI Progress bar
-    total_est_frames = 0
-    for meta in image_data:
-        if meta['ext'] in ALLOWED_VIDEO_EXT:
-            cap = cv2.VideoCapture(meta['path'])
-            total_est_frames += int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-        else:
-            total_est_frames += 1
+    # Exact expected total frames is safely exactly the length of initial_ui_state array
+    total_est_frames = len(initial_ui_state)
 
-    def process_worker(assets, t_id, height, snap, _is_360):
+    def process_worker(assets, t_id, height, snap, _is_360, f_skip):
         try:
             for asset in assets:
                 def on_frame_processed(payload):
@@ -100,12 +103,12 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                     pitch_interp = extract_video_gpmf_pitch_track(asset['path'])
                     process_video_frames_async(
                         asset['path'], global_model, app.config['UPLOAD_FOLDER'], height,
-                        pitch_interp, asset['filename'], snap, model_lock, _is_360, asset['location'], on_frame_processed
+                        pitch_interp, asset['filename'], snap, f_skip, model_lock, _is_360, asset['location'], on_frame_processed
                     )
                 else:
                     defects, geo_feats, base_filename = process_single_image(
                         asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                        asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], model_lock, _is_360
+                        asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], model_lock, _is_360, asset['original_name']
                     )
                     
                     result_payload = {
@@ -135,8 +138,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         except Exception as e:
             active_tasks[t_id].put({"type": "error", "message": str(e)})
 
-    # Spin up background thread
-    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360)).start()
+    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, frame_skip)).start()
 
     initial_geojson = []
     if len(trail_coordinates) > 1:
@@ -150,7 +152,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         "success": True,
         "task_id": task_id,
         "total_images": total_est_frames,
-        "initial_state": [img for img in image_data if img['ext'] in ALLOWED_IMAGE_EXT],
+        "initial_state": initial_ui_state,
         "initial_trail": {"type": "FeatureCollection", "features": initial_geojson},
         "last_lat": last_lat,
         "last_lon": last_lon,
@@ -176,6 +178,7 @@ def process():
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
+    frame_skip = int(request.form.get('frame_skip', 30))
     
     last_lat = safe_float(request.form.get('last_lat'), 0.0)
     last_lon = safe_float(request.form.get('last_lon'), 0.0)
@@ -203,7 +206,7 @@ def process():
             
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id)
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip)
 
 
 @app.route('/process_pipeline_folder', methods=['POST'])
@@ -215,12 +218,12 @@ def process_pipeline_folder():
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
+    frame_skip = int(request.form.get('frame_skip', 30))
 
     last_lat = safe_float(request.form.get('last_lat'), 0.0)
     last_lon = safe_float(request.form.get('last_lon'), 0.0)
     loc_id = int(request.form.get('last_loc_id', 1))
 
-    # Dynamically locate the Pipeline Folder Output
     found_files = []
     for root_dir in PIPELINE_OUTPUT_ROOTS:
         frames_dir = root_dir / "frames"
@@ -232,7 +235,7 @@ def process_pipeline_folder():
                 break
 
     if not found_files:
-        return jsonify({"error": "No media files found in the 'Data_pipelinine/output/frames' directory."}), 404
+        return jsonify({"error": "No media files found in the 'Data_pipeline/output/frames' directory."}), 404
 
     image_data = []
     for filepath_obj in found_files:
@@ -255,7 +258,7 @@ def process_pipeline_folder():
             
         image_data.append(file_meta)
         
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id)
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip)
 
 
 @app.route('/stream/<task_id>')

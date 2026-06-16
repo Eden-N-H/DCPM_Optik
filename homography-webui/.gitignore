@@ -219,5 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# File Uploads
+# Misc
 static/uploads
+prompt
