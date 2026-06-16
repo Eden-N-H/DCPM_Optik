@@ -1,519 +1,606 @@
 document.addEventListener("DOMContentLoaded", () => {
     let modelFile = null;
-    let isModelLoaded = false;
     let imageFiles = [];
-    
+    let manifestFile = null;
+
     let map = null;
     let geoJsonLayer = null;
-    let pathLayer = null;
-    let mapMarkers = {}; // { "filename.jpg": leaflet_marker }
-    
-    // Global Persistent State
-    let fullResults = [];
-    let fullGeojson = { type: "FeatureCollection", features: [] };
-    
-    // UI State
-    let appResults = []; 
-    let currentIndex = 0;
-    let currentDirection = 'front'; 
+    let mapMarkers = {};
 
-    // Incremental GPS Clustering Tracking
-    let stateLastLat = 0.0;
-    let stateLastLon = 0.0;
-    let stateLastLocId = 1;
+    let fullResults = [];
+    let fullGeojson = null;
+    let appResults = [];
+    let currentIndex = 0;
+    let currentDirection = "front";
 
     const btnProcess = document.getElementById("process-btn");
     const selLocation = document.getElementById("sel-location");
-    const uploadPanel = document.getElementById("upload-panel");
 
-    // ==========================================
-    // Helper: Fallback Color Generator
-    // ==========================================
-    function stringToColor(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            hash = str.charCodeAt(i) + ((hash << 5) - hash);
-        }
-        let color = '#';
-        for (let i = 0; i < 3; i++) {
-            let value = (hash >> (i * 8)) & 0xFF;
-            color += ('00' + value.toString(16)).substr(-2);
-        }
-        return color;
-    }
+    // -----------------------------------------------------------------
+    // Map setup
+    // -----------------------------------------------------------------
 
-    // ==========================================
-    // Initialization & Map Logic
-    // ==========================================
     function initMap() {
         if (!map) {
-            map = L.map('map').setView([-32.06, 151.90], 15);
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                maxZoom: 24, maxNativeZoom: 17 
-            }).addTo(map);
+            map = L.map("map").setView([-32.06, 151.90], 15);
 
-            geoJsonLayer = L.geoJSON(null, {
-                style: (feature) => {
-                    if (feature.geometry && feature.geometry.type === 'LineString') {
-                        return { color: "#00e5ff", weight: 3, dashArray: "5, 10" }; 
-                    }
-                    
-                    // Reads the backend python color, or uses fallback if loading old project JSON
-                    const fColor = feature.properties.color || stringToColor(feature.properties.class || "Unknown");
-                    
-                    return { 
-                        color: "#ffffff",     // Solid White Border/Stroke
-                        weight: 2,            // Border thickness
-                        opacity: 1,           // Border 100% opacity
-                        fillColor: fColor,    // Exact YOLO overlay color
-                        fillOpacity: 0.9      // 90% opacity
-                    };
-                },
-                pointToLayer: (feature, latlng) => {
-                    const marker = L.circleMarker(latlng, {
-                        radius: 7, 
-                        fillColor: "#2563eb", // Vivid Blue
-                        color: "#ffffff",     // White border
-                        weight: 2, 
-                        opacity: 1,           
-                        fillOpacity: 1        
-                    });
-                    
-                    if (feature.properties && feature.properties.filename) {
-                        mapMarkers[feature.properties.filename] = marker;
-                        marker.on('click', () => {
-                            const target = fullResults.find(r => r.original_name === feature.properties.filename);
-                            if (target) {
-                                if (selLocation.value !== target.location) {
-                                    selLocation.value = target.location;
-                                    appResults = fullResults.filter(r => r.location === target.location);
-                                }
-                                currentIndex = appResults.findIndex(r => r.original_name === target.original_name);
-                                updateCarousel(false);
-                            }
-                        });
-                    }
-                    return marker;
-                },
-                onEachFeature: (feature, layer) => {
-                    if (feature.geometry && feature.geometry.type === 'Polygon') {
-                        layer.bindPopup(`<b>${feature.properties.class}</b><br>View: ${feature.properties.view}<br>Area: ${feature.properties.area_sqm} m²`);
-                    } else if (feature.geometry && feature.geometry.type === 'Point') {
-                        layer.bindPopup(`<b>Photo Location</b><br>${feature.properties.filename || 'Unknown'}`);
-                    }
-                }
-            }).addTo(map);
-
-            pathLayer = L.geoJSON(null, {
-                style: { color: "#00e5ff", weight: 3, dashArray: "5, 10" }
+            L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+                maxZoom: 24,
+                maxNativeZoom: 17,
+                attribution: "Tiles &copy; Esri"
             }).addTo(map);
         }
     }
 
-    // ==========================================
-    // File Upload Setup
-    // ==========================================
-    document.getElementById("btn-toggle-upload").onclick = () => {
-        uploadPanel.classList.toggle("hidden");
-    };
+    // -----------------------------------------------------------------
+    // Upload dropzone setup
+    // -----------------------------------------------------------------
 
-    const setupDz = (dzId, inId, nameId, isMulti, callback) => {
+    function setupDz(dzId, inputId, nameId, isMulti, callback) {
         const dz = document.getElementById(dzId);
-        const inp = document.getElementById(inId);
-        const nm = document.getElementById(nameId);
+        const input = document.getElementById(inputId);
+        const nameLabel = document.getElementById(nameId);
 
-        dz.onclick = () => inp.click();
-        dz.ondragover = (e) => { e.preventDefault(); dz.classList.add("border-blue-500"); };
-        dz.ondragleave = () => dz.classList.remove("border-blue-500");
-        dz.ondrop = (e) => {
-            e.preventDefault(); dz.classList.remove("border-blue-500");
-            handleFiles(e.dataTransfer.files, isMulti, callback, nm);
-        };
-        inp.onchange = (e) => handleFiles(e.target.files, isMulti, callback, nm);
-    };
-
-    const handleFiles = (files, isMulti, callback, nameElement) => {
-        if (!files.length) return;
-        if (isMulti) {
-            callback(Array.from(files));
-            nameElement.textContent = `${files.length} images queued`;
-        } else {
-            callback(files[0]);
-            nameElement.textContent = files[0].name;
-            document.getElementById("status-model").classList.remove("hidden");
-            isModelLoaded = true;
+        if (!dz || !input || !nameLabel) {
+            console.warn(`Missing upload element: ${dzId}`);
+            return;
         }
-        nameElement.classList.remove("hidden");
-        if ((isModelLoaded || modelFile) && imageFiles.length > 0) btnProcess.disabled = false;
-    };
 
-    setupDz("dz-model", "in-model", "name-model", false, f => modelFile = f);
-    setupDz("dz-image", "in-image", "name-image", true, f => imageFiles = f);
+        dz.addEventListener("click", () => {
+            input.click();
+        });
 
-    // ==========================================
-    // Asynchronous Pipeline Logic & SSE
-    // ==========================================
+        input.addEventListener("change", () => {
+            handleFiles(input.files, isMulti, nameLabel, callback);
+        });
+
+        dz.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            dz.classList.add("active");
+        });
+
+        dz.addEventListener("dragleave", () => {
+            dz.classList.remove("active");
+        });
+
+        dz.addEventListener("drop", (event) => {
+            event.preventDefault();
+            dz.classList.remove("active");
+
+            handleFiles(event.dataTransfer.files, isMulti, nameLabel, callback);
+        });
+    }
+
+    function handleFiles(files, isMulti, nameLabel, callback) {
+        if (!files || files.length === 0) {
+            return;
+        }
+
+        let selected;
+
+        if (isMulti) {
+            selected = Array.from(files);
+            nameLabel.textContent = `${selected.length} file(s) selected`;
+        } else {
+            selected = files[0];
+            nameLabel.textContent = selected.name;
+        }
+
+        nameLabel.classList.remove("hidden");
+
+        callback(selected);
+        updateProcessButton();
+    }
+
+    function updateProcessButton() {
+        const hasModel = modelFile !== null;
+        const hasImages = imageFiles.length > 0;
+        const hasManifest = manifestFile !== null;
+
+        btnProcess.disabled = !(hasModel && (hasImages || hasManifest));
+    }
+
+    function clearManifestSelection() {
+        manifestFile = null;
+
+        const manifestInput = document.getElementById("in-manifest");
+        const manifestLabel = document.getElementById("name-manifest");
+
+        if (manifestInput) {
+            manifestInput.value = "";
+        }
+
+        if (manifestLabel) {
+            manifestLabel.textContent = "";
+            manifestLabel.classList.add("hidden");
+        }
+    }
+
+    function clearManualSelection() {
+        imageFiles = [];
+
+        const imageInput = document.getElementById("in-image");
+        const imageLabel = document.getElementById("name-image");
+
+        if (imageInput) {
+            imageInput.value = "";
+        }
+
+        if (imageLabel) {
+            imageLabel.textContent = "";
+            imageLabel.classList.add("hidden");
+        }
+    }
+
+    setupDz("dz-model", "in-model", "name-model", false, (file) => {
+        modelFile = file;
+        updateProcessButton();
+    });
+
+    setupDz("dz-image", "in-image", "name-image", true, (files) => {
+        // Manual 360 image upload mode selected
+        imageFiles = files;
+
+        // Clear manifest mode so old pipeline data is not used accidentally
+        clearManifestSelection();
+
+        console.log("Manual 360 image mode selected. Manifest cleared.");
+        updateProcessButton();
+    });
+
+    setupDz("dz-manifest", "in-manifest", "name-manifest", false, (file) => {
+        // Manifest pipeline mode selected
+        manifestFile = file;
+
+        // Clear manual image uploads so the mode is not ambiguous
+        clearManualSelection();
+
+        console.log("Manifest mode selected. Manual images cleared.");
+        updateProcessButton();
+    });
+
+    // -----------------------------------------------------------------
+    // Submit processing request
+    // -----------------------------------------------------------------
+
     btnProcess.onclick = async () => {
-        const fd = new FormData();
-        if (modelFile) fd.append("model", modelFile);
-        imageFiles.forEach(f => fd.append("images", f));
-        fd.append("cam_height", document.getElementById("cam-height").value);
-        
-        fd.append("last_lat", stateLastLat);
-        fd.append("last_lon", stateLastLon);
-        fd.append("last_loc_id", stateLastLocId);
+        if (!modelFile) {
+            alert("Please upload a YOLO model first.");
+            return;
+        }
 
-        uploadPanel.classList.add("hidden");
-        document.getElementById("workspace").classList.remove("hidden");
-        document.getElementById("btn-save-project").classList.remove("hidden");
-        document.getElementById("btn-export-zip").classList.remove("hidden");
-        document.getElementById("progress-container").classList.remove("hidden");
-        
+        if (!manifestFile && imageFiles.length === 0) {
+            alert("Please upload 360 images or a homography manifest CSV.");
+            return;
+        }
+
+        const formData = new FormData();
+
+        formData.append("model", modelFile);
+        formData.append("cam_height", document.getElementById("cam-height").value || "1.6");
+
+        let endpoint = "";
+
+        if (manifestFile && imageFiles.length === 0) {
+            endpoint = "/process_manifest";
+            formData.append("manifest", manifestFile);
+
+            console.log("Running manifest mode...");
+        } else if (!manifestFile && imageFiles.length > 0) {
+            endpoint = "/process";
+
+            imageFiles.forEach((file) => {
+                formData.append("images", file);
+            });
+
+            console.log("Running manual 360 image mode...");
+        } else {
+            alert("Please choose either manifest mode or manual upload mode, not both.");
+            updateProcessButton();
+            return;
+        }
+
+        document.getElementById("loading").classList.remove("hidden");
+        document.getElementById("upload-panel").classList.add("hidden");
+        document.getElementById("workspace").classList.add("hidden");
         btnProcess.disabled = true;
-        initMap();
 
         try {
-            const res = await fetch("/process", { method: "POST", body: fd });
-            const data = await res.json();
-            if (data.error) throw new Error(data.error);
+            const response = await fetch(endpoint, {
+                method: "POST",
+                body: formData
+            });
 
-            stateLastLat = data.last_lat;
-            stateLastLon = data.last_lon;
-            stateLastLocId = data.last_loc_id;
+            const data = await response.json();
 
-            setTimeout(() => {
-                map.invalidateSize();
+            if (!response.ok || data.error) {
+                throw new Error(data.error || "Unknown server error");
+            }
 
-                if (data.initial_trail && data.initial_trail.features) {
-                    pathLayer.addData(data.initial_trail);
-                    if(pathLayer.getBounds().isValid()) {
-                        map.fitBounds(pathLayer.getBounds(), { padding: [50, 50] });
-                    }
-                }
+            if (!data.results || data.results.length === 0) {
+                throw new Error("Processing finished, but no valid results were returned.");
+            }
 
-                data.initial_state.forEach(img => {
-                    if(img.lat !== 0.0) {
-                        const marker = L.circleMarker([img.lat, img.lon], {
-                            radius: 7, 
-                            fillColor: "#ff0000", // Red
-                            color: "#ffffff",     // White border
-                            weight: 2, 
-                            opacity: 1, 
-                            fillOpacity: 1
-                        }).addTo(map);
-                        marker.bindPopup(`<b>Pending Process</b><br>${img.original_name}`);
-                        mapMarkers[img.original_name] = marker;
-                    }
-                });
+            console.log("Server response:", data);
 
-                startSSE(data.task_id, data.total_images);
-            }, 200);
+            loadWorkspace(data.results, data.geojson);
 
-        } catch (e) {
-            alert(e.message);
-            uploadPanel.classList.remove("hidden");
-            document.getElementById("progress-container").classList.add("hidden");
-            btnProcess.disabled = false;
+            if (data.skipped_count && data.skipped_count > 0) {
+                console.warn("Skipped frames:", data.skipped_frames);
+                alert(`Processing completed with ${data.skipped_count} skipped frame(s). Check the browser console or Flask terminal for details.`);
+            }
+
+        } catch (error) {
+            console.error(error);
+            alert("Processing failed: " + error.message);
+            document.getElementById("upload-panel").classList.remove("hidden");
+        } finally {
+            document.getElementById("loading").classList.add("hidden");
+            updateProcessButton();
         }
     };
 
-    function startSSE(taskId, totalImages) {
-        const source = new EventSource(`/stream/${taskId}`);
-        let processedCount = 0;
-        let startTime = Date.now();
+    // -----------------------------------------------------------------
+    // Save / load project JSON
+    // -----------------------------------------------------------------
 
-        source.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            
-            if (msg.type === "error" || msg.type === "complete") {
-                source.close();
-                document.getElementById("progress-container").classList.add("hidden");
-                btnProcess.disabled = false;
-                
-                imageFiles = [];
-                document.getElementById("name-image").textContent = "Folder completed.";
-                
-                if (msg.type === "error") alert(`Background Task Error: ${msg.message}`);
-                return;
-            }
-
-            if (msg.type === "update") {
-                const r = msg.data;
-                fullResults.push(r);
-                
-                if (r.geojson && r.geojson.length > 0) {
-                    fullGeojson.features.push(...r.geojson);
-                    geoJsonLayer.addData(r.geojson);
-                }
-
-                if (mapMarkers[r.original_name]) {
-                    const marker = mapMarkers[r.original_name];
-                    marker.setStyle({ 
-                        radius: 7, 
-                        fillColor: "#2563eb", // Vivid Blue
-                        color: "#ffffff", 
-                        weight: 2, 
-                        opacity: 1, 
-                        fillOpacity: 1 
-                    });
-                    marker.setPopupContent(`<b>Photo Location</b><br>${r.original_name}`);
-                    
-                    marker.off('click'); 
-                    marker.on('click', () => {
-                        if (selLocation.value !== r.location) {
-                            selLocation.value = r.location;
-                            appResults = fullResults.filter(x => x.location === r.location);
-                        }
-                        currentIndex = appResults.findIndex(x => x.original_name === r.original_name);
-                        updateCarousel(false);
-                    });
-                }
-
-                processedCount++;
-                const pct = (processedCount / totalImages) * 100;
-                document.getElementById("progress-bar").style.width = `${pct}%`;
-                document.getElementById("progress-text").textContent = `Segmenting ${processedCount} of ${totalImages}`;
-
-                const elapsedSec = (Date.now() - startTime) / 1000;
-                const avgSpeed = elapsedSec / processedCount;
-                const remainSec = Math.ceil((totalImages - processedCount) * avgSpeed);
-                const mins = Math.floor(remainSec / 60);
-                const secs = remainSec % 60;
-                document.getElementById("eta-text").textContent = `ETA: ${mins}m ${secs}s`;
-
-                refreshLocationsUI();
-                
-                if (fullResults.length === 1) {
-                    updateCarousel(true);
-                }
-            }
-        };
-    }
-
-    // ==========================================
-    // UI Helpers & Project Load/Save
-    // ==========================================
-    function refreshLocationsUI() {
-        const locations = [...new Set(fullResults.map(r => r.location))];
-        const currentSelection = selLocation.value;
-        
-        selLocation.innerHTML = locations.map(loc => `<option value="${loc}">${loc}</option>`).join("");
-        
-        if (locations.includes(currentSelection)) {
-            selLocation.value = currentSelection;
-        } else if (locations.length > 0) {
-            selLocation.value = locations[0];
+    document.getElementById("btn-save-project").onclick = () => {
+        if (fullResults.length === 0) {
+            return;
         }
 
+        const projectData = {
+            results: fullResults,
+            geojson: fullGeojson
+        };
+
+        const blob = new Blob(
+            [JSON.stringify(projectData, null, 2)],
+            { type: "application/json" }
+        );
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+
+        a.href = url;
+        a.download = "dcpm_360_project.json";
+        a.click();
+
+        URL.revokeObjectURL(url);
+    };
+
+    document.getElementById("in-load-project").addEventListener("change", (event) => {
+        const file = event.target.files[0];
+
+        if (!file) {
+            return;
+        }
+
+        const reader = new FileReader();
+
+        reader.onload = (readerEvent) => {
+            try {
+                const data = JSON.parse(readerEvent.target.result);
+
+                if (!data.results || !data.geojson) {
+                    throw new Error("Invalid project JSON format.");
+                }
+
+                loadWorkspace(data.results, data.geojson);
+
+            } catch (error) {
+                alert("Error loading project: " + error.message);
+            }
+        };
+
+        reader.readAsText(file);
+    });
+
+    // -----------------------------------------------------------------
+    // Workspace management
+    // -----------------------------------------------------------------
+
+    function loadWorkspace(resultsData, geojsonData) {
+        fullResults = resultsData;
+        fullGeojson = geojsonData;
+
+        initMap();
+
+        document.getElementById("upload-panel").classList.add("hidden");
+        document.getElementById("workspace").classList.remove("hidden");
+        document.getElementById("btn-save-project").classList.remove("hidden");
+
+        setTimeout(() => {
+            map.invalidateSize();
+        }, 200);
+
+        renderMap(fullGeojson);
+        populateLocations();
+        setView("front");
+    }
+
+    function populateLocations() {
+        const locations = [...new Set(fullResults.map((result) => result.location || "Location 1"))];
+
+        selLocation.innerHTML = locations
+            .map((location) => `<option value="${escapeHtml(location)}">${escapeHtml(location)}</option>`)
+            .join("");
+
         selLocation.onchange = () => {
-            appResults = fullResults.filter(r => r.location === selLocation.value);
+            appResults = fullResults.filter((result) => {
+                return (result.location || "Location 1") === selLocation.value;
+            });
+
             currentIndex = 0;
             updateCarousel(true);
         };
 
-        appResults = fullResults.filter(r => r.location === selLocation.value);
-        if(appResults.length > 0 && document.getElementById("img-rect").classList.contains("hidden")){
-            updateCarousel(false);
+        if (locations.length > 0) {
+            selLocation.value = locations[0];
+            selLocation.dispatchEvent(new Event("change"));
         }
     }
 
-    document.getElementById("btn-save-project").onclick = () => {
-        if (fullResults.length === 0) return;
-        const projectData = { results: fullResults, geojson: fullGeojson };
-        const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "dcpm_project.json";
-        a.click();
-        URL.revokeObjectURL(url);
-    };
+    // -----------------------------------------------------------------
+    // Map rendering
+    // -----------------------------------------------------------------
 
-    document.getElementById("in-load-project").addEventListener("change", (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            try {
-                const data = JSON.parse(ev.target.result);
-                if (!data.results || !data.geojson) throw new Error("Invalid project format.");
-                
-                fullResults = data.results;
-                fullGeojson = data.geojson;
-                
-                if (fullResults.length > 0) {
-                    const lastRec = fullResults[fullResults.length - 1];
-                    stateLastLat = lastRec.lat;
-                    stateLastLon = lastRec.lon;
-                    stateLastLocId = parseInt(lastRec.location.replace("Location ", "")) || 1;
+    function renderMap(geoJsonData) {
+        if (!map) {
+            initMap();
+        }
+
+        if (geoJsonLayer) {
+            map.removeLayer(geoJsonLayer);
+        }
+
+        mapMarkers = {};
+
+        if (!geoJsonData || !geoJsonData.features || geoJsonData.features.length === 0) {
+            return;
+        }
+
+        geoJsonLayer = L.geoJSON(geoJsonData, {
+            style: function (feature) {
+                if (feature.geometry.type === "Polygon") {
+                    const fillColor = feature.properties.view === "rear" ? "#f59e0b" : "#ffaa00";
+
+                    return {
+                        color: "#ff0000",
+                        weight: 2,
+                        fillColor: fillColor,
+                        fillOpacity: 0.5
+                    };
                 }
 
-                uploadPanel.classList.add("hidden");
-                document.getElementById("workspace").classList.remove("hidden");
-                document.getElementById("btn-save-project").classList.remove("hidden");
-                document.getElementById("btn-export-zip").classList.remove("hidden");
-                
-                initMap();
+                if (feature.geometry.type === "LineString") {
+                    return {
+                        color: "#00b4d8",
+                        weight: 3,
+                        dashArray: "5, 10"
+                    };
+                }
 
-                setTimeout(() => {
-                    map.invalidateSize();
-                    geoJsonLayer.addData(fullGeojson);
-                    
-                    fullResults.forEach(img => {
-                        if (!mapMarkers[img.original_name] && img.lat !== 0.0) {
-                            const marker = L.circleMarker([img.lat, img.lon], {
-                                radius: 7, 
-                                fillColor: "#2563eb", // Blue
-                                color: "#ffffff", 
-                                weight: 2, 
-                                opacity: 1, 
-                                fillOpacity: 1
-                            }).addTo(map);
-                            marker.bindPopup(`<b>Photo Location</b><br>${img.original_name}`);
-                            mapMarkers[img.original_name] = marker;
-                            
-                            marker.on('click', () => {
-                                if (selLocation.value !== img.location) {
-                                    selLocation.value = img.location;
-                                    appResults = fullResults.filter(r => r.location === img.location);
-                                }
-                                currentIndex = appResults.findIndex(r => r.original_name === img.original_name);
-                                updateCarousel(false);
+                return {};
+            },
+
+            pointToLayer: function (feature, latlng) {
+                const marker = L.circleMarker(latlng, {
+                    radius: 5,
+                    fillColor: "#3b82f6",
+                    color: "#ffffff",
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.9
+                });
+
+                if (feature.properties && feature.properties.type === "camera") {
+                    mapMarkers[feature.properties.filename] = marker;
+
+                    marker.on("click", () => {
+                        const target = fullResults.find((result) => {
+                            return result.original_name === feature.properties.filename;
+                        });
+
+                        if (target) {
+                            if (selLocation.value !== target.location) {
+                                selLocation.value = target.location;
+
+                                appResults = fullResults.filter((result) => {
+                                    return result.location === target.location;
+                                });
+                            }
+
+                            currentIndex = appResults.findIndex((result) => {
+                                return result.original_name === target.original_name;
                             });
+
+                            if (currentIndex < 0) {
+                                currentIndex = 0;
+                            }
+
+                            updateCarousel(false);
                         }
                     });
-                    
-                    if (geoJsonLayer.getBounds().isValid()) {
-                        map.fitBounds(geoJsonLayer.getBounds(), { padding: [50, 50] });
-                    }
+                }
 
-                    refreshLocationsUI();
-                    setView('front');
-                }, 200);
+                return marker;
+            },
 
-            } catch (err) {
-                alert("Error loading project: " + err.message);
+            onEachFeature: function (feature, layer) {
+                if (feature.geometry.type === "Polygon") {
+                    layer.bindPopup(`
+                        <b>${escapeHtml(feature.properties.class || "Defect")}</b><br>
+                        View: ${escapeHtml(feature.properties.view || "N/A")}<br>
+                        Area: ${escapeHtml(String(feature.properties.area_sqm || "N/A"))} m²
+                    `);
+                } else if (feature.geometry.type === "Point") {
+                    layer.bindPopup(`
+                        <b>Photo Location</b><br>
+                        ${escapeHtml(feature.properties.filename || "Unknown")}
+                    `);
+                }
             }
-        };
-        reader.readAsText(file);
-    });
-
-    // ==========================================
-    // Bulk Export ZIP Logic
-    // ==========================================
-    document.getElementById("btn-export-zip").onclick = async () => {
-        if (fullResults.length === 0) return;
-        
-        const btn = document.getElementById("btn-export-zip");
-        const originalText = btn.textContent;
-        btn.textContent = "⏳ Compiling ZIP...";
-        btn.disabled = true;
+        }).addTo(map);
 
         try {
-            const res = await fetch("/export-zip", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ results: fullResults })
-            });
-            
-            if (!res.ok) throw new Error("Failed to compile ZIP file");
-            
-            const blob = await res.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = "DCPM_Export.zip";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-            
-        } catch (err) {
-            alert(err.message);
-        } finally {
-            btn.textContent = originalText;
-            btn.disabled = false;
-        }
-    };
+            const bounds = geoJsonLayer.getBounds();
 
-    // ==========================================
-    // Carousel Interaction
-    // ==========================================
-    function setView(dir) {
-        currentDirection = dir;
-        const contF = document.getElementById('container-bev-front');
-        const contR = document.getElementById('container-bev-rear');
-        const activeLabel = document.getElementById('label-active-view');
-        
-        if (dir === 'front') {
-            contF.classList.add('border-blue-500', 'ring-2');
-            contF.classList.remove('border-transparent');
-            contR.classList.remove('border-blue-500', 'ring-2');
-            contR.classList.add('border-transparent');
-            activeLabel.textContent = 'Front View Active';
-        } else {
-            contR.classList.add('border-blue-500', 'ring-2');
-            contR.classList.remove('border-transparent');
-            contF.classList.remove('border-blue-500', 'ring-2');
-            contF.classList.add('border-transparent');
-            activeLabel.textContent = 'Rear View Active';
+            if (bounds.isValid()) {
+                map.fitBounds(bounds, {
+                    padding: [50, 50]
+                });
+            }
+        } catch (error) {
+            console.warn("Could not fit map bounds:", error);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Front / rear view toggle
+    // -----------------------------------------------------------------
+
+    function setView(direction) {
+        currentDirection = direction;
+
+        const frontContainer = document.getElementById("container-bev-front");
+        const rearContainer = document.getElementById("container-bev-rear");
+        const activeLabel = document.getElementById("label-active-view");
+
+        if (direction === "front") {
+            frontContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
+            frontContainer.classList.remove("border-transparent");
+
+            rearContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
+            rearContainer.classList.add("border-transparent");
+
+            activeLabel.textContent = "Front View Active";
+        } else {
+            rearContainer.classList.add("border-blue-500", "ring-2", "ring-blue-100");
+            rearContainer.classList.remove("border-transparent");
+
+            frontContainer.classList.remove("border-blue-500", "ring-2", "ring-blue-100");
+            frontContainer.classList.add("border-transparent");
+
+            activeLabel.textContent = "Rear View Active";
+        }
+
         updateCarousel(false);
     }
 
-    document.getElementById('container-bev-front').onclick = () => setView('front');
-    document.getElementById('container-bev-rear').onclick = () => setView('rear');
+    document.getElementById("container-bev-front").onclick = () => {
+        setView("front");
+    };
+
+    document.getElementById("container-bev-rear").onclick = () => {
+        setView("rear");
+    };
+
+    // -----------------------------------------------------------------
+    // Carousel update
+    // -----------------------------------------------------------------
 
     function updateCarousel(panMap = true) {
-        if (appResults.length === 0) return;
+        if (!appResults || appResults.length === 0) {
+            return;
+        }
+
         const current = appResults[currentIndex];
-        
-        document.getElementById("placeholder-rect").classList.add("hidden");
-        const imgRect = document.getElementById("img-rect");
-        const imgBevF = document.getElementById("img-bev-front");
-        const imgBevR = document.getElementById("img-bev-rear");
-        
-        imgRect.classList.remove("hidden");
-        imgBevF.classList.remove("hidden");
-        imgBevR.classList.remove("hidden");
+
+        if (!current || !current.views) {
+            return;
+        }
 
         const activeViewData = current.views[currentDirection];
 
         document.getElementById("carousel-counter").textContent = `Image ${currentIndex + 1} of ${appResults.length}`;
-        document.getElementById("carousel-filename").textContent = current.original_name;
-        document.getElementById("carousel-telemetry").textContent = `Pitch: ${current.pitch}°`;
+        document.getElementById("carousel-filename").textContent = current.original_name || "Unknown image";
+        document.getElementById("carousel-telemetry").textContent =
+            `Pitch: ${current.pitch}° | Lat: ${current.lat} | Lon: ${current.lon}`;
 
-        imgBevF.src = current.views['front'].bev_url;
-        imgBevR.src = current.views['rear'].bev_url;
-        imgRect.src = activeViewData.rect_url;
+        document.getElementById("img-bev-front").src = current.views.front.bev_url || "";
+        document.getElementById("img-bev-rear").src = current.views.rear.bev_url || "";
 
-        const tbody = document.getElementById("table-defects");
-        tbody.innerHTML = activeViewData.defects.map(d => {
-            // Check for the backend color, fallback to JS color if loading an old project.
-            const classColor = d.color || stringToColor(d.class);
-            return `
-            <tr>
-                <td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${classColor}; border: 1px solid #ccc;"></span>${d.class}</td>
-                <td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td>
-                <td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td>
-            </tr>
-            `;
-        }).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No defects found</td></tr>`;
+        document.getElementById("img-rect").src = activeViewData.rect_url || "";
+
+        renderDefectsTable(activeViewData.defects || []);
 
         const activeMarker = mapMarkers[current.original_name];
+
         if (activeMarker) {
-            if (panMap) map.setView(activeMarker.getLatLng(), 20, { animate: true });
+            if (panMap) {
+                map.setView(activeMarker.getLatLng(), 20, {
+                    animate: true
+                });
+            }
+
             activeMarker.openPopup();
         }
 
-        document.getElementById("btn-prev").disabled = (currentIndex === 0);
-        document.getElementById("btn-next").disabled = (currentIndex === appResults.length - 1);
+        document.getElementById("btn-prev").disabled = currentIndex === 0;
+        document.getElementById("btn-next").disabled = currentIndex === appResults.length - 1;
     }
 
+    function renderDefectsTable(defects) {
+        const tbody = document.getElementById("table-defects");
+        tbody.innerHTML = "";
+
+        if (!defects || defects.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="3" class="p-2 text-center text-gray-500">
+                        No defects in this view
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        defects.forEach((defect) => {
+            const className = defect.class || defect.class_name || "Defect";
+            const confidence = defect.conf !== undefined ? `${(defect.conf * 100).toFixed(0)}%` : "N/A";
+            const area = defect.area_sqm !== undefined ? `${defect.area_sqm} m²` : "N/A";
+
+            const row = document.createElement("tr");
+
+            row.innerHTML = `
+                <td class="p-2">${escapeHtml(className)}</td>
+                <td class="p-2 text-gray-500">${confidence}</td>
+                <td class="p-2 font-bold text-red-600">${area}</td>
+            `;
+
+            tbody.appendChild(row);
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // Carousel navigation
+    // -----------------------------------------------------------------
+
     document.getElementById("btn-prev").onclick = () => {
-        if (currentIndex > 0) { currentIndex--; updateCarousel(true); }
+        if (currentIndex > 0) {
+            currentIndex--;
+            updateCarousel(true);
+        }
     };
+
     document.getElementById("btn-next").onclick = () => {
-        if (currentIndex < appResults.length - 1) { currentIndex++; updateCarousel(true); }
+        if (currentIndex < appResults.length - 1) {
+            currentIndex++;
+            updateCarousel(true);
+        }
     };
+
+    // -----------------------------------------------------------------
+    // Utility
+    // -----------------------------------------------------------------
+
+    function escapeHtml(value) {
+        return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
 });
