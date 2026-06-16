@@ -1,0 +1,9 @@
+.dropzone {
+    border-style: dashed;
+    transition: all 0.3s ease;
+}
+
+.dropzone:hover {
+    background-color: #f0f9ff; /* Tailwind blue-50 */
+    border-color: #3b82f6;     /* Tailwind blue-500 */
+}
