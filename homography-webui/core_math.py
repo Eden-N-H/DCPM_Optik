@@ -248,7 +248,7 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
     return all_defects, all_geojson_features, base_filename
 
 
-def get_video_frame_metadata(video_path, frame_skip, base_filename, gps_snap):
+def get_video_frame_metadata(video_path, frame_skip, original_name, gps_snap):
     """Fast pass to get projected lat/lon strictly for frames that will be processed"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return []
@@ -273,40 +273,44 @@ def get_video_frame_metadata(video_path, frame_skip, base_filename, gps_snap):
 
     frames_meta = []
     base_lat, base_lon = 37.7749, -122.4194
+    last_processed_frame = -frame_skip  # Start tracker offset to allow processing frame 0
+    
     for frame_idx in range(total_frames):
-        # Apply the exact same logic filters as the processing loop
-        if frame_idx % frame_skip != 0: 
-            continue
-        if gps_snap and gps_frame_set is not None:
-            if frame_idx not in gps_frame_set: 
-                continue
-                
-        elapsed = frame_idx / fps
-        if gps_interp is not None:
-            try:
-                sample = gps_interp(elapsed)
-                lat, lon = float(sample[0]), float(sample[1])
-            except:
+        # We only consider frames when we've bypassed our skip gap
+        if frame_idx - last_processed_frame >= frame_skip:
+            if gps_snap and gps_frame_set is not None:
+                if frame_idx not in gps_frame_set: 
+                    continue # Keep checking linearly until we hit a valid snap
+            
+            last_processed_frame = frame_idx
+            elapsed = frame_idx / fps
+            
+            if gps_interp is not None:
+                try:
+                    sample = gps_interp(elapsed)
+                    lat, lon = float(sample[0]), float(sample[1])
+                except:
+                    lat, lon = base_lat, base_lon
+            else:
                 lat, lon = base_lat, base_lon
-        else:
-            lat, lon = base_lat, base_lon
-        
-        frames_meta.append({
-            "original_name": f"{base_filename} (Frame {frame_idx})",
-            "lat": lat,
-            "lon": lon
-        })
+            
+            frames_meta.append({
+                "original_name": f"{original_name} (Frame {frame_idx})",
+                "lat": lat,
+                "lon": lon
+            })
+            
     return frames_meta
 
 
-def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_interp, base_filename, gps_snap, frame_skip, model_lock, is_360, location_str, callback):
+def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_interp, file_name, original_name, gps_snap, frame_skip, model_lock, is_360, location_str, callback):
     cap = cv2.VideoCapture(video_path)
-    base_stem = os.path.splitext(base_filename)[0]
+    base_stem = os.path.splitext(file_name)[0]
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    frame_idx = 0
+    frame_idx = -1
+    last_processed_frame = -frame_skip
     base_lat, base_lon = 37.7749, -122.4194
     current_heading = 0.0
     gps_frame_set = None
@@ -322,75 +326,72 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
                 interpolators = get_telemetry_interpolators(streams)
                 gps_interp = interpolators.get("GPS5")
         except Exception as e:
-            print(f"GPS snap failed: {e}")
+            pass
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+            
+        frame_idx += 1
 
-        # Respect the frame skip configuration
-        if frame_idx % frame_skip != 0:
-            frame_idx += 1
-            continue
+        if frame_idx - last_processed_frame >= frame_skip:
+            if gps_snap and gps_frame_set is not None:
+                if frame_idx not in gps_frame_set:
+                    continue # Bypass & await nearest snap
 
-        if gps_snap and gps_frame_set is not None:
-            if frame_idx not in gps_frame_set:
-                frame_idx += 1
-                continue
+            last_processed_frame = frame_idx
+            
+            elapsed_time_sec = frame_idx / fps
+            current_pitch = float(pitch_interp(elapsed_time_sec))
 
-        elapsed_time_sec = frame_idx / fps
-        current_pitch = float(pitch_interp(elapsed_time_sec))
-
-        if gps_interp is not None:
-            try:
-                gps_sample = gps_interp(elapsed_time_sec)
-                current_lat = float(gps_sample[0])
-                current_lon = float(gps_sample[1])
-                
-                # Look 0.5s ahead to dynamically calculate heading trajectory for BEV Math
-                next_sample = gps_interp(elapsed_time_sec + 0.5)
-                next_lat = float(next_sample[0])
-                next_lon = float(next_sample[1])
-                current_heading = calculate_bearing(current_lat, current_lon, next_lat, next_lon)
-            except Exception:
+            if gps_interp is not None:
+                try:
+                    gps_sample = gps_interp(elapsed_time_sec)
+                    current_lat = float(gps_sample[0])
+                    current_lon = float(gps_sample[1])
+                    
+                    next_sample = gps_interp(elapsed_time_sec + 0.5)
+                    next_lat = float(next_sample[0])
+                    next_lon = float(next_sample[1])
+                    current_heading = calculate_bearing(current_lat, current_lon, next_lat, next_lon)
+                except Exception:
+                    current_lat = base_lat + (frame_idx * 0.00001)
+                    current_lon = base_lon + (frame_idx * 0.00001)
+                    current_heading = 0.0
+            else:
                 current_lat = base_lat + (frame_idx * 0.00001)
                 current_lon = base_lon + (frame_idx * 0.00001)
-                current_heading = 0.0
-        else:
-            current_lat = base_lat + (frame_idx * 0.00001)
-            current_lon = base_lon + (frame_idx * 0.00001)
 
-        frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
-        original_frame_name = f"{base_filename} (Frame {frame_idx})"
+            frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
+            original_frame_name = f"{original_name} (Frame {frame_idx})"
 
-        defects, geo_feats, _ = process_single_image(
-            frame, model, frame_base_name, upload_dir,
-            current_lat, current_lon, current_heading, cam_height, current_pitch, model_lock, is_360, original_frame_name
-        )
-        
-        result_payload = {
-            "original_name": original_frame_name,
-            "filename": frame_base_name,
-            "lat": round(current_lat, 6),
-            "lon": round(current_lon, 6),
-            "pitch": round(current_pitch, 2),
-            "location": location_str,
-            "geojson": geo_feats,
-            "views": {}
-        }
-
-        views_list = ['front', 'rear'] if is_360 else ['front']
-        for view in views_list:
-            result_payload["views"][view] = {
-                "raw_filename": f"raw_rect_{view}_{frame_base_name}",
-                "raw_bev_filename": f"raw_bev_{view}_{frame_base_name}",
-                "rect_url": f"/static/uploads/rect_{view}_{frame_base_name}",
-                "bev_url": f"/static/uploads/bev_{view}_{frame_base_name}",
-                "defects": defects[view]
+            defects, geo_feats, _ = process_single_image(
+                frame, model, frame_base_name, upload_dir,
+                current_lat, current_lon, current_heading, cam_height, current_pitch, model_lock, is_360, original_frame_name
+            )
+            
+            result_payload = {
+                "original_name": original_frame_name,
+                "filename": frame_base_name,
+                "lat": round(current_lat, 6),
+                "lon": round(current_lon, 6),
+                "pitch": round(current_pitch, 2),
+                "location": location_str,
+                "geojson": geo_feats,
+                "views": {}
             }
 
-        callback(result_payload)
-        frame_idx += 1
+            views_list = ['front', 'rear'] if is_360 else ['front']
+            for view in views_list:
+                result_payload["views"][view] = {
+                    "raw_filename": f"raw_rect_{view}_{frame_base_name}",
+                    "raw_bev_filename": f"raw_bev_{view}_{frame_base_name}",
+                    "rect_url": f"/static/uploads/rect_{view}_{frame_base_name}",
+                    "bev_url": f"/static/uploads/bev_{view}_{frame_base_name}",
+                    "defects": defects[view]
+                }
+
+            callback(result_payload)
 
     cap.release()
