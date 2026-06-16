@@ -3,509 +3,161 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Road Defect Homography Tool</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <title>Unified DCPM Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { background-color: #f8f9fa; }
-        .canvas-container {
-            position: relative; width: 100%; border: 2px dashed #adb5bd;
-            background: #e9ecef; display: flex; justify-content: center; overflow: hidden;
-        }
-        canvas { max-width: 100%; height: auto; cursor: crosshair; }
-        #loading {
-            display: none; position: absolute; top: 50%; left: 50%;
-            transform: translate(-50%, -50%); background: rgba(255,255,255,0.95);
-            padding: 20px; border-radius: 8px; font-weight: bold;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 10;
-        }
+        .dropzone { border: 2px dashed #d1d5db; transition: all 0.3s; }
+        .dropzone:hover { border-color: #3b82f6; background-color: #eff6ff; }
+        .progress-bar-fill { transition: width 0.4s ease; }
     </style>
 </head>
-<body>
-
-<div class="container py-4">
-    <h2 class="mb-4">🛣️ Orthophoto Generation & Metric Scaler</h2>
-    
-    <!-- Upload Section -->
-    <div class="row mb-3 bg-white p-3 shadow-sm rounded align-items-end">
-        <div class="col-md-6">
-            <label class="form-label fw-bold">1. Upload Raw Inspection Image</label>
-            <input type="file" id="fileInput" class="form-control" accept="image/jpeg, image/png">
-        </div>
-        <div class="col-md-6">
-            <label class="form-label fw-bold">Output Base Dimensions (px)</label>
-            <div class="input-group">
-                <input type="number" id="outW" class="form-control" value="800">
-                <span class="input-group-text">x</span>
-                <input type="number" id="outH" class="form-control" value="1000">
-            </div>
-        </div>
-    </div>
-
-    <!-- Tabs for Modes -->
-    <ul class="nav nav-tabs mb-3" id="myTab" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="autovp-tab" data-bs-toggle="tab" data-bs-target="#autovp" type="button" role="tab">🔍 Auto VP (AI)</button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link" id="telemetry-tab" data-bs-toggle="tab" data-bs-target="#telemetry" type="button" role="tab">⚙️ Manual Telemetry</button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab">🖱️ Manual 4-Point</button>
-        </li>
-    </ul>
-
-    <div class="tab-content" id="myTabContent">
+<body class="bg-gray-100 font-sans min-h-screen p-6">
+    <div class="max-w-screen-2xl mx-auto flex flex-col gap-4">
         
-        <!-- Auto VP Mode -->
-        <div class="tab-pane fade show active bg-white p-3 shadow-sm rounded mb-4" id="autovp" role="tabpanel">
-            <div class="row align-items-end g-3">
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Camera Height</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" id="camH_auto" class="form-control" value="1600">
-                        <span class="input-group-text">mm</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Extracted FOV</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" step="0.1" id="camFOV_auto" class="form-control" value="96.7">
-                        <span class="input-group-text">deg</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Target Metric Scale</label>
-                    <div class="input-group input-group-sm">
-                        <span class="input-group-text">1 px =</span>
-                        <input type="number" id="targetScale_auto" class="form-control" value="2">
-                        <span class="input-group-text">mm</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="form-check form-switch pt-4">
-                        <input class="form-check-input" type="checkbox" role="switch" id="showDebugLines">
-                        <label class="form-check-label small" for="showDebugLines">Show AI Debug Lines</label>
-                    </div>
-                </div>
-                <div class="col-12">
-                    <button class="btn btn-primary w-100" onclick="processAutoVP()">Detect VP & Generate Orthophoto</button>
-                </div>
-                 <div class="col-12 text-muted small mt-2">
-                    <span class="fw-bold">Hint:</span> After running, you can click the Source Image to manually set the Vanishing Point.
-                    <button class="btn btn-sm btn-outline-secondary ms-2" id="clearManualVpBtn" style="display:none;" onclick="clearManualVP()">Revert to AI Detection</button>
-                </div>
+        <div class="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-800">Unified DCPM Engine</h1>
+                <p class="text-xs text-gray-500">Supports 360° Media, Video Tracking, & Automated Pipeline Data retrieval</p>
             </div>
-        </div>
-
-        <!-- Telemetry Mode -->
-        <div class="tab-pane fade bg-white p-3 shadow-sm rounded mb-4" id="telemetry" role="tabpanel">
-            <div class="row align-items-end g-3">
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Camera Height</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" id="camH" class="form-control" value="1600">
-                        <span class="input-group-text">mm</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Camera Pitch (Tilt Down)</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" id="camPitch" class="form-control" value="10">
-                        <span class="input-group-text">deg</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Extracted FOV</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" step="0.1" id="camFOV" class="form-control" value="96.7">
-                        <span class="input-group-text">deg</span>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold">Target Metric Scale</label>
-                    <div class="input-group input-group-sm">
-                        <span class="input-group-text">1 px =</span>
-                        <input type="number" id="targetScale" class="form-control" value="2">
-                        <span class="input-group-text">mm</span>
-                    </div>
-                </div>
-                <div class="col-12 mt-3">
-                    <button class="btn btn-primary w-100" onclick="processTelemetry()">Generate Metric Orthophoto</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Manual Mode -->
-        <div class="tab-pane fade bg-white p-3 shadow-sm rounded mb-4" id="manual" role="tabpanel">
-             <div class="row align-items-end g-3">
-                <div class="col-md-6">
-                    <label class="form-label small fw-bold">Scale Reference Length</label>
-                    <div class="input-group input-group-sm">
-                        <input type="number" id="realLength" class="form-control" value="300">
-                        <span class="input-group-text">mm</span>
-                    </div>
-                </div>
-                <div class="col-md-6 text-muted small">
-                    Click 4 road corners on the left image to warp. Then click 2 points on the right image to set scale.
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Canvases -->
-    <div class="row g-4">
-        <!-- Original Image -->
-        <div class="col-md-6">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h5 class="mb-0">Source Image</h5>
-                <button class="btn btn-sm btn-outline-danger" onclick="clearRoad()">Clear Points</button>
-            </div>
-            <div class="canvas-container shadow-sm">
-                <canvas id="canvasOriginal"></canvas>
-                <div id="loading">Processing...</div>
-            </div>
-        </div>
-
-        <!-- Transformed Image -->
-        <div class="col-md-6">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h5 class="mb-0">Metric Plane Output</h5>
-                <div>
-                    <button class="btn btn-sm btn-outline-danger" onclick="clearScale()">Clear Scale</button>
-                    <button class="btn btn-sm btn-success" id="downloadBtn" style="display:none;" onclick="downloadImage()">💾 Export Data for ML</button>
-                </div>
-            </div>
-            <div class="canvas-container shadow-sm">
-                <canvas id="canvasTransformed"></canvas>
-            </div>
-            <div id="resultAlert" class="alert alert-info mt-3" style="display: none;"></div>
-        </div>
-    </div>
-</div>
-
-<script>
-    let originalImage = new Image();
-    let transformedImage = new Image();
-    let roadPoints = [];
-    let scalePoints = [];
-    let originalBase64 = null;
-    let currentScaleMmPerPixel = null;
-    let currentMode = 'autovp';
-
-    let detectedVP = null;
-    let detectedTrap = null;
-    let manualVP = null;
-    let detectedLines = [];
-    let inlierMask = [];
-
-    const canvasOrg = document.getElementById('canvasOriginal');
-    const ctxOrg = canvasOrg.getContext('2d');
-    const canvasTrans = document.getElementById('canvasTransformed');
-    const ctxTrans = canvasTrans.getContext('2d');
-
-    // Watch tab changes
-    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tab => {
-        tab.addEventListener('shown.bs.tab', event => {
-            if (event.target.id === 'autovp-tab') currentMode = 'autovp';
-            else if (event.target.id === 'telemetry-tab') currentMode = 'telemetry';
-            else currentMode = 'manual';
-            clearRoad();
-            clearScale();
-            ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
-        });
-    });
-
-    document.getElementById('fileInput').addEventListener('change', function(e) {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = function(event) {
-            originalBase64 = event.target.result;
             
-            fetch('/parse_exif', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: originalBase64 })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if(data.success && data.fov) {
-                    document.getElementById('camFOV').value = data.fov;
-                    document.getElementById('camFOV_auto').value = data.fov;
-                }
-            });
-
-            originalImage.onload = () => {
-                canvasOrg.width = originalImage.width;
-                canvasOrg.height = originalImage.height;
-                clearRoad(); 
-            }
-            originalImage.src = originalBase64;
-        }
-        reader.readAsDataURL(file);
-    });
-
-    canvasOrg.addEventListener('mousedown', function(e) {
-        if (currentMode === 'manual' && originalBase64 && roadPoints.length < 4) {
-            roadPoints.push(getMousePos(canvasOrg, e));
-            drawOriginal();
-            if (roadPoints.length === 4) processManualHomography();
-        } else if (currentMode === 'autovp' && originalBase64) {
-            manualVP = getMousePos(canvasOrg, e);
-            document.getElementById('clearManualVpBtn').style.display = 'inline-block';
-            processAutoVP();
-        }
-    });
-
-    canvasTrans.addEventListener('mousedown', function(e) {
-        if (currentMode !== 'manual' || !transformedImage.src || scalePoints.length >= 2) return;
-        scalePoints.push(getMousePos(canvasTrans, e));
-        drawTransformed();
-        if (scalePoints.length === 2) calculateManualScale();
-    });
-    
-    document.getElementById('showDebugLines').addEventListener('change', drawOriginal);
-
-    function getMousePos(canvas, evt) {
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        return { x: (evt.clientX - rect.left) * scaleX, y: (evt.clientY - rect.top) * scaleY };
-    }
-
-    function drawOriginal() {
-        ctxOrg.clearRect(0, 0, canvasOrg.width, canvasOrg.height);
-        if(originalImage.src) ctxOrg.drawImage(originalImage, 0, 0);
-
-        const showLines = document.getElementById('showDebugLines').checked;
-        if (showLines && currentMode === 'autovp' && detectedLines.length > 0) {
-            ctxOrg.lineWidth = Math.max(2, canvasOrg.width * 0.002);
-            detectedLines.forEach((line, index) => {
-                const is_inlier = inlierMask[index];
-                ctxOrg.strokeStyle = is_inlier ? 'rgba(0, 255, 0, 0.9)' : 'rgba(80, 80, 80, 0.5)';
-                ctxOrg.beginPath();
-                ctxOrg.moveTo(line[0], line[1]);
-                ctxOrg.lineTo(line[2], line[3]);
-                ctxOrg.stroke();
-            });
-        }
+            <div class="flex gap-3 mt-4 md:mt-0 flex-wrap justify-end">
+                <button id="btn-export-flat-zip" class="hidden bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    🗺️ Export Flattened ZIP
+                </button>
+                <button id="btn-export-zip" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    📦 Export RAW ZIP
+                </button>
+                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    💾 Save State
+                </button>
+                <label class="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    📂 Load State JSON
+                    <input type="file" id="in-load-project" accept=".json" class="hidden">
+                </label>
+                <button id="btn-toggle-upload" class="bg-blue-100 hover:bg-blue-200 text-blue-800 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    ➕ New Job
+                </button>
+            </div>
+        </div>
         
-        if (currentMode === 'autovp' && detectedVP && detectedTrap) {
-            ctxOrg.beginPath();
-            ctxOrg.moveTo(detectedTrap[0][0], detectedTrap[0][1]);
-            for(let i=1; i<4; i++) ctxOrg.lineTo(detectedTrap[i][0], detectedTrap[i][1]);
-            ctxOrg.closePath();
-            ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
-            ctxOrg.strokeStyle = '#00FFFF';
-            ctxOrg.stroke();
+        <div id="upload-panel" class="bg-white p-6 rounded-xl shadow-sm transition-all duration-300">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div id="dz-model" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center relative min-h-[120px]">
+                    <span class="text-sm font-medium text-gray-600" id="lbl-model">Drop YOLO Model (.pt)</span>
+                    <span id="name-model" class="text-xs text-blue-600 mt-1 hidden"></span>
+                    <span id="status-model" class="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded hidden">Loaded</span>
+                    <input type="file" id="in-model" accept=".pt" class="hidden">
+                </div>
+                
+                <div id="dz-image" class="dropzone p-4 text-center rounded-lg cursor-pointer flex flex-col justify-center min-h-[120px]">
+                    <span class="text-sm font-medium text-gray-600">Drop Manual Images / Video</span>
+                    <span id="name-image" class="text-xs text-blue-600 mt-1 hidden"></span>
+                    <input type="file" id="in-image" accept="image/*,video/*" multiple class="hidden">
+                </div>
 
-            ctxOrg.beginPath();
-            ctxOrg.arc(detectedVP.x, detectedVP.y, Math.max(8, canvasOrg.width * 0.005), 0, 2 * Math.PI);
-            ctxOrg.fillStyle = '#FF0000';
-            ctxOrg.fill();
-            ctxOrg.strokeStyle = '#FFFFFF';
-            ctxOrg.stroke();
+                <div class="flex flex-col justify-center gap-2">
+                    <label class="text-xs font-semibold text-gray-500 uppercase">Settings & Execution</label>
+                    
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="cam-height" value="1.6" step="0.1" class="w-16 text-sm p-1 border rounded" title="Camera Height (m)">
+                        <span class="text-xs text-gray-600">Cam Height (m)</span>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="frame-skip" value="30" min="1" step="1" class="w-16 text-sm p-1 border rounded" title="Process every Nth video frame">
+                        <span class="text-xs text-gray-600">Video Frame Skip</span>
+                    </div>
+                    
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="chk-is-360" class="w-4 h-4 accent-blue-600" checked>
+                        <label for="chk-is-360" class="text-xs font-semibold text-gray-600">Equirectangular 360° Media</label>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="chk-gps-snap" class="w-4 h-4 accent-blue-600">
+                        <label for="chk-gps-snap" class="text-xs font-semibold text-gray-600">Video GPS Snap Sync</label>
+                    </div>
+
+                    <div class="flex gap-2 mt-2">
+                        <button id="process-btn" class="flex-1 bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm" disabled>
+                            Process Uploads
+                        </button>
+                        <button id="scan-btn" class="flex-1 bg-indigo-600 text-white font-bold py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm" disabled title="Automatically load and process files from Data_pipeline/output/frames">
+                            Scan Pipeline
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="progress-container" class="hidden bg-white p-4 rounded-xl shadow-sm flex flex-col gap-2">
+            <div class="flex justify-between items-end">
+                <span id="progress-text" class="text-sm font-bold text-gray-700">Initializing...</span>
+                <span id="eta-text" class="text-xs font-semibold text-blue-600">ETA: Calculating...</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div id="progress-bar" class="bg-blue-600 h-3 rounded-full progress-bar-fill" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4 h-[75vh]">
+            <div class="lg:col-span-5 bg-white p-4 rounded-xl shadow-sm border flex flex-col h-full overflow-hidden">
+                <div class="flex justify-between items-center mb-4 flex-none">
+                    <button id="btn-prev" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded">&larr; Prev</button>
+                    <div class="text-center">
+                        <p id="carousel-counter" class="font-bold text-gray-800 text-sm">Item 0 of 0</p>
+                        <p id="carousel-filename" class="text-xs text-gray-500">Waiting for data...</p>
+                        <p id="carousel-telemetry" class="text-xs text-blue-600"></p>
+                    </div>
+                    <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded">Next &rarr;</button>
+                </div>
+
+                <div class="flex-1 flex flex-col min-h-0 gap-2 mb-4">
+                    <div class="flex-none flex justify-between items-end">
+                        <div class="text-xs font-bold text-gray-500 uppercase">Perspective Analysis</div>
+                        <div id="label-active-view" class="text-[10px] font-bold text-blue-600 uppercase bg-blue-100 px-2 py-0.5 rounded shadow-sm">Front View Active</div>
+                    </div>
+                    <div class="flex-1 min-h-0 relative border rounded bg-gray-50 flex items-center justify-center">
+                        <span id="placeholder-rect" class="text-gray-400 text-sm italic absolute">Awaiting Image Process...</span>
+                        <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1 z-10 hidden" src="" alt="Rectilinear View">
+                    </div>
+                    
+                    <div class="flex-none flex justify-between items-end mt-2">
+                        <div class="text-xs font-bold text-gray-500 uppercase">Metric BEV</div>
+                    </div>
+                    <div class="flex-1 min-h-0 flex gap-2">
+                        <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬆️ Front</span>
+                            <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
+                        </div>
+                        <div id="container-bev-rear" class="flex-1 relative border-2 border-transparent rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group hidden">
+                            <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬇️ Rear</span>
+                            <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex-none h-32 flex flex-col">
+                    <div class="overflow-y-auto flex-1 bg-gray-50 rounded border">
+                        <table class="w-full text-left text-sm">
+                            <tbody id="table-defects" class="divide-y"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
             
-            if (manualVP) {
-                ctxOrg.beginPath();
-                ctxOrg.arc(detectedVP.x, detectedVP.y, Math.max(12, canvasOrg.width * 0.008), 0, 2 * Math.PI);
-                ctxOrg.strokeStyle = '#00FFFF';
-                ctxOrg.lineWidth = Math.max(2, canvasOrg.width * 0.002);
-                ctxOrg.stroke();
-            }
-        }
+            <div class="lg:col-span-7 relative h-full">
+                <div id="map" class="w-full h-full rounded-xl border border-gray-200 shadow-sm z-0"></div>
+                <div class="absolute top-4 right-4 z-[1000] bg-white/95 backdrop-blur px-3 py-2 rounded-lg shadow-lg border border-gray-200 flex items-center gap-2">
+                    <span class="text-xs font-bold text-gray-600 uppercase">Location:</span>
+                    <select id="sel-location" class="text-sm border-gray-300 rounded shadow-sm p-1 font-semibold text-gray-800 focus:ring-blue-500 cursor-pointer outline-none"></select>
+                </div>
+            </div>
+        </div>
+    </div>
 
-        if (currentMode === 'manual') {
-            const r = Math.max(8, canvasOrg.width * 0.005);
-            ctxOrg.lineWidth = Math.max(4, canvasOrg.width * 0.003);
-            roadPoints.forEach(p => {
-                ctxOrg.beginPath(); ctxOrg.arc(p.x, p.y, r, 0, 2 * Math.PI);
-                ctxOrg.fillStyle = '#00FF00'; ctxOrg.fill(); ctxOrg.stroke();
-            });
-            if (roadPoints.length === 4) {
-                let pts = [...roadPoints].sort((a,b) => a.y - b.y);
-                let top = pts.slice(0,2).sort((a,b) => a.x - b.x);
-                let bot = pts.slice(2,4).sort((a,b) => b.x - a.x);
-                let poly = [...top, ...bot];
-                ctxOrg.beginPath(); ctxOrg.moveTo(poly[0].x, poly[0].y);
-                for(let i=1; i<4; i++) ctxOrg.lineTo(poly[i].x, poly[i].y);
-                ctxOrg.closePath(); ctxOrg.strokeStyle = '#00FF00'; ctxOrg.stroke();
-            }
-        }
-    }
-
-    function drawTransformed() {
-        ctxTrans.clearRect(0, 0, canvasTrans.width, canvasTrans.height);
-        if(transformedImage.src) ctxTrans.drawImage(transformedImage, 0, 0);
-        if (currentMode !== 'manual') return;
-        const r = Math.max(5, canvasTrans.width * 0.01);
-        ctxTrans.lineWidth = Math.max(3, canvasTrans.width * 0.005);
-        scalePoints.forEach(p => {
-            ctxTrans.beginPath(); ctxTrans.arc(p.x, p.y, r, 0, 2 * Math.PI);
-            ctxTrans.fillStyle = '#FF0000'; ctxTrans.fill(); ctxTrans.stroke();
-        });
-        if (scalePoints.length === 2) {
-            ctxTrans.beginPath(); ctxTrans.moveTo(scalePoints[0].x, scalePoints[0].y);
-            ctxTrans.lineTo(scalePoints[1].x, scalePoints[1].y);
-            ctxTrans.strokeStyle = '#FF0000'; ctxTrans.stroke();
-        }
-    }
-
-    function processManualHomography() {
-        document.getElementById('loading').innerText = "Warping Image...";
-        document.getElementById('loading').style.display = 'block';
-        fetch('/transform', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mode: 'manual', image: originalBase64, points: roadPoints.map(p => [p.x, p.y]),
-                out_w: document.getElementById('outW').value, out_h: document.getElementById('outH').value
-            })
-        }).then(res => res.json()).then(data => handleTransformResponse(data));
-    }
-
-    function processAutoVP() {
-        if(!originalBase64) return alert("Please upload an image first.");
-        document.getElementById('loading').innerText = manualVP ? "Using Manual VP..." : "Running RANSAC VP Detection...";
-        document.getElementById('loading').style.display = 'block';
-        currentScaleMmPerPixel = parseFloat(document.getElementById('targetScale_auto').value);
-
-        let body = {
-            mode: 'autovp', image: originalBase64,
-            cam_h: document.getElementById('camH_auto').value,
-            fov: document.getElementById('camFOV_auto').value,
-            mm_px: currentScaleMmPerPixel,
-            out_w: document.getElementById('outW').value,
-            out_h: document.getElementById('outH').value
-        };
-        if (manualVP) body.manual_vp = manualVP;
-
-        fetch('/transform', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                detectedVP = data.vp;
-                detectedTrap = data.src_pts;
-                detectedLines = data.lines || [];
-                inlierMask = data.mask || [];
-                let alertHtml = `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br>
-                <span class="small text-muted">Inferred Pitch: ${data.pitch.toFixed(1)}° | Yaw: ${data.yaw.toFixed(1)}°</span>`;
-                showResultAlert(alertHtml);
-            }
-            handleTransformResponse(data);
-        });
-    }
-
-    function processTelemetry() {
-        if(!originalBase64) return alert("Please upload an image first.");
-        document.getElementById('loading').innerText = "Calculating IPM Matrix...";
-        document.getElementById('loading').style.display = 'block';
-        currentScaleMmPerPixel = parseFloat(document.getElementById('targetScale').value);
-        fetch('/transform', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mode: 'telemetry', image: originalBase64,
-                cam_h: document.getElementById('camH').value, pitch: document.getElementById('camPitch').value,
-                fov: document.getElementById('camFOV').value, mm_px: currentScaleMmPerPixel,
-                out_w: document.getElementById('outW').value, out_h: document.getElementById('outH').value
-            })
-        }).then(res => res.json()).then(data => {
-            if(data.success) showResultAlert();
-            handleTransformResponse(data);
-        });
-    }
-
-    function handleTransformResponse(data) {
-        document.getElementById('loading').style.display = 'none';
-        if(data.success) {
-            transformedImage.onload = () => {
-                canvasTrans.width = transformedImage.width;
-                canvasTrans.height = transformedImage.height;
-                drawTransformed(); 
-            }
-            transformedImage.src = data.image;
-        } else alert("Error: " + data.error);
-        drawOriginal();
-    }
-
-    function calculateManualScale() {
-        const dx = scalePoints[1].x - scalePoints[0].x;
-        const dy = scalePoints[1].y - scalePoints[0].y;
-        currentScaleMmPerPixel = parseFloat(document.getElementById('realLength').value) / Math.hypot(dx, dy);
-        showResultAlert();
-    }
-
-    function showResultAlert(customHtml) {
-        document.getElementById('resultAlert').style.display = 'block';
-        document.getElementById('downloadBtn').style.display = 'inline-block';
-        document.getElementById('resultAlert').innerHTML = customHtml || `<strong>📏 Metric Scale Generated:</strong> 1 pixel = ${currentScaleMmPerPixel.toFixed(3)} mm<br><span class="small text-muted">This metric ratio will be embedded into the EXIF data on download.</span>`;
-    }
-
-    function downloadImage() {
-        document.getElementById('loading').innerText = "Injecting EXIF & Saving...";
-        document.getElementById('loading').style.display = 'block';
-
-        let bodyData = {
-            mode: currentMode, image: originalBase64,
-            out_w: document.getElementById('outW').value,
-            out_h: document.getElementById('outH').value,
-        };
-
-        if (currentMode === 'manual') {
-            bodyData.points = roadPoints.map(p => [p.x, p.y]);
-            bodyData.mm_per_pixel = currentScaleMmPerPixel;
-        } else if (currentMode === 'telemetry') {
-            bodyData.cam_h = document.getElementById('camH').value;
-            bodyData.pitch = document.getElementById('camPitch').value;
-            bodyData.fov = document.getElementById('camFOV').value;
-            bodyData.mm_px = currentScaleMmPerPixel;
-        } else if (currentMode === 'autovp') {
-            bodyData.cam_h = document.getElementById('camH_auto').value;
-            bodyData.fov = document.getElementById('camFOV_auto').value;
-            bodyData.mm_px = currentScaleMmPerPixel;
-            if (manualVP) bodyData.manual_vp = manualVP;
-        }
-
-        fetch('/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) })
-        .then(res => res.blob())
-        .then(blob => {
-            document.getElementById('loading').style.display = 'none';
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'ml_ready_defect.jpg';
-            link.click();
-            window.URL.revokeObjectURL(url);
-        }).catch(err => {
-            document.getElementById('loading').style.display = 'none';
-            alert("Download failed: " + err);
-        });
-    }
-
-    function clearManualVP() {
-        manualVP = null;
-        document.getElementById('clearManualVpBtn').style.display = 'none';
-        processAutoVP();
-    }
-
-    function clearRoad() { 
-        roadPoints = []; 
-        detectedVP = null;
-        detectedTrap = null;
-        manualVP = null;
-        detectedLines = [];
-        inlierMask = [];
-        document.getElementById('clearManualVpBtn').style.display = 'none';
-        drawOriginal(); 
-    }
-    
-    function clearScale() { 
-        scalePoints = []; 
-        document.getElementById('resultAlert').style.display = 'none';
-        document.getElementById('downloadBtn').style.display = 'none';
-        if (transformedImage.src) drawTransformed(); 
-    }
-</script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

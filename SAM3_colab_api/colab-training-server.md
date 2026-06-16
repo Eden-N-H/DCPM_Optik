@@ -93,7 +93,12 @@ print("✅ Google Drive mounted successfully!")
         .compact-item:last-child { border-bottom: none; }
         .compact-left { display: flex; align-items: center; gap: 15px; }
         
+        /* Enlarged Checkboxes */
+        .compact-left input[type="checkbox"] { transform: scale(1.6); margin-right: 8px; cursor: pointer; }
+        .sam-target-cb { transform: scale(1.6); margin: 0 10px; cursor: pointer; }
+        
         #bulkActionBar { background: var(--accent); color: white; padding: 10px 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;}
+        .bulk-btn { background: transparent; border: 1px solid white; padding: 6px 12px; margin-right: 8px; }
         
         .badge { font-size: 10px; padding: 3px 8px; border-radius: 12px; font-weight: bold; text-transform: uppercase;}
         .badge.approved { background: #1e4620; color: #5cb85c; }
@@ -185,13 +190,16 @@ print("✅ Google Drive mounted successfully!")
         <div class="padded-view">
             <h2>Data Management</h2>
             
-            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                 <div class="sub-tabs" style="margin-bottom: 0;">
                     <button id="tab-pending" class="sub-tab-btn active" onclick="setGalleryFilter('pending')">Pending Views</button>
                     <button id="tab-approved" class="sub-tab-btn" onclick="setGalleryFilter('approved')">Approved Views</button>
                     <button id="tab-all" class="sub-tab-btn" onclick="setGalleryFilter('all')">View All</button>
                 </div>
-                <div style="display: flex; gap: 10px;">
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button onclick="toggleSelectAll()" class="btn-outline" style="border-color: var(--accent); color: var(--accent); padding: 8px 12px;">☑️ Select Visible</button>
+                    <button onclick="createNewFolder()" class="btn-outline" style="border-color: #888; color: #ccc; padding: 8px 12px;">📁 New Folder</button>
+                    
                     <input type="file" id="fileUpload" multiple accept="image/*" style="display: none;" onchange="handleUpload(event)">
                     <input type="file" id="folderUpload" webkitdirectory directory multiple style="display: none;" onchange="handleUpload(event)">
                     <input type="file" id="zipUpload" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">
@@ -208,8 +216,11 @@ print("✅ Google Drive mounted successfully!")
             <div id="bulkActionBar" style="display: none;">
                 <div><strong id="bulkCount">0</strong> items selected</div>
                 <div>
-                    <button onclick="loadSelectedIntoStudio()" style="background: transparent; border: 1px solid white; padding: 6px 12px; margin-right: 10px;">🎨 Open in Studio</button>
-                    <button onclick="bulkDelete()" style="background: transparent; border: 1px solid white; padding: 6px 12px;">🗑️ Delete Selected</button>
+                    <button onclick="loadSelectedIntoStudio()" class="bulk-btn">🎨 Open in Studio</button>
+                    <button onclick="promptRename()" id="btnRename" class="bulk-btn">✏️ Rename</button>
+                    <button onclick="promptMove()" class="bulk-btn">📂 Move</button>
+                    <button onclick="promptCopy()" class="bulk-btn">📄 Copy</button>
+                    <button onclick="bulkDelete()" class="bulk-btn" style="border-color: var(--danger); color: #ff6b6b;">🗑️ Delete</button>
                 </div>
             </div>
             
@@ -258,7 +269,8 @@ print("✅ Google Drive mounted successfully!")
             queueIndex: 0,
             imageObj: null,
             polygons: [],
-            selectedPolyIndex: -1
+            selectedPolyIndex: -1,
+            imageCache: {} // Added caching dictionary
         };
 
         const HEADERS = { 'ngrok-skip-browser-warning': 'true' };
@@ -357,7 +369,6 @@ print("✅ Google Drive mounted successfully!")
                 }
             });
 
-            // Filter logic
             const filter = AppState.galleryFilter;
             
             // Process Folders
@@ -373,7 +384,7 @@ print("✅ Google Drive mounted successfully!")
                 div.className = 'compact-item folder';
                 div.innerHTML = `
                     <div class="compact-left">
-                        <input type="checkbox" ${isChecked} onclick="event.stopPropagation()" onchange="toggleSelection('${fullFolderPath}', this.checked)" style="cursor:pointer;">
+                        <input type="checkbox" ${isChecked} onclick="event.stopPropagation()" onchange="toggleSelection('${fullFolderPath}', this.checked)">
                         <span style="font-size:20px;">📁</span>
                         <span><b>${name}</b> <span style="color:#888; font-size:12px;">(${contents.length} items)</span></span>
                     </div>
@@ -395,11 +406,11 @@ print("✅ Google Drive mounted successfully!")
                 const div = document.createElement('div');
                 div.className = 'compact-item';
                 div.innerHTML = `
-                    <div class="compact-left">
-                        <input type="checkbox" ${isChecked} onchange="toggleSelection('${img.filename}', this.checked)" style="cursor:pointer;">
+                    <label class="compact-left" style="cursor:pointer; width:100%;">
+                        <input type="checkbox" ${isChecked} onchange="toggleSelection('${img.filename}', this.checked)">
                         <span style="font-size:20px;">🖼️</span>
                         <span>${baseName}</span>
-                    </div>
+                    </label>
                     <span class="badge ${isApproved ? 'approved' : 'pending'}">${isApproved ? 'APPROVED' : 'PENDING'}</span>
                 `;
                 container.appendChild(div);
@@ -416,10 +427,19 @@ print("✅ Google Drive mounted successfully!")
             updateBulkActionBar();
         }
 
+        function toggleSelectAll() {
+            const checkboxes = document.querySelectorAll('.compact-item input[type="checkbox"]');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            checkboxes.forEach(cb => {
+                if (cb.checked === allChecked) cb.click();
+            });
+        }
+
         function updateBulkActionBar() {
             const bar = document.getElementById('bulkActionBar');
             if(AppState.selectedPaths.size > 0) {
                 document.getElementById('bulkCount').innerText = AppState.selectedPaths.size;
+                document.getElementById('btnRename').style.display = AppState.selectedPaths.size === 1 ? 'inline-block' : 'none';
                 bar.style.display = 'flex';
             } else {
                 bar.style.display = 'none';
@@ -430,7 +450,6 @@ print("✅ Google Drive mounted successfully!")
             let filesToProcess = new Set();
             AppState.selectedPaths.forEach(path => {
                 if(path.endsWith('/')) {
-                    // It's a folder, get all nested files
                     AppState.gallery.forEach(img => {
                         if(img.filename.startsWith(path)) filesToProcess.add(img.filename);
                     });
@@ -441,42 +460,77 @@ print("✅ Google Drive mounted successfully!")
             return Array.from(filesToProcess);
         }
 
-        function loadSelectedIntoStudio() {
+        // --- File Operations API Wrappers ---
+        async function createNewFolder() {
+            const folderName = prompt("Enter new folder name:");
+            if (!folderName) return;
+            const fullPath = AppState.currentPath + folderName;
+            try {
+                const res = await fetch('/api/mkdir', { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify({ path: fullPath }) });
+                const data = await res.json();
+                if (data.success) { showToast("Folder created"); refreshGallery(false); }
+                else showToast(data.error, "error");
+            } catch(e) { showToast("Error creating folder", "error"); }
+        }
+
+        async function doFileOp(action, targetStr) {
             const files = getFilesFromSelections();
-            if(files.length === 0) return;
-            AppState.queue = files;
-            AppState.queueIndex = 0;
-            switchView('studio');
-            loadQueueItem();
-            showToast(`Loaded ${files.length} items into Studio Queue`);
+            if (files.length === 0 || !targetStr) return;
+            try {
+                const res = await fetch('/api/file_ops', {
+                    method: 'POST', headers: HEADERS_JSON,
+                    body: JSON.stringify({ action: action, files: files, target: targetStr })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Operation '${action}' completed on ${files.length} items`);
+                    AppState.selectedPaths.clear(); updateBulkActionBar(); refreshGallery(false);
+                } else showToast(data.error, "error");
+            } catch(e) { showToast("Operation failed", "error"); }
+        }
+
+        function promptRename() {
+            const files = getFilesFromSelections();
+            if(files.length !== 1) return showToast("Select exactly one item to rename", "error");
+            const currentName = files[0].split('/').pop();
+            const target = prompt(`Enter new filename for ${currentName}:`, currentName);
+            if(target && target !== currentName) {
+                // Construct new relative path in the same directory
+                const newRelPath = files[0].substring(0, files[0].length - currentName.length) + target;
+                doFileOp('rename', newRelPath);
+            }
+        }
+
+        function promptMove() {
+            const target = prompt("Enter destination folder path (e.g. 'new_folder/'):", AppState.currentPath);
+            if(target !== null) doFileOp('move', target);
+        }
+
+        function promptCopy() {
+            const target = prompt("Enter destination folder path (e.g. 'new_folder/'):", AppState.currentPath);
+            if(target !== null) doFileOp('copy', target);
         }
 
         async function bulkDelete() {
             const files = getFilesFromSelections();
             if(!confirm(`Delete ${files.length} files permanently?`)) return;
-
             try {
                 await Promise.all(files.map(f => fetch(`/api/image/${encodeURIComponent(f)}`, { method: 'DELETE', headers: HEADERS })));
                 showToast(`Deleted ${files.length} files`);
-                AppState.selectedPaths.clear();
-                updateBulkActionBar();
-                refreshGallery(false);
-            } catch (e) {
-                showToast("Deletions failed", "error");
-            }
+                AppState.selectedPaths.clear(); updateBulkActionBar(); refreshGallery(false);
+            } catch (e) { showToast("Deletions failed", "error"); }
         }
 
         // --- Upload Logic ---
         async function handleUpload(e) {
             const files = e.target.files;
             if(files.length === 0) return;
-
             const formData = new FormData();
             for(let i=0; i<files.length; i++) {
                 const path = files[i].webkitRelativePath || files[i].name;
-                formData.append('images', files[i], path);
+                // Append current path so it uploads to the active folder
+                formData.append('images', files[i], AppState.currentPath + path);
             }
-
             showToast(`Uploading ${files.length} files...`);
             try {
                 const res = await fetch('/api/upload', { method: 'POST', headers: HEADERS, body: formData });
@@ -491,6 +545,7 @@ print("✅ Google Drive mounted successfully!")
             if(!file) return;
             const formData = new FormData();
             formData.append('zip', file);
+            formData.append('target_path', AppState.currentPath);
             showToast(`Extracting ZIP on server...`);
             try {
                 const res = await fetch('/api/upload_zip', { method: 'POST', headers: HEADERS, body: formData });
@@ -498,6 +553,14 @@ print("✅ Google Drive mounted successfully!")
                 if(data.success) { showToast(`Extracted ${data.uploaded} files!`); refreshGallery(false); }
             } catch(err) { showToast(err.message, "error"); }
             e.target.value = "";
+        }
+
+        function loadSelectedIntoStudio() {
+            const files = getFilesFromSelections();
+            if(files.length === 0) return;
+            AppState.queue = files; AppState.queueIndex = 0; switchView('studio');
+            loadQueueItem();
+            showToast(`Loaded ${files.length} items into Studio Queue`);
         }
 
         // --- Ontology Logic ---
@@ -536,11 +599,10 @@ print("✅ Google Drive mounted successfully!")
             }
             AppState.config.classes = newClasses;
             await fetch('/api/config', { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(AppState.config) });
-            showToast("Config saved!");
-            renderStudioClasses();
+            showToast("Config saved!"); renderStudioClasses();
         }
 
-        // --- Studio & Queue Logic ---
+        // --- Studio & Preload Engine ---
         const canvas = document.getElementById('editorCanvas');
         const ctx = canvas.getContext('2d');
 
@@ -550,12 +612,18 @@ print("✅ Google Drive mounted successfully!")
             AppState.config.classes.forEach(cls => {
                 const row = document.createElement('div');
                 row.className = `class-row ${AppState.selectedPolyIndex !== -1 && AppState.polygons[AppState.selectedPolyIndex]?.classId === cls.id ? 'selected' : ''}`;
+                
                 const cb = document.createElement('input');
                 cb.type = 'checkbox'; cb.className = 'sam-target-cb'; cb.value = cls.id; cb.checked = true;
+                cb.onclick = (e) => e.stopPropagation(); // prevent double toggle
+                
                 const btn = document.createElement('button');
                 btn.className = 'class-btn';
                 btn.innerHTML = `<span style="display:flex; align-items:center; gap:8px;"><div class="color-box" style="background-color: ${cls.color}"></div> ${cls.name} ${cls.invert ? '<span style="color:#f0ad4e; font-size:10px;">(Inv)</span>' : ''}</span><span style="opacity:0.5; font-size:10px;">ID:${cls.id}</span>`;
-                btn.onclick = () => assignClassToSelected(cls.id);
+                
+                row.onclick = () => { cb.checked = !cb.checked; assignClassToSelected(cls.id); };
+                btn.onclick = (e) => { e.stopPropagation(); assignClassToSelected(cls.id); };
+                
                 row.appendChild(cb); row.appendChild(btn); container.appendChild(row);
             });
         }
@@ -566,11 +634,7 @@ print("✅ Google Drive mounted successfully!")
             if(AppState.queue.length === 0) return;
             AppState.queueIndex += dir;
             if(AppState.queueIndex < 0) AppState.queueIndex = 0;
-            if(AppState.queueIndex >= AppState.queue.length) {
-                AppState.queueIndex = AppState.queue.length - 1;
-                showToast("End of queue reached.");
-                return;
-            }
+            if(AppState.queueIndex >= AppState.queue.length) { AppState.queueIndex = AppState.queue.length - 1; return showToast("End of queue reached."); }
             loadQueueItem();
         }
 
@@ -579,26 +643,61 @@ print("✅ Google Drive mounted successfully!")
             const filename = AppState.queue[AppState.queueIndex];
             
             document.getElementById('queueCount').innerText = `${AppState.queueIndex + 1} / ${AppState.queue.length}`;
-            document.getElementById('currentFilename').innerText = "Loading...";
+            document.getElementById('currentFilename').innerText = filename;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            try {
-                const res = await fetch(`/api/image/${encodeURIComponent(filename)}/data`, { headers: HEADERS });
-                const data = await res.json();
-                if (!data.success) throw new Error(data.error);
+            if (AppState.imageCache[filename]) {
+                renderFromData(AppState.imageCache[filename]);
+            } else {
+                document.getElementById('currentFilename').innerText = "Loading...";
+                try {
+                    const res = await fetch(`/api/image/${encodeURIComponent(filename)}/data`, { headers: HEADERS });
+                    const data = await res.json();
+                    if (!data.success) throw new Error(data.error);
+                    AppState.imageCache[filename] = data;
+                    renderFromData(data);
+                } catch(e) { showToast(e.message, "error"); document.getElementById('currentFilename').innerText = "Error loading"; return; }
+            }
+            
+            // Trigger background preloading
+            preloadAdjacent();
+        }
 
-                document.getElementById('currentFilename').innerText = filename;
-                AppState.imageObj = new Image();
-                AppState.imageObj.onload = () => {
-                    canvas.width = AppState.imageObj.width;
-                    canvas.height = AppState.imageObj.height;
-                    AppState.polygons = data.annotations || [];
-                    AppState.selectedPolyIndex = -1;
-                    renderStudioClasses();
-                    drawCanvas();
-                };
-                AppState.imageObj.src = "data:image/jpeg;base64," + data.image_b64;
-            } catch(e) { showToast(e.message, "error"); }
+        function renderFromData(data) {
+            document.getElementById('currentFilename').innerText = AppState.queue[AppState.queueIndex];
+            AppState.imageObj = new Image();
+            AppState.imageObj.onload = () => {
+                canvas.width = AppState.imageObj.width; canvas.height = AppState.imageObj.height;
+                // Deep copy so UI edits don't mutate cache unless saved
+                AppState.polygons = JSON.parse(JSON.stringify(data.annotations || []));
+                AppState.selectedPolyIndex = -1;
+                renderStudioClasses(); drawCanvas();
+            };
+            AppState.imageObj.src = "data:image/jpeg;base64," + data.image_b64;
+        }
+
+        async function preloadAdjacent() {
+            // Queue next 3 images and previous 1 image
+            const toPreload = [];
+            for(let i=1; i<=3; i++) { if (AppState.queueIndex + i < AppState.queue.length) toPreload.push(AppState.queue[AppState.queueIndex + i]); }
+            if (AppState.queueIndex - 1 >= 0) toPreload.push(AppState.queue[AppState.queueIndex - 1]);
+
+            // Keep cache size small to avoid browser OOM (Max 10 items)
+            const cacheKeys = Object.keys(AppState.imageCache);
+            if (cacheKeys.length > 10) {
+                const keep = new Set([AppState.queue[AppState.queueIndex], ...toPreload]);
+                cacheKeys.forEach(k => { if(!keep.has(k)) delete AppState.imageCache[k]; });
+            }
+
+            for (const fname of toPreload) {
+                if (!AppState.imageCache[fname]) {
+                    try {
+                        const res = await fetch(`/api/image/${encodeURIComponent(fname)}/data`, { headers: HEADERS });
+                        const data = await res.json();
+                        if (data.success) AppState.imageCache[fname] = data;
+                    } catch(e) { /* ignore silent preload errors */ }
+                }
+            }
         }
 
         function getActivePrompts() {
@@ -635,8 +734,7 @@ print("✅ Google Drive mounted successfully!")
             const statText = document.getElementById('bulkStatusText');
             const etaText = document.getElementById('bulkEtaText');
             
-            loader.style.display = 'flex';
-            fill.style.width = '0%';
+            loader.style.display = 'flex'; fill.style.width = '0%';
             
             try {
                 const res = await fetch('/api/auto_label_bulk', {
@@ -646,8 +744,7 @@ print("✅ Google Drive mounted successfully!")
 
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder("utf-8");
-                let startTime = Date.now();
-                let total = AppState.queue.length;
+                let startTime = Date.now(); let total = AppState.queue.length;
 
                 while (true) {
                     const { value, done } = await reader.read();
@@ -667,22 +764,15 @@ print("✅ Google Drive mounted successfully!")
                             const avg = elapsed / data.current;
                             const remain = Math.round(avg * (total - data.current));
                             
-                            const mins = Math.floor(remain / 60);
-                            const secs = remain % 60;
-                            etaText.innerText = `ETA: ${mins}:${secs.toString().padStart(2, '0')}`;
-                        } else if (data.status === 'error') {
-                            console.error("Error on file:", data.filename, data.error);
+                            etaText.innerText = `ETA: ${Math.floor(remain / 60)}:${(remain % 60).toString().padStart(2, '0')}`;
                         }
                     }
                 }
                 showToast("Bulk processing complete!");
-                refreshGallery(false);
-                loadQueueItem(); // Reload current view to show new polygons
-            } catch(e) {
-                showToast("Stream disconnected.", "error");
-            } finally {
-                loader.style.display = 'none';
-            }
+                AppState.imageCache = {}; // Flush cache
+                refreshGallery(false); loadQueueItem(); 
+            } catch(e) { showToast("Stream disconnected.", "error"); } 
+            finally { loader.style.display = 'none'; }
         }
 
         async function saveAndNext() {
@@ -695,6 +785,9 @@ print("✅ Google Drive mounted successfully!")
                 });
                 const data = await res.json();
                 if (data.success) {
+                    // Write back to cache to prevent annotation revert on 'Prev'
+                    if(AppState.imageCache[fname]) AppState.imageCache[fname].annotations = JSON.parse(JSON.stringify(AppState.polygons));
+                    
                     const img = AppState.gallery.find(i => i.filename === fname);
                     if(img) img.status = 'approved';
                     navQueue(1);
@@ -767,7 +860,7 @@ print("✅ Google Drive mounted successfully!")
 
 ### Cell 4: Create the Streaming Flask Backend (`app.py`)
 
-This cell supports recursive directories, path sanitization, streaming chunked responses, and forceful VRAM garbage collection.
+This cell supports recursive directories, path sanitization, streaming chunked responses, forceful VRAM garbage collection, and comprehensive file operations.
 
 ```python
 %%writefile app.py
@@ -832,6 +925,13 @@ def secure_rel_path(path):
     clean = os.path.normpath(path).replace('..', '')
     return clean.lstrip('/\\')
 
+def get_paired_paths(cfg, rel_path):
+    # Returns (input_img, output_img, output_txt) based on YOLO folder struct
+    in_img = os.path.join(cfg['input_dir'], rel_path)
+    out_img = os.path.join(cfg['output_dir'], "images", rel_path)
+    out_txt = os.path.join(cfg['output_dir'], "labels", os.path.splitext(rel_path)[0] + ".txt")
+    return in_img, out_img, out_txt
+
 def mask_to_yolo_polygons(binary_mask, invert=False):
     binary_mask = np.squeeze(binary_mask)
     if binary_mask.ndim != 2: return []
@@ -875,18 +975,80 @@ def api_gallery():
     input_dir = cfg['input_dir']
     if not os.path.exists(input_dir): os.makedirs(input_dir)
     
-    for root, _, files in os.walk(input_dir):
+    for root, dirs, files in os.walk(input_dir):
+        # Allow tracking empty folders via .keep
         for f in files:
+            if f == ".keep": continue
             if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                 full_path = os.path.join(root, f)
                 rel_path = os.path.relpath(full_path, input_dir).replace('\\', '/')
                 txt_path = os.path.join(cfg['output_dir'], "labels", os.path.splitext(rel_path)[0] + ".txt")
                 status = "approved" if os.path.exists(txt_path) else "pending"
                 images.append({"filename": rel_path, "status": status})
+        for d in dirs:
+            dir_path = os.path.relpath(os.path.join(root, d), input_dir).replace('\\', '/') + '/'
+            # Check if this folder has files. If not, it won't show unless we add a dummy
+            if not any(f.lower().endswith(('.png','.jpg','.jpeg')) for _,_,fs in os.walk(os.path.join(root, d)) for f in fs):
+                images.append({"filename": dir_path + ".keep", "status": "pending"})
     
     # Sort files naturally
     images = sorted(images, key=lambda x: x['filename'])
-    return jsonify({"success": True, "images": images})
+    return jsonify({"success": True, "images": [img for img in images if not img['filename'].endswith('.keep')]})
+
+@app.route('/api/mkdir', methods=['POST'])
+def api_mkdir():
+    data = request.json
+    target = secure_rel_path(data.get('path', ''))
+    if not target: return jsonify({"success": False, "error": "Invalid path"})
+    full_path = os.path.join(load_config()['input_dir'], target)
+    os.makedirs(full_path, exist_ok=True)
+    # create hidden file to ensure git/system persistence
+    with open(os.path.join(full_path, ".keep"), 'w') as f: f.write("")
+    return jsonify({"success": True})
+
+@app.route('/api/file_ops', methods=['POST'])
+def api_file_ops():
+    data = request.json
+    action = data.get('action') # move, copy, rename
+    files = data.get('files', [])
+    target = secure_rel_path(data.get('target', ''))
+    cfg = load_config()
+
+    if not files or target == '': return jsonify({"success": False, "error": "Missing params"})
+
+    try:
+        for rel_path in files:
+            in_img, out_img, out_txt = get_paired_paths(cfg, rel_path)
+            
+            if action == "rename":
+                t_in_img, t_out_img, t_out_txt = get_paired_paths(cfg, target)
+            else: # move or copy (target is directory)
+                filename = os.path.basename(rel_path)
+                new_rel_path = os.path.join(target, filename)
+                t_in_img, t_out_img, t_out_txt = get_paired_paths(cfg, new_rel_path)
+
+            os.makedirs(os.path.dirname(t_in_img), exist_ok=True)
+            
+            if action in ["move", "rename"]:
+                if os.path.exists(in_img): shutil.move(in_img, t_in_img)
+                if os.path.exists(out_img): 
+                    os.makedirs(os.path.dirname(t_out_img), exist_ok=True)
+                    shutil.move(out_img, t_out_img)
+                if os.path.exists(out_txt): 
+                    os.makedirs(os.path.dirname(t_out_txt), exist_ok=True)
+                    shutil.move(out_txt, t_out_txt)
+            elif action == "copy":
+                if os.path.exists(in_img): shutil.copy2(in_img, t_in_img)
+                if os.path.exists(out_img): 
+                    os.makedirs(os.path.dirname(t_out_img), exist_ok=True)
+                    shutil.copy2(out_img, t_out_img)
+                if os.path.exists(out_txt): 
+                    os.makedirs(os.path.dirname(t_out_txt), exist_ok=True)
+                    shutil.copy2(out_txt, t_out_txt)
+
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
@@ -905,6 +1067,7 @@ def api_upload():
 def api_upload_zip():
     cfg = load_config()
     zip_file = request.files.get('zip')
+    target_path = request.form.get('target_path', '')
     if not zip_file: return jsonify({"success": False})
     
     tmp_path = os.path.join(cfg['input_dir'], "temp_upload.zip")
@@ -913,7 +1076,7 @@ def api_upload_zip():
     with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
         for member in zip_ref.namelist():
             if member.lower().endswith(('.png', '.jpg', '.jpeg')) and not member.startswith('__MACOSX'):
-                safe_name = secure_rel_path(member)
+                safe_name = secure_rel_path(os.path.join(target_path, member))
                 dest = os.path.join(cfg['input_dir'], safe_name)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with zip_ref.open(member) as src, open(dest, 'wb') as dst:
@@ -926,13 +1089,9 @@ def api_upload_zip():
 def api_delete(filename):
     cfg = load_config()
     fname = urllib.parse.unquote(filename)
+    in_img, out_img, out_txt = get_paired_paths(cfg, fname)
     
-    paths_to_delete = [
-        os.path.join(cfg['input_dir'], fname),
-        os.path.join(cfg['output_dir'], "labels", os.path.splitext(fname)[0] + ".txt"),
-        os.path.join(cfg['output_dir'], "images", fname)
-    ]
-    for p in paths_to_delete:
+    for p in [in_img, out_img, out_txt]:
         if os.path.exists(p): os.remove(p)
     return jsonify({"success": True})
 
@@ -947,7 +1106,6 @@ def api_image_data(filename):
     with open(img_path, "rb") as f: b64_string = base64.b64encode(f.read()).decode('utf-8')
     return jsonify({"success": True, "image_b64": b64_string, "annotations": parse_yolo_txt(txt_path)})
 
-# Base logic for single inference
 def infer_image(img_path, prompts):
     image = Image.open(img_path).convert("RGB")
     results = []
@@ -974,7 +1132,6 @@ def api_auto_label():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
-# SSE Streaming Endpoint for bulk processing
 @app.route('/api/auto_label_bulk', methods=['POST'])
 def api_auto_label_bulk():
     data = request.json
@@ -988,7 +1145,6 @@ def api_auto_label_bulk():
             try:
                 results = infer_image(os.path.join(cfg['input_dir'], fname), prompts)
                 
-                # Save to specific subdirectories
                 out_lbl_dir = os.path.join(cfg['output_dir'], "labels", os.path.dirname(fname))
                 out_img_dir = os.path.join(cfg['output_dir'], "images", os.path.dirname(fname))
                 os.makedirs(out_lbl_dir, exist_ok=True)
@@ -1009,7 +1165,7 @@ def api_auto_label_bulk():
                 yield f"data: {json.dumps({'status': 'error', 'filename': fname, 'error': str(e)})}\n\n"
             finally:
                 torch.cuda.empty_cache()
-                gc.collect() # Extremely important to prevent T4 OOM in bulk runs
+                gc.collect() 
         
         yield f"data: {json.dumps({'status': 'done'})}\n\n"
 

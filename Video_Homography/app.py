@@ -32,9 +32,10 @@ from core_math import (
     process_single_image,
     get_exif_gps,
     calculate_bearing,
+    extract_gpmf_pitch,
     extract_video_gpmf_pitch_track,
     process_video_frames,
-    extract_gpmf_pitch,
+    haversine_distance,
 )
 
 # ----------------------------------------------------------------------
@@ -187,6 +188,8 @@ def process():
     processed_results = []
     trail_coordinates = []
 
+    # 1. Step: Save files and build metadata staging queue
+    processing_queue = []
     for f in uploaded_files:
         if not f.filename:
             continue
@@ -196,16 +199,66 @@ def process():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         f.save(filepath)
 
-        if ext in ALLOWED_VIDEO_EXT:
-            pitch_interpolator = extract_video_gpmf_pitch_track(filepath)
+        # Basic metadata collection depending on type
+        file_meta = {
+            "filename": filename,
+            "original_name": f.filename,
+            "path": filepath,
+            "ext": ext,
+            "lat": 0.0,
+            "lon": 0.0,
+            "pitch": -15.0  # fallback defaults
+        }
+
+        if ext in ALLOWED_IMAGE_EXT:
+            lat, lon = get_exif_gps(filepath)
+            dynamic_pitch = extract_gpmf_pitch(filepath)
+            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch})
+
+        processing_queue.append(file_meta)
+
+    # 2. Step: Chronological sorting (keeps assets tracking forward correctly)
+    processing_queue = sorted(processing_queue, key=lambda x: x['filename'])
+
+    # 3. Step: Heading Assignment & Spatial Location Clustering
+    loc_id = 1
+    last_valid_lat, last_valid_lon = None, None
+
+    for i in range(len(processing_queue)):
+        # Calculate dynamic directional bearing for images
+        if processing_queue[i]['ext'] in ALLOWED_IMAGE_EXT:
+            if i < len(processing_queue) - 1 and processing_queue[i + 1]['lat'] != 0.0:
+                heading = calculate_bearing(
+                    processing_queue[i]['lat'], processing_queue[i]['lon'],
+                    processing_queue[i + 1]['lat'], processing_queue[i + 1]['lon']
+                )
+            else:
+                heading = processing_queue[i - 1].get('heading', 0.0) if i > 0 else 0.0
+            processing_queue[i]['heading'] = heading
+
+            # Calculate spatial grouping clusters (>50m gap forks into a new Location cluster ID)
+            lat, lon = processing_queue[i]['lat'], processing_queue[i]['lon']
+            if lat != 0.0 and lon != 0.0:
+                if last_valid_lat is not None:
+                    dist = haversine_distance(last_valid_lat, last_valid_lon, lat, lon)
+                    if dist > 50.0:
+                        loc_id += 1
+                last_valid_lat, last_valid_lon = lat, lon
+
+            processing_queue[i]['location'] = f"Location {loc_id}"
+
+    # 4. Step: Deep Asset Engine Pipeline execution
+    for asset in processing_queue:
+        if asset['ext'] in ALLOWED_VIDEO_EXT:
+            pitch_interpolator = extract_video_gpmf_pitch_track(asset['path'])
 
             video_defects, video_geojson, video_trail = process_video_frames(
-                video_path=filepath,
+                video_path=asset['path'],
                 model=model,
                 upload_dir=app.config["UPLOAD_FOLDER"],
                 cam_height=cam_height,
                 pitch_interp=pitch_interpolator,
-                base_filename=filename,
+                base_filename=asset['filename'],
                 gps_snap=gps_snap,
             )
 
@@ -213,68 +266,46 @@ def process():
             all_geojson_features.extend(video_geojson)
             trail_coordinates.extend(video_trail)
 
-        elif ext in ALLOWED_IMAGE_EXT:
-            lat, lon = get_exif_gps(filepath)
-            dynamic_pitch = extract_gpmf_pitch(filepath)
-
-            heading = 0.0
-
-            if len(processed_results) > 0 and lat != 0.0:
-                heading = calculate_bearing(
-                    processed_results[-1]["lat"],
-                    processed_results[-1]["lon"],
-                    lat,
-                    lon,
-                )
-
-            rect_name = f"rect_{filename}"
-            bev_name = f"bev_{filename}"
-
-            rect_path = os.path.join(app.config["UPLOAD_FOLDER"], rect_name)
-            bev_path = os.path.join(app.config["UPLOAD_FOLDER"], bev_name)
+        elif asset['ext'] in ALLOWED_IMAGE_EXT:
+            rect_name = f"rect_{asset['filename']}"
+            bev_name = f"bev_{asset['filename']}"
+            rect_path = os.path.join(app.config['UPLOAD_FOLDER'], rect_name)
+            bev_path = os.path.join(app.config['UPLOAD_FOLDER'], bev_name)
 
             defects, geo_feats = process_single_image(
-                filepath,
-                model,
-                rect_path,
-                bev_path,
-                lat,
-                lon,
-                heading,
-                cam_height,
-                dynamic_pitch,
+                asset['path'], model, rect_path, bev_path,
+                asset['lat'], asset['lon'], asset['heading'], cam_height, asset['pitch']
             )
 
             all_geojson_features.extend(geo_feats)
 
-            if lat != 0.0:
-                trail_coordinates.append([lon, lat])
-
+            if asset['lat'] != 0.0:
+                trail_coordinates.append([asset['lon'], asset['lat']])
                 all_geojson_features.append({
                     "type": "Feature",
                     "properties": {
                         "type": "camera",
-                        "filename": f.filename,
+                        "filename": asset['original_name'],
+                        "location": asset['location'],
                     },
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [lon, lat],
-                    },
+                    "geometry": {"type": "Point", "coordinates": [asset['lon'], asset['lat']]},
                 })
 
             processed_results.append({
-                "original_name": f.filename,
-                "lat": round(lat, 6),
-                "lon": round(lon, 6),
-                "pitch": round(dynamic_pitch, 2),
-                "rect_url": url_for("static", filename=f"uploads/{rect_name}"),
-                "bev_url": url_for("static", filename=f"uploads/{bev_name}"),
+                "original_name": asset['original_name'],
+                "lat": round(asset['lat'], 6),
+                "lon": round(asset['lon'], 6),
+                "pitch": round(asset['pitch'], 2),
+                "location": asset['location'],
+                "rect_url": url_for('static', filename=f'uploads/{rect_name}'),
+                "bev_url": url_for('static', filename=f'uploads/{bev_name}'),
                 "defects": defects,
             })
 
         else:
-            print(f"[Skipped] Unsupported file type: {f.filename}")
+            print(f"[Skipped] Unsupported file type: {asset['original_name']}")
 
+    # Prepend trail LineString layer if spatial tracking data points exist
     if len(trail_coordinates) > 1:
         all_geojson_features.insert(0, {
             "type": "Feature",
