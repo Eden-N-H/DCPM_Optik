@@ -178,9 +178,13 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
         rect_h, rect_w = rect_img.shape[:2]
         
+        # Save un-annotated, raw BEV map required for the distance transform stitcher
+        raw_bev_filename = f"raw_bev_{view_name}_{base_filename}"
+        raw_bev_img = bev_img.copy()
+        cv2.imwrite(os.path.join(output_dir, raw_bev_filename), raw_bev_img)
+
         view_heading = (heading + config['heading_offset']) % 360
 
-        # Extract BEV geometric footprint data for mapping photogrammetry
         z_near = z_far - (bev_h * gsd)
         bev_center_z = (z_near + z_far) / 2.0
         bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, bev_center_z)
@@ -259,7 +263,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     return all_defects, all_geojson_features, base_filename, bev_footprints
 
-
 def get_video_frame_metadata(video_path, frame_skip, original_name, gps_snap):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return []
@@ -311,7 +314,6 @@ def get_video_frame_metadata(video_path, frame_skip, original_name, gps_snap):
             })
             
     return frames_meta
-
 
 def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_interp, file_name, original_name, gps_snap, frame_skip, model_lock, is_360, location_str, callback):
     cap = cv2.VideoCapture(video_path)
@@ -397,6 +399,7 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, pitch_
                 result_payload["views"][view] = {
                     "raw_filename": f"raw_rect_{view}_{frame_base_name}",
                     "raw_bev_filename": f"raw_bev_{view}_{frame_base_name}",
+                    "raw_bev_url": f"/static/uploads/raw_bev_{view}_{frame_base_name}",
                     "rect_url": f"/static/uploads/rect_{view}_{frame_base_name}",
                     "bev_url": f"/static/uploads/bev_{view}_{frame_base_name}",
                     "defects": defects[view],

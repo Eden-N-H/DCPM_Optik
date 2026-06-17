@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.signal import savgol_filter
 
 def _iter_boxes(data: bytes, offset: int = 0, end: int = None):
     if end is None:
@@ -236,6 +237,14 @@ def get_telemetry_interpolators(streams: dict):
         first_val = samples[0]["data"]
         if isinstance(first_val, list):
             data_arr = np.array([s["data"] for s in samples])
+            
+            # Apply robust Savitzky-Golay filter to smooth GPS and prevent heading jitter
+            if stream_name == "GPS5" and len(data_arr) > 11:
+                window = min(31, len(data_arr) if len(data_arr) % 2 != 0 else len(data_arr) - 1)
+                if window > 3:
+                    data_arr[:, 0] = savgol_filter(data_arr[:, 0], window, 3) # Lat
+                    data_arr[:, 1] = savgol_filter(data_arr[:, 1], window, 3) # Lon
+                    
             interp_func = interp1d(times, data_arr, axis=0, bounds_error=False, fill_value="extrapolate")
         else:
             data_arr = np.array([s["data"] for s in samples])

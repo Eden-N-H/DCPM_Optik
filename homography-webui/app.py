@@ -125,6 +125,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         result_payload["views"][view] = {
                             "raw_filename": f"raw_rect_{view}_{base_filename}",
                             "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
+                            "raw_bev_url": f"/static/uploads/raw_bev_{view}_{base_filename}",
                             "rect_url": f"/static/uploads/rect_{view}_{base_filename}",
                             "bev_url": f"/static/uploads/bev_{view}_{base_filename}",
                             "defects": defects[view],
@@ -271,12 +272,82 @@ def stream(task_id):
         while True:
             msg = q.get()
             yield f"data: {json.dumps(msg)}\n\n"
-            if msg['type'] in ['complete', 'error']:
+            if msg['type'] in ['complete', 'error', 'map_complete']:
                 del active_tasks[task_id]
                 break
 
     return Response(event_stream(), mimetype="text/event-stream")
 
+@app.route('/generate-map', methods=['POST'])
+def generate_map():
+    data = request.json
+    location = data.get("location", "Unknown")
+    results = data.get("results", [])
+    view_dir = data.get("view", "front")
+    
+    if not results:
+        return jsonify({"error": "No data provided"}), 400
+        
+    try:
+        from stitcher import create_photogrammetry_map
+    except ImportError:
+        return jsonify({"error": "Stitcher module is missing"}), 500
+
+    frames_data = []
+    for r in results:
+        v = r.get("views", {}).get(view_dir)
+        if not v or not v.get("footprint"): continue
+        
+        fp = v["footprint"]
+        path = os.path.join(app.config['UPLOAD_FOLDER'], v["raw_bev_filename"])
+        
+        frames_data.append({
+            "path": path,
+            "lat": fp["lat"],
+            "lon": fp["lon"],
+            "heading": fp["heading"],
+            "w_m": fp["width_m"],
+            "h_m": fp["height_m"]
+        })
+        
+    safe_loc = secure_filename(location)
+    uid = uuid.uuid4().hex[:8]
+    pure_output_name = f"pure_{safe_loc}_{view_dir}_{uid}.png"
+    overlay_output_name = f"overlay_{safe_loc}_{view_dir}_{uid}.png"
+    
+    pure_path = os.path.join(app.config['UPLOAD_FOLDER'], pure_output_name)
+    overlay_path = os.path.join(app.config['UPLOAD_FOLDER'], overlay_output_name)
+    
+    task_id = str(uuid.uuid4())
+    active_tasks[task_id] = queue.Queue()
+    
+    def map_worker(f_data, p_path, o_path, t_id):
+        try:
+            def progress_cb(current, total, status_msg):
+                active_tasks[t_id].put({
+                    "type": "map_progress",
+                    "current": current,
+                    "total": total,
+                    "status_msg": status_msg
+                })
+            
+            bounds = create_photogrammetry_map(f_data, p_path, o_path, progress_cb)
+            
+            if bounds:
+                active_tasks[t_id].put({
+                    "type": "map_complete",
+                    "pure_url": f"/static/uploads/{os.path.basename(p_path)}",
+                    "overlay_url": f"/static/uploads/{os.path.basename(o_path)}",
+                    "bounds": bounds
+                })
+            else:
+                active_tasks[t_id].put({"type": "error", "message": "Failed to generate valid map boundaries."})
+        except Exception as e:
+            active_tasks[t_id].put({"type": "error", "message": str(e)})
+
+    threading.Thread(target=map_worker, args=(frames_data, pure_path, overlay_path, task_id)).start()
+
+    return jsonify({"success": True, "task_id": task_id})
 
 @app.route('/export-zip', methods=['POST'])
 def export_zip():

@@ -8,14 +8,14 @@ document.addEventListener("DOMContentLoaded", () => {
     let geoJsonLayer = null;
     let pathLayer = null;
     let mapMarkers = {}; 
-    let photogrammetryLayer = null;
+    let currentMapOverlay = null; // Backend stitched map layer
     
     let fullResults = [];
     let fullGeojson = { type: "FeatureCollection", features: [] };
     let appResults = []; 
     let currentIndex = 0;
     let currentDirection = 'front'; 
-    let activeMarkerFilename = null; // Tracks the highlighted map dot
+    let activeMarkerFilename = null; 
 
     let stateLastLat = 0.0;
     let stateLastLon = 0.0;
@@ -42,67 +42,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return color;
     }
 
-    // Custom Leaflet Layer for rendering dynamic Photogrammetry BEV on HTML5 Canvas
-    L.PhotogrammetryLayer = L.Layer.extend({
-        onAdd: function(map) {
-            this._map = map;
-            if (!this._canvas) {
-                this._canvas = L.DomUtil.create('canvas', 'leaflet-zoom-animated');
-                this._canvas.style.opacity = '1.0'; 
-            }
-            map.getPane('photoPane').appendChild(this._canvas);
-            map.on('zoom viewreset move moveend', this._update, this);
-            this._update();
-        },
-        onRemove: function(map) {
-            L.DomUtil.remove(this._canvas);
-            map.off('zoom viewreset move moveend', this._update, this);
-        },
-        _update: function() {
-            if (!this._map) return;
-            var size = this._map.getSize();
-            this._canvas.width = size.x;
-            this._canvas.height = size.y;
-            L.DomUtil.setPosition(this._canvas, this._map.containerPointToLayerPoint([0,0]));
-            
-            var ctx = this._canvas.getContext('2d');
-            ctx.clearRect(0, 0, size.x, size.y);
-
-            fullResults.forEach(r => {
-                let view = r.views['front'];
-                if (!view || !view.footprint || !view.imgObj) return;
-
-                var center = this._map.latLngToContainerPoint([view.footprint.lat, view.footprint.lon]);
-
-                // Frustum Culling - skip out of bounds drawings
-                var boundsMargin = 1000;
-                if (center.x < -boundsMargin || center.x > size.x + boundsMargin ||
-                    center.y < -boundsMargin || center.y > size.y + boundsMargin) {
-                    return;
-                }
-
-                // Pixels per meter conversion at the target coordinate
-                var pCenter = this._map.project([view.footprint.lat, view.footprint.lon], this._map.getZoom());
-                var pOffset = this._map.project([view.footprint.lat + 0.0001, view.footprint.lon], this._map.getZoom());
-                var distPixels = pCenter.distanceTo(pOffset);
-                var distMeters = this._map.distance([view.footprint.lat, view.footprint.lon], [view.footprint.lat + 0.0001, view.footprint.lon]);
-                var ppm = distPixels / distMeters;
-
-                var w = view.footprint.width_m * ppm;
-                var h = view.footprint.height_m * ppm;
-
-                ctx.save();
-                ctx.translate(center.x, center.y);
-                ctx.rotate(view.footprint.heading * Math.PI / 180);
-                
-                // Slight transparency creates a natural feathering/blending effect across frames
-                ctx.globalAlpha = 0.85; 
-                ctx.drawImage(view.imgObj, -w/2, -h/2, w, h);
-                ctx.restore();
-            });
-        }
-    });
-
     function initMap() {
         if (!map) {
             map = L.map('map').setView([-32.06, 151.90], 15);
@@ -110,11 +49,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 maxZoom: 24, maxNativeZoom: 17 
             }).addTo(map);
 
-            // Create explicitly ordered Z-Index panes
             map.createPane('photoPane'); map.getPane('photoPane').style.zIndex = 250;
             map.createPane('trailPane'); map.getPane('trailPane').style.zIndex = 300;
             map.createPane('nodePane'); map.getPane('nodePane').style.zIndex = 450; 
-            // note: default overlayPane (where polygons go) is 400.
 
             geoJsonLayer = L.geoJSON(null, {
                 style: (feature) => {
@@ -229,9 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch(endpoint, { method: "POST", body: fd });
             const data = await res.json();
             
-            if (!res.ok || data.error) {
-                throw new Error(data.error || "Unknown server error");
-            }
+            if (!res.ok || data.error) throw new Error(data.error || "Unknown server error");
 
             stateLastLat = data.last_lat;
             stateLastLon = data.last_lon;
@@ -250,7 +185,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     if(pathLayer.getBounds().isValid()) map.fitBounds(pathLayer.getBounds(), { padding: [50, 50] });
                 }
 
-                // Initial plot: Red dots (Pending Processing)
                 data.initial_state.forEach(img => {
                     if(img.lat !== 0.0) {
                         const marker = L.circleMarker([img.lat, img.lon], {
@@ -307,7 +241,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (mapMarkers[r.original_name]) {
                     const marker = mapMarkers[r.original_name];
                     
-                    // Turn Blue (Processed) unless it happens to be the active marker
                     if (activeMarkerFilename !== r.original_name) {
                         marker.setStyle({ fillColor: "#3b82f6", radius: 2, color: "#ffffff", weight: 0.5 });
                     }
@@ -373,19 +306,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.getElementById("btn-save-project").onclick = () => {
         if (fullResults.length === 0) return;
-        
-        // Strip out the loaded DOM images before serializing
-        const safeResults = fullResults.map(r => {
-            let rClone = {...r, views: {}};
-            for (let v in r.views) {
-                let vClone = {...r.views[v]};
-                delete vClone.imgObj;
-                rClone.views[v] = vClone;
-            }
-            return rClone;
-        });
-
-        const projectData = { is_360: appIs360, results: safeResults, geojson: fullGeojson };
+        const projectData = { is_360: appIs360, results: fullResults, geojson: fullGeojson };
         const blob = new Blob([JSON.stringify(projectData)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -446,7 +367,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         pathLayer.addData({ type: "Feature", geometry: { type: "LineString", coordinates: tCoords } });
                     }
 
-                    // Imported jobs initialize as Blue (Processed)
                     fullResults.forEach(img => {
                         if (!mapMarkers[img.original_name] && img.lat !== 0.0) {
                             const marker = L.circleMarker([img.lat, img.lon], {
@@ -473,7 +393,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
                     refreshLocationsUI();
                     setView('front');
-                    if (appResults.length > 0) updateCarousel(true); // Forces active marker initialization
+                    if (appResults.length > 0) updateCarousel(true);
                 }, 200);
 
             } catch (err) {
@@ -484,142 +404,132 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     btnLoadPhoto.onclick = async function() {
-        const hasFootprint = fullResults.some(r => r.views && r.views['front'] && r.views['front'].footprint);
+        const hasFootprint = appResults.some(r => r.views && r.views['front'] && r.views['front'].footprint);
         if (!hasFootprint) {
-            alert("This project is missing BEV footprint data. Photogrammetry requires projects processed on the latest version.");
+            alert("This project is missing BEV footprint data.");
             return;
         }
 
         const originalText = this.innerHTML;
-        this.innerHTML = "⏳ Preloading Overlays...";
+        this.innerHTML = "⏳ Initializing Photogrammetry...";
         this.disabled = true;
         
-        let promises = fullResults.map(r => {
-            return new Promise(resolve => {
-                let view = r.views['front'];
-                if (!view || !view.footprint) { resolve(); return; }
-                if (view.imgObj) { resolve(); return; } 
-                
-                let img = new Image();
-                img.src = view.bev_url;
-                img.onload = () => { view.imgObj = img; resolve(); };
-                img.onerror = () => { resolve(); };
+        document.getElementById("progress-bar").style.width = `0%`;
+        document.getElementById("progress-text").textContent = `Warming Up SIFT Extractors...`;
+        document.getElementById("eta-text").textContent = `ETA: Calculating...`;
+        document.getElementById("progress-container").classList.remove("hidden");
+        
+        try {
+            const res = await fetch("/generate-map", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ 
+                    location: selLocation.value, 
+                    results: appResults, 
+                    view: currentDirection 
+                })
             });
-        });
-        
-        await Promise.all(promises);
-        this.classList.add("hidden");
-        
-        if (!photogrammetryLayer) {
-            photogrammetryLayer = new L.PhotogrammetryLayer().addTo(map);
+            const data = await res.json();
             
-            L.Control.PhotoToggle = L.Control.extend({
-                options: { position: 'bottomleft' },
-                onAdd: function() {
-                    var container = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-custom bg-white/95 px-3 py-2 shadow-sm text-sm flex items-center divide-x divide-gray-300');
-                    
-                    var toggleBtn = L.DomUtil.create('div', 'font-bold cursor-pointer pr-3', container);
-                    toggleBtn.innerHTML = '🗺️ Photogrammetry: ON';
-                    
-                    var exportBtn = L.DomUtil.create('div', 'pl-3 cursor-pointer text-blue-600 hover:text-blue-800 font-bold', container);
-                    exportBtn.innerHTML = '⬇️ Export Image';
-
-                    toggleBtn.onclick = function(e) {
-                        e.stopPropagation();
-                        if (map.hasLayer(photogrammetryLayer)) {
-                            map.removeLayer(photogrammetryLayer);
-                            toggleBtn.innerHTML = '🗺️ Photogrammetry: OFF';
-                            toggleBtn.style.color = '#6b7280';
-                        } else {
-                            map.addLayer(photogrammetryLayer);
-                            toggleBtn.innerHTML = '🗺️ Photogrammetry: ON';
-                            toggleBtn.style.color = '#000000';
-                        }
-                    }
-
-                    exportBtn.onclick = function(e) {
-                        e.stopPropagation();
-                        const oldText = exportBtn.innerHTML;
-                        exportBtn.innerHTML = '⏳ Processing...';
-                        setTimeout(() => {
-                            exportPhotogrammetryMap();
-                            exportBtn.innerHTML = oldText;
-                        }, 100);
-                    }
-
-                    return container;
-                }
-            });
-            map.addControl(new L.Control.PhotoToggle());
-        } else if (!map.hasLayer(photogrammetryLayer)) {
-            map.addLayer(photogrammetryLayer);
-        }
+            if (data.error) throw new Error(data.error);
+            
+            startMapSSE(data.task_id, originalText);
+            
+        } catch (err) {
+            alert("Map Generation Failed: " + err.message);
+            resetMapUI(originalText);
+        } 
     };
 
-    function exportPhotogrammetryMap() {
-        const zoom = 22; 
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        let validFrames = [];
+    function startMapSSE(taskId, originalText) {
+        const source = new EventSource(`/stream/${taskId}`);
+        let startTime = Date.now();
 
-        fullResults.forEach(r => {
-            let view = r.views['front'];
-            if (view && view.footprint && view.imgObj) {
-                let pt = map.project([view.footprint.lat, view.footprint.lon], zoom);
-                let ppm = map.project([view.footprint.lat, view.footprint.lon], zoom).distanceTo(
-                          map.project([view.footprint.lat + 0.00001, view.footprint.lon], zoom)) / 
-                          map.distance([view.footprint.lat, view.footprint.lon], [view.footprint.lat + 0.00001, view.footprint.lon]);
+        source.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            
+            if (msg.type === "error") {
+                source.close();
+                alert(`Map Stitching Error: ${msg.message}`);
+                resetMapUI(originalText);
+                return;
+            }
+
+            if (msg.type === "map_progress") {
+                const pct = msg.total > 0 ? (msg.current / msg.total) * 100 : 100;
+                document.getElementById("progress-bar").style.width = `${pct}%`;
+                document.getElementById("progress-text").textContent = msg.status_msg;
+
+                if (msg.current > 0) {
+                    const elapsedSec = (Date.now() - startTime) / 1000;
+                    const avgSpeed = elapsedSec / msg.current;
+                    const remainSec = Math.ceil((msg.total - msg.current) * avgSpeed);
+                    const mins = Math.floor(remainSec / 60);
+                    const secs = remainSec % 60;
+                    document.getElementById("eta-text").textContent = `ETA: ${mins}m ${secs}s`;
+                }
+            }
+
+            if (msg.type === "map_complete") {
+                source.close();
                 
-                let w = view.footprint.width_m * ppm;
-                let h = view.footprint.height_m * ppm;
-                let radius = Math.sqrt(w*w + h*h) / 2;
+                if (currentMapOverlay && map.hasLayer(currentMapOverlay)) {
+                    map.removeLayer(currentMapOverlay);
+                }
+                
+                currentMapOverlay = L.imageOverlay(msg.overlay_url, msg.bounds, { opacity: 0.9, pane: 'photoPane' }).addTo(map);
+                map.fitBounds(msg.bounds);
+                setupPhotoToggleUI(msg.overlay_url, msg.pure_url);
+                
+                resetMapUI(originalText);
+            }
+        };
+    }
 
-                minX = Math.min(minX, pt.x - radius);
-                minY = Math.min(minY, pt.y - radius);
-                maxX = Math.max(maxX, pt.x + radius);
-                maxY = Math.max(maxY, pt.y + radius);
+    function resetMapUI(originalText) {
+        document.getElementById("progress-container").classList.add("hidden");
+        btnLoadPhoto.innerHTML = originalText;
+        btnLoadPhoto.disabled = false;
+    }
 
-                validFrames.push({ view, pt, w, h });
+    function setupPhotoToggleUI(overlayUrl, pureUrl) {
+        if (map.photoToggleControl) map.removeControl(map.photoToggleControl);
+        
+        L.Control.PhotoToggle = L.Control.extend({
+            options: { position: 'bottomleft' },
+            onAdd: function() {
+                var container = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-custom bg-white/95 px-3 py-2 shadow-sm text-sm flex items-center gap-3');
+                
+                var toggleBtn = L.DomUtil.create('div', 'font-bold cursor-pointer', container);
+                toggleBtn.innerHTML = '🗺️ Map Layer: ON';
+                
+                var dlOverlayBtn = L.DomUtil.create('a', 'cursor-pointer text-blue-600 hover:text-blue-800 font-bold border-l border-gray-300 pl-3', container);
+                dlOverlayBtn.innerHTML = '⬇️ DL Overlay';
+                dlOverlayBtn.href = overlayUrl;
+                dlOverlayBtn.download = "DCPM_Map_Overlay.png";
+                
+                var dlPureBtn = L.DomUtil.create('a', 'cursor-pointer text-emerald-600 hover:text-emerald-800 font-bold border-l border-gray-300 pl-3', container);
+                dlPureBtn.innerHTML = '🖼️ DL Pure Ribbon';
+                dlPureBtn.href = pureUrl;
+                dlPureBtn.download = "DCPM_Pure_Ribbon.png";
+
+                toggleBtn.onclick = function(e) {
+                    e.stopPropagation();
+                    if (currentMapOverlay && map.hasLayer(currentMapOverlay)) {
+                        map.removeLayer(currentMapOverlay);
+                        toggleBtn.innerHTML = '🗺️ Map Layer: OFF';
+                        toggleBtn.style.color = '#6b7280';
+                    } else if (currentMapOverlay) {
+                        map.addLayer(currentMapOverlay);
+                        toggleBtn.innerHTML = '🗺️ Map Layer: ON';
+                        toggleBtn.style.color = '#000000';
+                    }
+                }
+                return container;
             }
         });
-
-        if (validFrames.length === 0) return;
-
-        let canvasWidth = Math.ceil(maxX - minX);
-        let canvasHeight = Math.ceil(maxY - minY);
-        
-        let scale = 1.0;
-        const MAX_DIM = 12000;
-        if (canvasWidth > MAX_DIM || canvasHeight > MAX_DIM) {
-            scale = MAX_DIM / Math.max(canvasWidth, canvasHeight);
-            canvasWidth = Math.floor(canvasWidth * scale);
-            canvasHeight = Math.floor(canvasHeight * scale);
-        }
-
-        let canvas = document.createElement('canvas');
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
-        let ctx = canvas.getContext('2d');
-        
-        ctx.fillStyle = "rgba(0,0,0,0)";
-        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-        validFrames.forEach(f => {
-            ctx.save();
-            ctx.translate((f.pt.x - minX) * scale, (f.pt.y - minY) * scale);
-            ctx.rotate(f.view.footprint.heading * Math.PI / 180);
-            ctx.globalAlpha = 0.85;
-            ctx.drawImage(f.view.imgObj, (-f.w/2) * scale, (-f.h/2) * scale, f.w * scale, f.h * scale);
-            ctx.restore();
-        });
-
-        canvas.toBlob((blob) => {
-            let url = URL.createObjectURL(blob);
-            let a = document.createElement('a');
-            a.href = url;
-            a.download = "DCPM_Photogrammetry_Map.png";
-            a.click();
-            URL.revokeObjectURL(url);
-        }, 'image/png');
+        map.photoToggleControl = new L.Control.PhotoToggle();
+        map.addControl(map.photoToggleControl);
     }
 
     const triggerZipExport = async (endpoint, btnId, loadingText, filename) => {
@@ -630,20 +540,10 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.disabled = true;
 
         try {
-            const safeResults = fullResults.map(r => {
-                let rClone = {...r, views: {}};
-                for (let v in r.views) {
-                    let vClone = {...r.views[v]};
-                    delete vClone.imgObj;
-                    rClone.views[v] = vClone;
-                }
-                return rClone;
-            });
-
             const res = await fetch(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ results: safeResults })
+                body: JSON.stringify({ results: fullResults })
             });
             if (!res.ok) throw new Error("Failed to compile ZIP file");
             
@@ -725,7 +625,6 @@ document.addEventListener("DOMContentLoaded", () => {
             </tr>`;
         }).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No detections</td></tr>`;
 
-        // Handle Active Marker Highlighting
         if (activeMarkerFilename && mapMarkers[activeMarkerFilename]) {
             mapMarkers[activeMarkerFilename].setStyle({ fillColor: "#3b82f6", radius: 2, weight: 0.5, color: "#ffffff" });
         }
