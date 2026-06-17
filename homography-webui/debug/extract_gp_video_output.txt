@@ -1,0 +1,132 @@
+$ python debug/extract_gp_video.py 
+--- 1. EXTRACTING BINARY STREAM VIA FFMPEG ---
+Extracted binary track to telemetry.bin (428.7 KB)
+
+--- 2. PARSING GPMF AST ---
+--- 3. EXTRACTING ALL DATA STREAMS ---
+
+==============================================
+           DEVICE CONSTANTS / INFO            
+==============================================
+  DVID   : 1
+  DVNM   : HERO11 Black
+
+==============================================
+            TELEMETRY DATA STREAMS            
+==============================================
+[AALP] AGC audio level[rms_level ,peak_level] (dBFS)
+       -> Total Samples: 610
+       -> Sample [0]   : (-128.0, -128.0)
+--------------------------------------------------
+[ACCL] Accelerometer 
+       -> Total Samples: 12,260
+       -> Sample [0]   : (9.844124700239808, 3.462829736211031, 0.9712230215827338)
+--------------------------------------------------
+[CORI] CameraOrientation 
+       -> Total Samples: 1,830
+       -> Sample [0]   : (0.999969481490524, 0.0004882961516159551, -0.00015259254737998596, -0.001098666341135899)
+--------------------------------------------------
+[FACE] Face Coordinates and details -> NO DATA DETECTED (0 Samples)
+--------------------------------------------------
+[GPS5] GPS (Lat., Long., Alt., 2D speed, 3D speed) (degdegmm/sm/s)
+       -> Total Samples: 610
+       -> Sample [0]   : (-36.2263326, 149.147035, 816.293, 8.653, 8.78)
+--------------------------------------------------
+[GPS9] GPS (Lat., Long., Alt., 2D, 3D, days, secs, DOP, fix) (degdegmm/sm/ss)
+       -> Total Samples: 610
+       -> Sample [0]   : (-36.2263326, 149.147035, 816.293, 8.653, 8.78, 9068.0, 650.499, 1.16, 3.0)
+--------------------------------------------------
+[GPSA] GPS (Lat., Long., Alt., 2D speed, 3D speed) (degdegmm/sm/s)
+       -> Total Samples: 122
+       -> Sample [0]   : MSLV
+--------------------------------------------------
+[GPSF] GPS (Lat., Long., Alt., 2D speed, 3D speed) (degdegmm/sm/s)
+       -> Total Samples: 61
+       -> Sample [0]   : 3e-07
+--------------------------------------------------
+[GPSP] GPS (Lat., Long., Alt., 2D speed, 3D speed) (degdegmm/sm/s)
+       -> Total Samples: 61
+       -> Sample [0]   : 1.16e-05
+--------------------------------------------------
+[GPSU] GPS (Lat., Long., Alt., 2D speed, 3D speed) (degdegmm/sm/s)
+       -> Total Samples: 61
+       -> Sample [0]   : 241029001050.499
+--------------------------------------------------
+[GRAV] Gravity Vector 
+       -> Total Samples: 1,830
+       -> Sample [0]   : (0.018890957365642263, 0.977629932554094, 0.20935697500534073)
+--------------------------------------------------
+[GYRO] Gyroscope 
+       -> Total Samples: 12,260
+       -> Sample [0]   : (-0.014909478168264111, -0.011714589989350373, -0.2779552715654952)
+--------------------------------------------------
+[HUES] Predominant hue[[hue, weight], ...] 
+       -> Total Samples: 183
+       -> Sample [0]   : (15.0, 233.0)
+--------------------------------------------------
+[IORI] ImageOrientation 
+       -> Total Samples: 1,830
+       -> Sample [0]   : (1.0, 0.0, -6.103701895199438e-05, 0.00012207403790398877)
+--------------------------------------------------
+[ISOE] Sensor ISO 
+       -> Total Samples: 1,830
+       -> Sample [0]   : 100.0
+--------------------------------------------------
+[LRVO] LRV Frame Skip 
+       -> Total Samples: 61
+       -> Sample [0]   : 0.0
+--------------------------------------------------
+[LRVS] LRV Frame Skip 
+       -> Total Samples: 61
+       -> Sample [0]   : 1.0
+--------------------------------------------------
+[LSKP] LRV Frame Skip 
+       -> Total Samples: 1,830
+       -> Sample [0]   : -1.0
+--------------------------------------------------
+[MSKP] MRV Frame Skip 
+       -> Total Samples: 1,830
+       -> Sample [0]   : -1.0
+--------------------------------------------------
+[MWET] Microphone Wet[mic_wet, all_mics, confidence] 
+       -> Total Samples: 610
+       -> Sample [0]   : (0.0, 0.0, 0.0)
+--------------------------------------------------
+[SCEN] Scene classification[[CLASSIFIER_FOUR_CC,prob], ...] 
+       -> Total Samples: 366
+       -> Sample [0]   : ('SNOW', 0.23000000417232513)
+--------------------------------------------------
+[SHUT] Exposure time (shutter speed) 
+       -> Total Samples: 1,830
+       -> Sample [0]   : 0.0004785614146385342
+--------------------------------------------------
+[STMP] Accelerometer 
+       -> Total Samples: 1,281
+       -> Sample [0]   : 97.41247002398082
+--------------------------------------------------
+[TMPC] Accelerometer 
+       -> Total Samples: 122
+       -> Sample [0]   : 0.09635416666666667
+--------------------------------------------------
+[UNIF] Image uniformity 
+       -> Total Samples: 611
+       -> Sample [0]   : 0.0
+--------------------------------------------------
+[WBAL] White Balance temperature (Kelvin) 
+       -> Total Samples: 611
+       -> Sample [0]   : 4780.0
+--------------------------------------------------
+[WNDM] Wind Processing[wind_enable, meter_value(0 - 100)] 
+       -> Total Samples: 610
+       -> Sample [0]   : (0.0, 0.0)
+--------------------------------------------------
+[WRGB] White Balance RGB gains 
+       -> Total Samples: 611
+       -> Sample [0]   : (1.984375, 1.0, 1.8515625)
+--------------------------------------------------
+[YAVG] Average luminance 
+       -> Total Samples: 610
+       -> Sample [0]   : 142.0
+--------------------------------------------------
+
+Extraction complete! Every valid data stream has been successfully parsed.
