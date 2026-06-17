@@ -235,7 +235,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 let hasDefects = r.geojson && r.geojson.length > 0;
                 if (hasDefects) {
                     fullGeojson.features.push(...r.geojson);
-                    geoJsonLayer.addData(r.geojson);
+                    geoJsonLayer.addData({
+                        type: "FeatureCollection",
+                        features: r.geojson
+                    });
                 }
 
                 if (mapMarkers[r.original_name]) {
