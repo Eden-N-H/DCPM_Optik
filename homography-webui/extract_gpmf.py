@@ -1,189 +1,191 @@
+import os
+import re
 import struct
 from pathlib import Path
-from typing import Optional
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
 
-def _iter_boxes(data: bytes, offset: int = 0, end: int = None):
-    if end is None:
-        end = len(data)
-    while offset + 8 <= end:
-        size     = struct.unpack_from(">I", data, offset)[0]
-        box_type = data[offset + 4: offset + 8].decode("latin-1")
-        if size == 1:
-            size   = struct.unpack_from(">Q", data, offset + 8)[0]
-            header = 16
-        elif size == 0:
-            size   = end - offset
-            header = 8
+def extract_gpmf_from_jpeg(file_path):
+    if not os.path.exists(file_path): return None
+    with open(file_path, 'rb') as f:
+        if f.read(2) != b'\xff\xd8': return None
+        while True:
+            marker_header = f.read(2)
+            if len(marker_header) < 2 or marker_header[0] != 0xff: break
+            marker_type = marker_header[1]
+            if marker_type in (0xd9, 0xda): break
+            len_bytes = f.read(2)
+            if len(len_bytes) < 2: break
+            length = struct.unpack('>H', len_bytes)[0]
+            payload = f.read(length - 2)
+            if marker_type == 0xe6 and payload.startswith(b'GoPro\x00'):
+                return payload[6:]
+    return None
+
+def unpack_gpmf_data(type_val, size, repeat, raw_data):
+    type_char = type_val.decode('ascii', errors='ignore')
+    fmt_map = {'s': 'h', 'S': 'H', 'l': 'i', 'L': 'I', 'f': 'f', 'd': 'd', 'B': 'B', 'b': 'b', 'J': 'Q', 'j': 'q'}
+    if type_char in fmt_map:
+        py_type = fmt_map[type_char]
+        vals_per_repeat = size // struct.calcsize(py_type)
+        fmt = f">{vals_per_repeat * repeat}{py_type}"
+        try:
+            unpacked = struct.unpack(fmt, raw_data[:struct.calcsize(fmt)])
+            if vals_per_repeat > 1: return [list(unpacked[i:i+vals_per_repeat]) for i in range(0, len(unpacked), vals_per_repeat)]
+            return list(unpacked)
+        except Exception: return raw_data
+    elif type_char == 'c': return raw_data.decode('ascii', errors='ignore').strip('\x00')
+    elif type_char in ['F', 'U']:
+        results = [(raw_data[i*size : (i+1)*size]).decode('ascii', errors='ignore').strip('\x00') for i in range(repeat)]
+        return results if repeat > 1 else results[0]
+    return raw_data 
+
+def unpack_complex_gpmf(type_str, size, repeat, raw_data):
+    matches = re.findall(r'(\[\d+\])?([a-zA-Z])', type_str)
+    parsed = [(int(b[1:-1]) if b else 1, c) for b, c in matches]
+    fmt_map = {'b': ('b',1), 'B': ('B',1), 'c': ('s',1), 'd': ('d',8), 'f': ('f',4), 'l': ('i',4), 'L': ('I',4), 's': ('h',2), 'S': ('H',2)}
+    fmt, expected_size, flat_chars = '>', 0, []
+    
+    for count, char in parsed:
+        if char not in fmt_map: return None
+        py_fmt, bytes_per_item = fmt_map[char]
+        if py_fmt.endswith('s'):
+            fmt += f"{count * (int(py_fmt[:-1]) if len(py_fmt)>1 else 1)}s"
+            expected_size += count * (int(py_fmt[:-1]) if len(py_fmt)>1 else 1)
+            flat_chars.append(char)
         else:
-            header = 8
+            fmt += f"{count}{py_fmt}"
+            expected_size += count * bytes_per_item
+            flat_chars.extend([char] * count)
+            
+    if expected_size == 0 or expected_size > size: return None
+    results = []
+    try:
+        for i in range(repeat):
+            chunk = raw_data[i*size : (i+1)*size]
+            if len(chunk) < expected_size: break
+            unpacked = struct.unpack(fmt, chunk[:expected_size])
+            cleaned = [val.decode('ascii', errors='ignore').strip('\x00') if char in ('F','U','c') else val for val, char in zip(unpacked, flat_chars)]
+            results.append(cleaned[0] if len(cleaned) == 1 else list(cleaned))
+        return results
+    except Exception: return None
+
+def parse_gpmf(data, offset=0, end=None):
+    if end is None: end = len(data)
+    elements = []
+    while offset < end:
+        if offset + 8 > end: break
+        key = data[offset:offset+4].decode('ascii', errors='ignore')
+        type_val = data[offset+4:offset+5]
+        size, repeat = struct.unpack('>BH', data[offset+5:offset+8])
+        length = size * repeat
+        padded_length = (length + 3) & ~3
+        value_offset = offset + 8
+        if value_offset + length > end: break
+        
+        node = {'key': key, 'type': type_val.decode('ascii', errors='ignore'), 'size': size, 'repeat': repeat, 'raw': data[value_offset:value_offset + length]}
+        if type_val == b'\x00':
+            node['children'] = parse_gpmf(data, value_offset, value_offset + length)
+            node['value'] = None
+        else: node['value'] = unpack_gpmf_data(type_val, size, repeat, node['raw'])
+            
+        elements.append(node)
+        offset += 8 + padded_length
+    return elements
+
+def extract_all_telemetry(ast):
+    constants, streams = {}, {}
+    METADATA_KEYS = {'STNM', 'SCAL', 'UNIT', 'SIUN', 'TYPE', 'MTRY', 'OUTR', 'ORIN', 'TICK', 'TSMP', 'TIMO', 'EMP'}
+
+    for devc in ast:
+        if devc['key'] == 'DEVC':
+            for item in devc.get('children', []):
+                if item['key'] != 'STRM':
+                    val = item.get('value') or item.get('raw')
+                    constants[item['key']] = val[0] if isinstance(val, list) and len(val) == 1 else val
+                else:
+                    strm_dict = {t['key']: t for t in item.get('children', [])}
+                    scal = strm_dict.get('SCAL', {}).get('value', [1])
+                    if not isinstance(scal, (list, tuple)): scal = [scal]
+                    
+                    type_str = "".join(strm_dict.get('TYPE', {}).get('value', [])) if isinstance(strm_dict.get('TYPE', {}).get('value', []), list) else strm_dict.get('TYPE', {}).get('value', '')
+                    for d_key in [k for k in strm_dict.keys() if k not in METADATA_KEYS]:
+                        d_node = strm_dict[d_key]
+                        raw_samples = d_node.get('value', [])
+                        
+                        if isinstance(raw_samples, bytes) and type_str and d_node['repeat'] > 0:
+                            complex_res = unpack_complex_gpmf(type_str, d_node['size'], d_node['repeat'], d_node['raw'])
+                            if complex_res is not None: raw_samples = complex_res
+                            
+                        if isinstance(raw_samples, bytes): raw_samples = []
+                        if not isinstance(raw_samples, list): raw_samples = [raw_samples]
+                            
+                        if d_key not in streams: streams[d_key] = []
+                        
+                        for row in raw_samples:
+                            if isinstance(row, (tuple, list)):
+                                scaled = [val / (scal[i] if i < len(scal) and scal[i] != 0 else (scal[-1] if len(scal) > 0 and scal[-1] != 0 else 1)) if isinstance(val, (int, float)) else val for i, val in enumerate(row)]
+                                streams[d_key].append(scaled)
+                            elif isinstance(row, (int, float)):
+                                streams[d_key].append(row / (scal[0] if len(scal) > 0 and scal[0] != 0 else 1))
+                            else: streams[d_key].append(row)
+    return constants, streams
+
+# MP4 BOX Parsing logic for perfectly timestamped chunk extraction
+def _iter_boxes(data, offset=0, end=None):
+    if end is None: end = len(data)
+    while offset + 8 <= end:
+        size = struct.unpack_from(">I", data, offset)[0]
+        box_type = data[offset + 4: offset + 8].decode("latin-1")
+        if size == 1: size = struct.unpack_from(">Q", data, offset + 8)[0]; header = 16
+        elif size == 0: size = end - offset; header = 8
+        else: header = 8
         yield box_type, data[offset + header: offset + size]
         offset += size
 
-def _find_box(data: bytes, *path: str) -> Optional[bytes]:
+def _find_box(data, *path):
     current = data
     for step in path:
         found = None
         for btype, bdata in _iter_boxes(current):
-            if btype == step:
-                found = bdata
-                break
-        if found is None:
-            return None
+            if btype == step: found = bdata; break
+        if found is None: return None
         current = found
     return current
 
-def _find_all_boxes(data: bytes, target: str):
+def _find_all_boxes(data, target):
     for btype, bdata in _iter_boxes(data):
-        if btype == target:
-            yield bdata
+        if btype == target: yield bdata
 
-_TYPE_MAP = {
-    'b': ('b', 1), 'B': ('B', 1),
-    's': ('h', 2), 'S': ('H', 2),
-    'l': ('i', 4), 'L': ('I', 4),
-    'q': ('q', 8), 'Q': ('Q', 8),
-    'f': ('f', 4), 'd': ('d', 8),
-    'J': ('Q', 8),
-}
-_STRING_TYPES = frozenset(('c', 'U', 'F'))
-_NESTED       = '\x00'
-
-def _decode_gpmf(data: bytes) -> list:
-    results = []
-    offset  = 0
-    while offset + 8 <= len(data):
-        fourcc    = data[offset: offset + 4].decode("latin-1")
-        type_char = chr(data[offset + 4])
-        size      = data[offset + 5]
-        repeat    = struct.unpack_from(">H", data, offset + 6)[0]
-        offset   += 8
-
-        total   = size * repeat
-        payload = data[offset: offset + total]
-        offset += (total + 3) & ~3
-
-        if type_char == _NESTED:
-            results.append({
-                "fourcc": fourcc, "type": "nested",
-                "size": size, "repeat": repeat,
-                "values": _decode_gpmf(payload),
-            })
-        elif type_char in _STRING_TYPES:
-            results.append({
-                "fourcc": fourcc, "type": type_char,
-                "size": size, "repeat": repeat,
-                "values": payload.decode("latin-1").rstrip('\x00'),
-            })
-        else:
-            info = _TYPE_MAP.get(type_char)
-            if info is None:
-                values = payload.hex()
-            else:
-                fmt_char, item_size = info
-                n_per   = size // item_size if item_size else 1
-                fmt     = f">{n_per}{fmt_char}"
-                try:
-                    unpacked = [struct.unpack_from(fmt, payload, i * size) for i in range(repeat)]
-                    values   = [list(v) if n_per > 1 else v[0] for v in unpacked]
-                except struct.error:
-                    values = payload.hex()
-            results.append({
-                "fourcc": fourcc, "type": type_char,
-                "size": size, "repeat": repeat,
-                "values": values,
-            })
-    return results
-
-def _flatten_streams_with_timing(entries: list, streams: dict, target: Optional[str],
-                                 scale: Optional[list], base_time: float, duration: float):
-    current_scale = scale
-    total_samples_in_block = 0
-    for entry in entries:
-        if entry["type"] != "nested" and (not target or entry["fourcc"] == target):
-            if isinstance(entry["values"], list):
-                total_samples_in_block = max(total_samples_in_block, len(entry["values"]))
-
-    for entry in entries:
-        fourcc = entry["fourcc"]
-        if fourcc == "SCAL":
-            current_scale = entry["values"]
-        elif entry["type"] == "nested":
-            _flatten_streams_with_timing(entry["values"], streams, target, scale=None,
-                                         base_time=base_time, duration=duration)
-        else:
-            if target and fourcc != target:
-                continue
-            values = entry["values"]
-            if not isinstance(values, list):
-                continue
-
-            if current_scale is not None:
-                try:
-                    s = current_scale
-                    if isinstance(s, list) and len(s) == 1:
-                        s = s[0]
-                        values = [[x / s for x in r] if isinstance(r, list) else r / s for r in values]
-                    elif isinstance(s, list):
-                        values = [[x / s[i] for i, x in enumerate(r)] if isinstance(r, list) else r for r in values]
-                except (TypeError, ZeroDivisionError, IndexError):
-                    pass
-                current_scale = None
-
-            n_items = len(values)
-            if n_items > 0:
-                for idx, val in enumerate(values):
-                    sample_time = base_time + (idx / n_items) * duration
-                    streams.setdefault(fourcc, []).append({
-                        "time_sec": sample_time,
-                        "data": val
-                    })
-
-def _find_gpmf_samples_with_timing(mp4_bytes: bytes) -> list:
+def _find_gpmf_samples_with_timing(mp4_bytes):
     moov = _find_box(mp4_bytes, "moov")
-    if moov is None:
-        raise ValueError("No 'moov' box found.")
-
+    if not moov: return []
     mvhd = _find_box(moov, "mvhd")
     mv_timescale = struct.unpack_from(">I", mvhd, 12)[0] if mvhd else 600
 
     for trak in _find_all_boxes(moov, "trak"):
         mdia = _find_box(trak, "mdia")
-        if mdia is None:
-            continue
+        if not mdia: continue
         mdhd = _find_box(mdia, "mdhd")
         trak_timescale = struct.unpack_from(">I", mdhd, 12)[0] if mdhd else mv_timescale
-
         stbl = _find_box(mdia, "minf", "stbl")
-        if stbl is None:
-            continue
-
+        if not stbl: continue
         stsd = _find_box(stbl, "stsd")
-        if stsd is None or struct.unpack_from(">I", stsd, 4)[0] == 0:
-            continue
-        if stsd[12:16] != b"gpmd":
-            continue
+        if not stsd or struct.unpack_from(">I", stsd, 4)[0] == 0 or stsd[12:16] != b"gpmd": continue
 
         stco, co64 = _find_box(stbl, "stco"), _find_box(stbl, "co64")
-        offsets = []
-        if stco:
-            n = struct.unpack_from(">I", stco, 4)[0]
-            offsets = [struct.unpack_from(">I", stco, 8 + i * 4)[0] for i in range(n)]
-        elif co64:
-            n = struct.unpack_from(">I", co64, 4)[0]
-            offsets = [struct.unpack_from(">Q", co64, 8 + i * 8)[0] for i in range(n)]
+        if stco: offsets = [struct.unpack_from(">I", stco, 8 + i * 4)[0] for i in range(struct.unpack_from(">I", stco, 4)[0])]
+        elif co64: offsets = [struct.unpack_from(">Q", co64, 8 + i * 8)[0] for i in range(struct.unpack_from(">I", co64, 4)[0])]
+        else: offsets = []
 
         stsz = _find_box(stbl, "stsz")
-        default_sz = struct.unpack_from(">I", stsz, 4)[0]
-        n_samples  = struct.unpack_from(">I", stsz, 8)[0]
+        default_sz, n_samples = struct.unpack_from(">I", stsz, 4)[0], struct.unpack_from(">I", stsz, 8)[0]
         sizes = [default_sz] * n_samples if default_sz else [struct.unpack_from(">I", stsz, 12 + i * 4)[0] for i in range(n_samples)]
 
         stts = _find_box(stbl, "stts")
-        n_excl = struct.unpack_from(">I", stts, 4)[0]
         sample_durations = []
-        for i in range(n_excl):
+        for i in range(struct.unpack_from(">I", stts, 4)[0]):
             count, delta = struct.unpack_from(">II", stts, 8 + i * 8)
             sample_durations.extend([delta] * count)
 
@@ -191,64 +193,84 @@ def _find_gpmf_samples_with_timing(mp4_bytes: bytes) -> list:
         n_sc = struct.unpack_from(">I", stsc, 4)[0]
         sc_rows = [struct.unpack_from(">III", stsc, 8 + i * 12) for i in range(n_sc)]
 
-        samples = []
-        idx = 0
-        current_time_ticks = 0
-
+        samples, idx, current_time_ticks = [], 0, 0
         for ei, (first_chunk, spc, _) in enumerate(sc_rows):
             next_first = sc_rows[ei + 1][0] if ei + 1 < n_sc else len(offsets) + 1
             for ci in range(first_chunk - 1, next_first - 1):
-                if ci >= len(offsets) or idx >= len(sizes):
-                    break
+                if ci >= len(offsets) or idx >= len(sizes): break
                 chunk_off = offsets[ci]
                 for _ in range(spc):
-                    if idx >= len(sizes):
-                        break
+                    if idx >= len(sizes): break
                     sz = sizes[idx]
                     dur_ticks = sample_durations[idx] if idx < len(sample_durations) else 0
-
-                    t_start = current_time_ticks / trak_timescale
-                    t_dur   = dur_ticks / trak_timescale
-
-                    samples.append((chunk_off, sz, t_start, t_dur))
+                    samples.append((chunk_off, sz, current_time_ticks / trak_timescale, dur_ticks / trak_timescale))
                     chunk_off += sz
                     current_time_ticks += dur_ticks
                     idx += 1
         return samples
-    raise ValueError("No valid GPMF track metadata matched layout metrics.")
+    return []
 
-def extract_streams_with_time(mp4_path: str, target: str = None) -> dict:
+def extract_streams_with_time(mp4_path):
     data = Path(mp4_path).read_bytes()
     samples = _find_gpmf_samples_with_timing(data)
-    streams = {}
+    timed_streams = {}
+    global_constants = {}
+    
     for off, sz, t_start, t_dur in samples:
-        if sz == 0:
-            continue
-        blob = data[off: off + sz]
-        _flatten_streams_with_timing(_decode_gpmf(blob), streams, target=target, scale=None,
-                                     base_time=t_start, duration=t_dur)
-    return streams
+        if sz == 0: continue
+        ast = parse_gpmf(data[off: off + sz])
+        constants, chunk_streams = extract_all_telemetry(ast)
+        global_constants.update(constants)
+        
+        for key, val_list in chunk_streams.items():
+            if not val_list: continue
+            n_items = len(val_list)
+            if key not in timed_streams: timed_streams[key] = []
+            for i, val in enumerate(val_list):
+                timed_streams[key].append({
+                    "time_sec": t_start + (i / n_items) * t_dur,
+                    "data": val
+                })
+    return timed_streams, global_constants
 
-def get_telemetry_interpolators(streams: dict):
+def get_telemetry_interpolators(streams):
     interpolators = {}
-    for stream_name, samples in streams.items():
-        times = np.array([s["time_sec"] for s in samples])
-
-        first_val = samples[0]["data"]
-        if isinstance(first_val, list):
-            data_arr = np.array([s["data"] for s in samples])
+    
+    if "GPS9" in streams:
+        valid_gps = []
+        for s in streams["GPS9"]:
+            lat, lon, alt, s2d, s3d, days, secs, dop, fix = s["data"]
+            # GPS9 Integrity Filter
+            if fix >= 2 and dop <= 5.0:
+                valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
+                
+        if valid_gps:
+            times = np.array([s["time_sec"] for s in valid_gps])
+            data = np.array([[s["lat"], s["lon"], s["speed"]] for s in valid_gps])
             
-            # Apply robust Savitzky-Golay filter to smooth GPS and prevent heading jitter
-            if stream_name == "GPS5" and len(data_arr) > 11:
-                window = min(31, len(data_arr) if len(data_arr) % 2 != 0 else len(data_arr) - 1)
-                if window > 3:
-                    data_arr[:, 0] = savgol_filter(data_arr[:, 0], window, 3) # Lat
-                    data_arr[:, 1] = savgol_filter(data_arr[:, 1], window, 3) # Lon
-                    
-            interp_func = interp1d(times, data_arr, axis=0, bounds_error=False, fill_value="extrapolate")
-        else:
-            data_arr = np.array([s["data"] for s in samples])
-            interp_func = interp1d(times, data_arr, bounds_error=False, fill_value="extrapolate")
+            if len(data) > 11:
+                w = min(31, len(data) if len(data)%2!=0 else len(data)-1)
+                data[:,0] = savgol_filter(data[:,0], w, 3)
+                data[:,1] = savgol_filter(data[:,1], w, 3)
+            
+            interpolators["gps"] = interp1d(times, data[:, :2], axis=0, bounds_error=False, fill_value="extrapolate")
+            interpolators["speed"] = interp1d(times, data[:, 2], bounds_error=False, fill_value="extrapolate")
 
-        interpolators[stream_name] = interp_func
+    if "GRAV" in streams:
+        times = np.array([s["time_sec"] for s in streams["GRAV"]])
+        pitches, rolls = [], []
+        for s in streams["GRAV"]:
+            x, y, z = s["data"]
+            pitches.append(-np.degrees(np.arctan2(z, y)))
+            rolls.append(np.degrees(np.arctan2(x, y)))
+            
+        p_arr, r_arr = np.array(pitches), np.array(rolls)
+        if len(p_arr) > 11:
+            w = min(31, len(p_arr) if len(p_arr)%2!=0 else len(p_arr)-1)
+            p_arr = savgol_filter(p_arr, w, 3)
+            r_arr = savgol_filter(r_arr, w, 3)
+            
+        interpolators["pitch"] = interp1d(times, p_arr, bounds_error=False, fill_value="extrapolate")
+        interpolators["roll"] = interp1d(times, r_arr, bounds_error=False, fill_value="extrapolate")
+
     return interpolators

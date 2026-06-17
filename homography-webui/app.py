@@ -13,8 +13,8 @@ from werkzeug.utils import secure_filename
 from ultralytics import YOLO
 
 from core_math import (
-    process_single_image, get_exif_gps, calculate_bearing, extract_gpmf_pitch, 
-    haversine_distance, extract_video_gpmf_pitch_track, process_video_frames_async,
+    process_single_image, get_exif_gps, extract_photo_telemetry,
+    haversine_distance, calculate_bearing, process_video_frames_async,
     get_video_frame_metadata
 )
 
@@ -50,7 +50,7 @@ def handle_model_upload(request_obj):
         model_file.save(model_path)
         global_model = YOLO(model_path)
 
-def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip):
+def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
     
@@ -77,7 +77,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
             initial_ui_state.append(image_data[i])
             
         elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
-            video_frames = get_video_frame_metadata(image_data[i]['path'], frame_skip, image_data[i]['original_name'], gps_snap)
+            video_frames = get_video_frame_metadata(image_data[i]['path'], interval_m, image_data[i]['original_name'], gps_snap)
             for vf in video_frames:
                 initial_ui_state.append(vf)
                 if vf['lat'] != 0.0 and vf['lon'] != 0.0:
@@ -88,25 +88,23 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
 
     task_id = str(uuid.uuid4())
     active_tasks[task_id] = queue.Queue()
-
     total_est_frames = len(initial_ui_state)
 
-    def process_worker(assets, t_id, height, snap, _is_360, f_skip):
+    def process_worker(assets, t_id, height, snap, _is_360, _interval_m):
         try:
             for asset in assets:
                 def on_frame_processed(payload):
                     active_tasks[t_id].put({"type": "update", "data": payload})
                     
                 if asset['ext'] in ALLOWED_VIDEO_EXT:
-                    pitch_interp = extract_video_gpmf_pitch_track(asset['path'])
                     process_video_frames_async(
                         asset['path'], global_model, app.config['UPLOAD_FOLDER'], height,
-                        pitch_interp, asset['filename'], asset['original_name'], snap, f_skip, model_lock, _is_360, asset['location'], on_frame_processed
+                        asset['filename'], asset['original_name'], snap, _interval_m, model_lock, _is_360, asset['location'], on_frame_processed
                     )
                 else:
                     defects, geo_feats, base_filename, footprints = process_single_image(
                         asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                        asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], model_lock, _is_360, asset['original_name']
+                        asset['lat'], asset['lon'], asset['heading'], height, asset.get('pitch', -15.0), asset.get('roll', 0.0), asset.get('klns', None), model_lock, _is_360, asset['original_name']
                     )
                     
                     result_payload = {
@@ -114,14 +112,14 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         "filename": asset['filename'],
                         "lat": round(asset['lat'], 6),
                         "lon": round(asset['lon'], 6),
-                        "pitch": round(asset['pitch'], 2),
+                        "pitch": round(asset.get('pitch', -15.0), 2),
+                        "roll": round(asset.get('roll', 0.0), 2),
                         "location": asset['location'],
                         "geojson": geo_feats,
                         "views": {}
                     }
                     
-                    views_list = ['front', 'rear'] if _is_360 else ['front']
-                    for view in views_list:
+                    for view in (['front', 'rear'] if _is_360 else ['front']):
                         result_payload["views"][view] = {
                             "raw_filename": f"raw_rect_{view}_{base_filename}",
                             "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
@@ -138,7 +136,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         except Exception as e:
             active_tasks[t_id].put({"type": "error", "message": str(e)})
 
-    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, frame_skip)).start()
+    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, interval_m)).start()
 
     initial_geojson = []
     if len(trail_coordinates) > 1:
@@ -160,26 +158,22 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         "last_loc_id": loc_id
     })
 
-
 @app.route('/')
 def index():
     return render_template('index.html')
 
-
 @app.route('/process', methods=['POST'])
 def process():
     handle_model_upload(request)
-    if global_model is None:
-        return jsonify({"error": "No ML model loaded into memory"}), 400
+    if global_model is None: return jsonify({"error": "No ML model loaded into memory"}), 400
 
     img_files = request.files.getlist('images')
-    if not img_files or img_files[0].filename == '':
-        return jsonify({"error": "No media selected"}), 400
+    if not img_files or img_files[0].filename == '': return jsonify({"error": "No media selected"}), 400
 
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
-    frame_skip = int(request.form.get('frame_skip', 30))
+    interval_m = safe_float(request.form.get('interval_m'), 2.0)
     
     last_lat = safe_float(request.form.get('last_lat'), 0.0)
     last_lon = safe_float(request.form.get('last_lon'), 0.0)
@@ -192,34 +186,26 @@ def process():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
         
-        file_meta = {
-            "filename": filename, 
-            "original_name": f.filename,
-            "path": filepath, 
-            "ext": ext,
-            "lat": 0.0, "lon": 0.0, "pitch": -15.0
-        }
+        file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": 0.0, "lon": 0.0, "pitch": -15.0, "roll": 0.0, "klns": None}
 
         if ext in ALLOWED_IMAGE_EXT:
             lat, lon = get_exif_gps(filepath)
-            dynamic_pitch = extract_gpmf_pitch(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch})
+            dynamic_pitch, dynamic_roll, klns = extract_photo_telemetry(filepath)
+            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns})
             
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip)
-
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m)
 
 @app.route('/process_pipeline_folder', methods=['POST'])
 def process_pipeline_folder():
     handle_model_upload(request)
-    if global_model is None:
-        return jsonify({"error": "No ML model loaded into memory"}), 400
+    if global_model is None: return jsonify({"error": "No ML model loaded into memory"}), 400
 
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
-    frame_skip = int(request.form.get('frame_skip', 30))
+    interval_m = safe_float(request.form.get('interval_m'), 2.0)
 
     last_lat = safe_float(request.form.get('last_lat'), 0.0)
     last_lon = safe_float(request.form.get('last_lon'), 0.0)
@@ -232,11 +218,9 @@ def process_pipeline_folder():
             for ext in ALLOWED_IMAGE_EXT.union(ALLOWED_VIDEO_EXT):
                 found_files.extend(list(frames_dir.rglob(f"*{ext}")))
                 found_files.extend(list(frames_dir.rglob(f"*{ext.upper()}")))
-            if found_files:
-                break
+            if found_files: break
 
-    if not found_files:
-        return jsonify({"error": "No media files found in the 'Data_pipeline/output/frames' directory."}), 404
+    if not found_files: return jsonify({"error": "No media files found in the 'Data_pipeline/output/frames' directory."}), 404
 
     image_data = []
     for filepath_obj in found_files:
@@ -244,153 +228,88 @@ def process_pipeline_folder():
         ext = filepath_obj.suffix.lower()
         filename = secure_filename(filepath_obj.name)
         
-        file_meta = {
-            "filename": filename, 
-            "original_name": filepath_obj.name,
-            "path": filepath, 
-            "ext": ext,
-            "lat": 0.0, "lon": 0.0, "pitch": -15.0
-        }
+        file_meta = {"filename": filename, "original_name": filepath_obj.name, "path": filepath, "ext": ext, "lat": 0.0, "lon": 0.0, "pitch": -15.0, "roll": 0.0, "klns": None}
 
         if ext in ALLOWED_IMAGE_EXT:
             lat, lon = get_exif_gps(filepath)
-            dynamic_pitch = extract_gpmf_pitch(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch})
+            dynamic_pitch, dynamic_roll, klns = extract_photo_telemetry(filepath)
+            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns})
             
         image_data.append(file_meta)
         
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, frame_skip)
-
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m)
 
 @app.route('/stream/<task_id>')
 def stream(task_id):
     def event_stream():
         q = active_tasks.get(task_id)
-        if not q:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"
-            return
+        if not q: yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"; return
         while True:
             msg = q.get()
             yield f"data: {json.dumps(msg)}\n\n"
             if msg['type'] in ['complete', 'error', 'map_complete']:
-                del active_tasks[task_id]
-                break
-
+                del active_tasks[task_id]; break
     return Response(event_stream(), mimetype="text/event-stream")
 
 @app.route('/generate-map', methods=['POST'])
 def generate_map():
     data = request.json
-    location = data.get("location", "Unknown")
-    results = data.get("results", [])
-    view_dir = data.get("view", "front")
+    location, results, view_dir = data.get("location", "Unknown"), data.get("results", []), data.get("view", "front")
     
-    if not results:
-        return jsonify({"error": "No data provided"}), 400
-        
-    try:
-        from stitcher import create_photogrammetry_map
-    except ImportError:
-        return jsonify({"error": "Stitcher module is missing"}), 500
+    if not results: return jsonify({"error": "No data provided"}), 400
+    try: from stitcher import create_photogrammetry_map
+    except ImportError: return jsonify({"error": "Stitcher module is missing"}), 500
 
     frames_data = []
     for r in results:
         v = r.get("views", {}).get(view_dir)
         if not v or not v.get("footprint"): continue
-        
         fp = v["footprint"]
-        path = os.path.join(app.config['UPLOAD_FOLDER'], v["raw_bev_filename"])
+        frames_data.append({"path": os.path.join(app.config['UPLOAD_FOLDER'], v["raw_bev_filename"]), "lat": fp["lat"], "lon": fp["lon"], "heading": fp["heading"], "w_m": fp["width_m"], "h_m": fp["height_m"]})
         
-        frames_data.append({
-            "path": path,
-            "lat": fp["lat"],
-            "lon": fp["lon"],
-            "heading": fp["heading"],
-            "w_m": fp["width_m"],
-            "h_m": fp["height_m"]
-        })
-        
-    safe_loc = secure_filename(location)
-    uid = uuid.uuid4().hex[:8]
-    pure_output_name = f"pure_{safe_loc}_{view_dir}_{uid}.png"
-    overlay_output_name = f"overlay_{safe_loc}_{view_dir}_{uid}.png"
-    
-    pure_path = os.path.join(app.config['UPLOAD_FOLDER'], pure_output_name)
-    overlay_path = os.path.join(app.config['UPLOAD_FOLDER'], overlay_output_name)
+    pure_path = os.path.join(app.config['UPLOAD_FOLDER'], f"pure_{secure_filename(location)}_{view_dir}_{uuid.uuid4().hex[:8]}.png")
+    overlay_path = os.path.join(app.config['UPLOAD_FOLDER'], f"overlay_{secure_filename(location)}_{view_dir}_{uuid.uuid4().hex[:8]}.png")
     
     task_id = str(uuid.uuid4())
     active_tasks[task_id] = queue.Queue()
     
     def map_worker(f_data, p_path, o_path, t_id):
         try:
-            def progress_cb(current, total, status_msg):
-                active_tasks[t_id].put({
-                    "type": "map_progress",
-                    "current": current,
-                    "total": total,
-                    "status_msg": status_msg
-                })
-            
+            def progress_cb(current, total, status_msg): active_tasks[t_id].put({"type": "map_progress", "current": current, "total": total, "status_msg": status_msg})
             bounds = create_photogrammetry_map(f_data, p_path, o_path, progress_cb)
-            
-            if bounds:
-                active_tasks[t_id].put({
-                    "type": "map_complete",
-                    "pure_url": f"/static/uploads/{os.path.basename(p_path)}",
-                    "overlay_url": f"/static/uploads/{os.path.basename(o_path)}",
-                    "bounds": bounds
-                })
-            else:
-                active_tasks[t_id].put({"type": "error", "message": "Failed to generate valid map boundaries."})
-        except Exception as e:
-            active_tasks[t_id].put({"type": "error", "message": str(e)})
+            if bounds: active_tasks[t_id].put({"type": "map_complete", "pure_url": f"/static/uploads/{os.path.basename(p_path)}", "overlay_url": f"/static/uploads/{os.path.basename(o_path)}", "bounds": bounds})
+            else: active_tasks[t_id].put({"type": "error", "message": "Failed to generate valid map boundaries."})
+        except Exception as e: active_tasks[t_id].put({"type": "error", "message": str(e)})
 
     threading.Thread(target=map_worker, args=(frames_data, pure_path, overlay_path, task_id)).start()
-
     return jsonify({"success": True, "task_id": task_id})
 
 @app.route('/export-zip', methods=['POST'])
 def export_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
-
     memory_file = BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
             for view in r['views'].keys():
-                raw_filename = r['views'][view]['raw_filename']
-                original_name = secure_filename(r['original_name'])
-                target_filename = f"{loc}/{view}/RAW_{original_name}"
-                
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_filename)
-                if os.path.exists(file_path): zf.write(file_path, target_filename)
-
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view]['raw_filename'])
+                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/RAW_{secure_filename(r['original_name'])}")
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
-
 
 @app.route('/export-flat-zip', methods=['POST'])
 def export_flat_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
-
     memory_file = BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
             for view in r['views'].keys():
-                raw_bev_filename = r['views'][view].get('raw_bev_filename') 
-                if not raw_bev_filename: continue
-                
-                original_name = secure_filename(r['original_name'])
-                target_filename = f"{loc}/{view}/FLAT_{original_name}"
-                
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_bev_filename)
-                if os.path.exists(file_path): zf.write(file_path, target_filename)
-
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view].get('raw_bev_filename', ''))
+                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/FLAT_{secure_filename(r['original_name'])}")
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+if __name__ == '__main__': app.run(debug=True, port=5000)
