@@ -247,42 +247,9 @@ def stream(task_id):
         while True:
             msg = q.get()
             yield f"data: {json.dumps(msg)}\n\n"
-            if msg['type'] in ['complete', 'error', 'map_complete']:
+            if msg['type'] in ['complete', 'error']:
                 del active_tasks[task_id]; break
     return Response(event_stream(), mimetype="text/event-stream")
-
-@app.route('/generate-map', methods=['POST'])
-def generate_map():
-    data = request.json
-    location, results, view_dir = data.get("location", "Unknown"), data.get("results", []), data.get("view", "front")
-    
-    if not results: return jsonify({"error": "No data provided"}), 400
-    try: from stitcher import create_photogrammetry_map
-    except ImportError: return jsonify({"error": "Stitcher module is missing"}), 500
-
-    frames_data = []
-    for r in results:
-        v = r.get("views", {}).get(view_dir)
-        if not v or not v.get("footprint"): continue
-        fp = v["footprint"]
-        frames_data.append({"path": os.path.join(app.config['UPLOAD_FOLDER'], v["raw_bev_filename"]), "lat": fp["lat"], "lon": fp["lon"], "heading": fp["heading"], "w_m": fp["width_m"], "h_m": fp["height_m"]})
-        
-    pure_path = os.path.join(app.config['UPLOAD_FOLDER'], f"pure_{secure_filename(location)}_{view_dir}_{uuid.uuid4().hex[:8]}.png")
-    overlay_path = os.path.join(app.config['UPLOAD_FOLDER'], f"overlay_{secure_filename(location)}_{view_dir}_{uuid.uuid4().hex[:8]}.png")
-    
-    task_id = str(uuid.uuid4())
-    active_tasks[task_id] = queue.Queue()
-    
-    def map_worker(f_data, p_path, o_path, t_id):
-        try:
-            def progress_cb(current, total, status_msg): active_tasks[t_id].put({"type": "map_progress", "current": current, "total": total, "status_msg": status_msg})
-            bounds = create_photogrammetry_map(f_data, p_path, o_path, progress_cb)
-            if bounds: active_tasks[t_id].put({"type": "map_complete", "pure_url": f"/static/uploads/{os.path.basename(p_path)}", "overlay_url": f"/static/uploads/{os.path.basename(o_path)}", "bounds": bounds})
-            else: active_tasks[t_id].put({"type": "error", "message": "Failed to generate valid map boundaries."})
-        except Exception as e: active_tasks[t_id].put({"type": "error", "message": str(e)})
-
-    threading.Thread(target=map_worker, args=(frames_data, pure_path, overlay_path, task_id)).start()
-    return jsonify({"success": True, "task_id": task_id})
 
 @app.route('/export-zip', methods=['POST'])
 def export_zip():

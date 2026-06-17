@@ -8,7 +8,6 @@ document.addEventListener("DOMContentLoaded", () => {
     let geoJsonLayer = null;
     let pathLayer = null;
     let mapMarkers = {}; 
-    let currentMapOverlay = null;
     
     let fullResults = [];
     let fullGeojson = { type: "FeatureCollection", features: [] };
@@ -27,7 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const uploadPanel = document.getElementById("upload-panel");
     const chkIs360 = document.getElementById("chk-is-360");
     const containerBevRear = document.getElementById("container-bev-rear");
-    const btnLoadPhoto = document.getElementById("btn-load-photo");
 
     function stringToColor(str) {
         let hash = 0;
@@ -44,7 +42,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 maxZoom: 24, maxNativeZoom: 17 
             }).addTo(map);
 
-            map.createPane('photoPane'); map.getPane('photoPane').style.zIndex = 250;
             map.createPane('trailPane'); map.getPane('trailPane').style.zIndex = 300;
             map.createPane('nodePane'); map.getPane('nodePane').style.zIndex = 450; 
 
@@ -147,9 +144,6 @@ document.addEventListener("DOMContentLoaded", () => {
             stateLastLat = data.last_lat;
             stateLastLon = data.last_lon;
             stateLastLocId = data.last_loc_id;
-
-            if (!appIs360 && data.has_video) btnLoadPhoto.classList.remove("hidden");
-            else btnLoadPhoto.classList.add("hidden");
 
             setTimeout(() => {
                 map.invalidateSize();
@@ -273,10 +267,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!appIs360) { containerBevRear.classList.add("hidden"); setView('front'); } 
                 else containerBevRear.classList.remove("hidden");
 
-                const hasVideo = data.results.some(r => r.original_name && (r.original_name.toLowerCase().includes('.mp4') || r.original_name.toLowerCase().includes('frame')));
-                if (!appIs360 && hasVideo) btnLoadPhoto.classList.remove("hidden");
-                else btnLoadPhoto.classList.add("hidden");
-
                 fullResults = data.results;
                 fullGeojson = data.geojson;
                 
@@ -320,74 +310,6 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         reader.readAsText(file);
     });
-
-    btnLoadPhoto.onclick = async function() {
-        if (!appResults.some(r => r.views && r.views['front'] && r.views['front'].footprint)) { alert("Project missing BEV footprint data."); return; }
-
-        const originalText = this.innerHTML;
-        this.innerHTML = "⏳ Initializing Photogrammetry..."; this.disabled = true;
-        
-        document.getElementById("progress-bar").style.width = `0%`;
-        document.getElementById("progress-text").textContent = `Warming Up SIFT Extractors...`;
-        document.getElementById("eta-text").textContent = `ETA: Calculating...`;
-        document.getElementById("progress-container").classList.remove("hidden");
-        
-        try {
-            const res = await fetch("/generate-map", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: selLocation.value, results: appResults, view: currentDirection }) });
-            const data = await res.json();
-            if (data.error) throw new Error(data.error);
-            startMapSSE(data.task_id, originalText);
-        } catch (err) { alert("Map Generation Failed: " + err.message); resetMapUI(originalText); } 
-    };
-
-    function startMapSSE(taskId, originalText) {
-        const source = new EventSource(`/stream/${taskId}`);
-        let startTime = Date.now();
-        source.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "error") { source.close(); alert(`Map Stitching Error: ${msg.message}`); resetMapUI(originalText); return; }
-            if (msg.type === "map_progress") {
-                const pct = msg.total > 0 ? (msg.current / msg.total) * 100 : 100;
-                document.getElementById("progress-bar").style.width = `${pct}%`;
-                document.getElementById("progress-text").textContent = msg.status_msg;
-                if (msg.current > 0) {
-                    const remainSec = Math.ceil((msg.total - msg.current) * ((Date.now() - startTime) / 1000 / msg.current));
-                    document.getElementById("eta-text").textContent = `ETA: ${Math.floor(remainSec / 60)}m ${remainSec % 60}s`;
-                }
-            }
-            if (msg.type === "map_complete") {
-                source.close();
-                if (currentMapOverlay && map.hasLayer(currentMapOverlay)) map.removeLayer(currentMapOverlay);
-                currentMapOverlay = L.imageOverlay(msg.overlay_url, msg.bounds, { opacity: 0.9, pane: 'photoPane' }).addTo(map);
-                map.fitBounds(msg.bounds); setupPhotoToggleUI(msg.overlay_url, msg.pure_url); resetMapUI(originalText);
-            }
-        };
-    }
-
-    function resetMapUI(originalText) { document.getElementById("progress-container").classList.add("hidden"); btnLoadPhoto.innerHTML = originalText; btnLoadPhoto.disabled = false; }
-
-    function setupPhotoToggleUI(overlayUrl, pureUrl) {
-        if (map.photoToggleControl) map.removeControl(map.photoToggleControl);
-        L.Control.PhotoToggle = L.Control.extend({
-            options: { position: 'bottomleft' },
-            onAdd: function() {
-                var container = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-custom bg-white/95 px-3 py-2 shadow-sm text-sm flex items-center gap-3');
-                var toggleBtn = L.DomUtil.create('div', 'font-bold cursor-pointer', container);
-                toggleBtn.innerHTML = '🗺️ Map Layer: ON';
-                var dlOverlayBtn = L.DomUtil.create('a', 'cursor-pointer text-blue-600 hover:text-blue-800 font-bold border-l border-gray-300 pl-3', container);
-                dlOverlayBtn.innerHTML = '⬇️ DL Overlay'; dlOverlayBtn.href = overlayUrl; dlOverlayBtn.download = "DCPM_Map_Overlay.png";
-                var dlPureBtn = L.DomUtil.create('a', 'cursor-pointer text-emerald-600 hover:text-emerald-800 font-bold border-l border-gray-300 pl-3', container);
-                dlPureBtn.innerHTML = '🖼️ DL Pure Ribbon'; dlPureBtn.href = pureUrl; dlPureBtn.download = "DCPM_Pure_Ribbon.png";
-                toggleBtn.onclick = function(e) {
-                    e.stopPropagation();
-                    if (currentMapOverlay && map.hasLayer(currentMapOverlay)) { map.removeLayer(currentMapOverlay); toggleBtn.innerHTML = '🗺️ Map Layer: OFF'; toggleBtn.style.color = '#6b7280'; } 
-                    else if (currentMapOverlay) { map.addLayer(currentMapOverlay); toggleBtn.innerHTML = '🗺️ Map Layer: ON'; toggleBtn.style.color = '#000000'; }
-                }
-                return container;
-            }
-        });
-        map.photoToggleControl = new L.Control.PhotoToggle(); map.addControl(map.photoToggleControl);
-    }
 
     const triggerZipExport = async (endpoint, btnId, loadingText, filename) => {
         if (fullResults.length === 0) return;
