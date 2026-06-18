@@ -1,67 +1,151 @@
-$ python debug/extract_gp_360_photo.py 
---- 1. EXTRACTING GPMF PAYLOAD FROM JPEG ---
-[+] Found GoPro APP6 Marker!
-[+] Extracted GPMF Binary Data: 1156 bytes
-
---- 2. PARSING GPMF AST ---
---- 3. EXTRACTING SENSOR STREAMS ---
-
 ==============================================
-           DEVICE CONSTANTS / INFO            
-==============================================
-  DVID   : FRNT
-  DVNM   : Front Lens
-  VERS   : [8, 1, 2]
-  FMWR   : H19.03.02.04.00
-  LINF   : C33613BR3103F21
-  CINF   : [127, 65, 137, 22, 210, 255, 147, 116, 242, 136, 164, 115, 41, 189, 44, 67]
-  CASN   : C3351350076576
-  MINF   : GoPro Max
-  MUID   : [378093951, 1955856338, 1940162802, 1127005481, 0, 0, 0, 0]
-  CMOD   : 20
-  MTYP   : 20
-  OREN   : U
-  DZOM   : N
-  DZST   : 0
-  ZFOV   : 360.0
-  SMTR   : N
-  PRTN   : Y
-  PTWB   : AUTO
-  PTSH   : HIGH
-  PTCL   : GOPRO
-  EXPT   : AUTO
-  PIMX   : 1600
-  PIMN   : 100
-  PTEV   : 0.0
-  RATE   : 1_2SEC
-  PRES   : 16.6MP_S
-  PHDR   : OFF
-  PRAW   : N
-  HFLG   : 0
-  EISE   : N
-  EISA   : N/A
-  PVUL   : F
-  SOFF   : 0
-  PRJT   : ERP0
-  GRAV   : (0.013733329251408577, 0.999420166015625, 0.031495101749897)
-  IORI   : (1.0, 0.0, 0.0, 0.0)
-  CORI   : (0.99908447265625, 0.0008239997550845146, 0.042359691113233566, 0.0036317026242613792)
-  SHFX   : 23.863423183396606
-  SHFY   : -0.18504334720119897
-  SHFZ   : -35.286282290388314
-  ANGX   : 0.07576392312000385
-  ANGY   : 179.55898060491464
-  ANGZ   : 0.1017018684513254
-  CALW   : 4056
-  CALH   : 3040
-  KLNS   : (1083.7437738189817, -66.1690001920638, 9.859482215720648, -6.3174561758644305, 0.9085197378086507)
-  CTRX   : 3.9846106872459064
-  CTRY   : -7.768093218518515
-  MFOV   : 100.0
-  SFTR   : 1.0002800118352553
-
-==============================================
-            TELEMETRY SENSOR DATA             
+ ANALYZING: GSAI6003.JPG
 ==============================================
 
-[+] Extraction complete! All photo sensor data successfully parsed.
+--- 1. SCANNING JPEG MARKERS ---
+[+] Found XMP/GPano Marker (APP1)
+[+] Found GoPro GPMF Marker (APP6) - 1156 bytes
+
+==============================================
+            EXIF / GPS METADATA (APP1)        
+==============================================
+  EXIF ApertureValue   : 297/100
+  EXIF BodySerialNumber : C3351350076576
+  EXIF ColorSpace      : 0
+  EXIF ComponentsConfiguration : YCbCr
+  EXIF CompressedBitsPerPixel : 100/297
+  EXIF Contrast        : Normal
+  EXIF CustomRendered  : Normal
+  EXIF DateTimeDigitized : 2025:09:25 16:36:11
+  EXIF DateTimeOriginal : 2025:09:25 16:36:11
+  EXIF DeviceSettingDescription : [0, 0, 0, 0]
+  EXIF DigitalZoomRatio : 1
+  EXIF ExifImageLength : 2880
+  EXIF ExifImageWidth  : 5760
+  EXIF ExifVersion     : 0221
+  EXIF FNumber         : 14/5
+  EXIF FileSource      : Digital Camera
+  EXIF Flash           : No flash function
+  EXIF FlashPixVersion : 891011
+  EXIF FocalLength     : 3
+  EXIF FocalLengthIn35mmFilm : 15
+  EXIF GainControl     : None
+  EXIF InteroperabilityOffset : 572
+  EXIF LightSource     : Unknown
+  EXIF MaxApertureValue : 297/100
+  EXIF MeteringMode    : Average
+  EXIF Saturation      : Normal
+  EXIF SceneCaptureType : Landscape
+  EXIF SceneType       : Directly Photographed
+  EXIF SensingMethod   : One-chip color area
+  EXIF Sharpness       : Hard
+  EXIF SubjectDistance : 0
+  EXIF SubjectDistanceRange : 0
+  EXIF WhiteBalance    : Auto
+  GPS GPSAltitude      : 72669/500
+  GPS GPSAltitudeRef   : 0
+  GPS GPSDate          : 2025:09:25
+  GPS GPSLatitude      : [31, 49, 259517999/10000000]
+  GPS GPSLatitudeRef   : S
+  GPS GPSLongitude     : [151, 54, 403448399/10000000]
+  GPS GPSLongitudeRef  : E
+  GPS GPSTimeStamp     : [6, 36, 11]
+  Image DateTime       : 2025:09:25 16:36:11
+  Image ExifOffset     : 158
+  Image GPSInfo        : 602
+  Image ImageDescription : DCIM\103GOPRO\GSAI6003.JPG
+  Image Make           : GoPro
+  Image Model          : GoPro Max
+  Image Orientation    : Horizontal (normal)
+  Image ResolutionUnit : Pixels/Inch
+  Image Software       : H19.03.02.04.00
+  Image XResolution    : 72
+  Image YCbCrPositioning : Centered
+  Image YResolution    : 72
+  Interoperability InteroperabilityIndex : R98
+  Interoperability InteroperabilityVersion : [48, 49, 48, 48]
+  Parsed_Latitude      : -31.823875°
+  Parsed_Longitude     : 151.911207°
+
+==============================================
+            XMP / GPANO METADATA (APP1)       
+==============================================
+  CaptureSoftware      : GoPro Max
+  CroppedAreaImageHeightPixels : 2880
+  CroppedAreaImageWidthPixels : 5760
+  CroppedAreaLeftPixels : 0
+  CroppedAreaTopPixels : 0
+  ExposureLockUsed     : False
+  FirstPhotoDate       : 2025:09:25 16:36:11
+  FullPanoHeightPixels : 2880
+  FullPanoWidthPixels  : 5760
+  InitialCameraDolly   : 0.0
+  InitialHorizontalFOVDegrees : 0.0
+  InitialVerticalFOVDegrees : 0.0
+  InitialViewHeadingDegrees : 0.0
+  InitialViewPitchDegrees : 0.0
+  InitialViewRollDegrees : 0.0
+  LastPhotoDate        : 2025:09:25 16:36:11
+  PoseHeadingDegrees   : 0.0
+  PosePitchDegrees     : 0.0
+  PoseRollDegrees      : 0.0
+  ProjectionType       : equirectangular
+  SourcePhotosCount    : 2
+  StitchingSoftware    : GoPro Max
+  UsePanoramaViewer    : True
+
+==============================================
+            GOPRO GPMF METADATA (APP6)        
+==============================================
+  ANGX                 : 0.07576392312000385
+  ANGY                 : 179.55898060491464
+  ANGZ                 : 0.1017018684513254
+  CALH                 : 3040
+  CALW                 : 4056
+  CASN                 : C3351350076576
+  CINF                 : [127, 65, 137, 22, 210, 255, 147, 116, 242, 136, 164, 115, 41, 189, 44, 67]
+  CMOD                 : 20
+  CORI                 : (0.99908447265625, 0.0008239997550845146, 0.042359691113233566, 0.0036317026242613792)
+  CTRX                 : 3.9846106872459064
+  CTRY                 : -7.768093218518515
+  DVID                 : FRNT
+  DVNM                 : Front Lens
+  DZOM                 : N
+  DZST                 : 0
+  EISA                 : N/A
+  EISE                 : N
+  EXPT                 : AUTO
+  FMWR                 : H19.03.02.04.00
+  GRAV                 : (0.013733329251408577, 0.999420166015625, 0.031495101749897)
+  HFLG                 : 0
+  IORI                 : (1.0, 0.0, 0.0, 0.0)
+  KLNS                 : (1083.7437738189817, -66.1690001920638, 9.859482215720648, -6.3174561758644305, 0.9085197378086507)
+  LINF                 : C33613BR3103F21
+  MFOV                 : 100.0
+  MINF                 : GoPro Max
+  MTYP                 : 20
+  MUID                 : [378093951, 1955856338, 1940162802, 1127005481, 0, 0, 0, 0]
+  OREN                 : U
+  PHDR                 : OFF
+  PIMN                 : 100
+  PIMX                 : 1600
+  PRAW                 : N
+  PRES                 : 16.6MP_S
+  PRJT                 : ERP0
+  PRTN                 : Y
+  PTCL                 : GOPRO
+  PTEV                 : 0.0
+  PTSH                 : HIGH
+  PTWB                 : AUTO
+  PVUL                 : F
+  RATE                 : 1_2SEC
+  SFTR                 : 1.0002800118352553
+  SHFX                 : 23.863423183396606
+  SHFY                 : -0.18504334720119897
+  SHFZ                 : -35.286282290388314
+  SMTR                 : N
+  SOFF                 : 0
+  VERS                 : [8, 1, 2]
+  ZFOV                 : 360.0
+
+[+] Extraction complete!

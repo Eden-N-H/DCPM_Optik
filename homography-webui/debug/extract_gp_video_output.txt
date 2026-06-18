@@ -1,12 +1,89 @@
-$ python debug/extract_gp_video.py 
---- 1. EXTRACTING BINARY STREAM VIA FFMPEG ---
-Extracted binary track to telemetry.bin (428.7 KB)
+--- 1. EXTRACTING GLOBAL METADATA FROM MP4 HEADER ---
+[+] Successfully extracted moov/udta/GPMF payload (25600 bytes)
 
---- 2. PARSING GPMF AST ---
---- 3. EXTRACTING ALL DATA STREAMS ---
+--- 2. EXTRACTING TELEMETRY TRACK VIA FFMPEG ---
+[+] Extracted time-series binary track to telemetry.bin (428.7 KB)
+
+--- 3. PARSING TELEMETRY AST ---
+--- 4. EXTRACTING TELEMETRY DATA STREAMS ---
 
 ==============================================
-           DEVICE CONSTANTS / INFO            
+      GLOBAL CAMERA/OPTICAL SETTINGS (moov)   
+==============================================
+     : b''
+  ABSC   : 0.0
+  APTO   : OFF
+  ARUW   : 1.7777777910232544
+  ARWA   : 1.7777777910232544
+  AUDO   : AUTO
+  AUPT   : N
+  BITR   : STANDARD
+  BRID   : 0
+  BROD   : 
+  CASN   : C3471327744231
+  CDAT   : 1730200247
+  CDTM   : 0
+  CINF   : [23, 185, 72, 92, 66, 150, 181, 76, 37, 25, 90, 139, 195, 238, 98, 211]
+  CLDP   : Y
+  CLKC   : 0
+  CLKS   : 2
+  CMOD   : 12
+  CTRL   : Pro
+  DUST   : NO_LIMIT
+  DVID   : HLMT
+  DVNM   : Highlights
+  DZMX   : 1.399999976158142
+  DZOM   : Y
+  DZST   : 0
+  EISA   : HS EIS
+  EISE   : Y
+  EXPT   : AUTO
+  FMWR   : H22.01.02.10.00
+  HCTL   : Off
+  HSGT   : OFF
+  LINF   : LSU3053001400903
+  MAPX   : 1.0
+  MAPY   : 1.0
+  MINF   : HERO11 Black
+  MMOD   : STEREO
+  MTYP   : 0
+  MUID   : [1548269847, 1286968898, 2337937701, 3546476227, 0, 0, 0, 0]
+  MXCF   : x1
+  MYCF   : y1
+  ORDP   : Y
+  OREN   : U
+  PIMD   : MANUAL
+  PIMN   : 100
+  PIMX   : 1600
+  POLY   : (0.0, 1.8151293992996216, 0.10589471459388733, -0.6546842455863953, 0.350233256816864, -1.051521337450817e-13, 4.415991023917244e-14)
+  PRJT   : GPRO
+  PRNA   : 1
+  PRNU   : 0
+  PRTN   : Y
+  PTCL   : NATURAL
+  PTEV   : 0.0
+  PTSH   : MED
+  PTWB   : AUTO
+  PVUL   : F
+  PWPR   : PERFORMANCE
+  PYCF   : r0r1r2r3r4r5r6
+  RAMP   : 
+  RATE   : 
+  SCAP   : N
+  SCTM   : 0
+  SMTR   : N
+  SOFF   : 0
+  SROT   : 20.0
+  TZON   : 660
+  VERS   : [8, 2, 0]
+  VFOV   : W
+  VFPS   : [30000, 1001]
+  VRES   : [5312, 2988]
+  ZFOV   : 123.64572143554688
+  ZMPL   : 0.6314452886581421
+
+==============================================
+      TELEMETRY DEVICE CONSTANTS (track)      
 ==============================================
   DVID   : 1
   DVNM   : HERO11 Black
@@ -129,4 +206,4 @@ Extracted binary track to telemetry.bin (428.7 KB)
        -> Sample [0]   : 142.0
 --------------------------------------------------
 
-Extraction complete! Every valid data stream has been successfully parsed.
+Extraction complete! Both Global Metadata and Telemetry Tracks successfully parsed.

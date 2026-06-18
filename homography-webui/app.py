@@ -36,7 +36,7 @@ global_model = None
 model_lock = threading.Lock()
 active_tasks = {}
 
-def safe_float(value, default=0.0):
+def safe_float(value, default=None):
     try:
         if value is None or str(value).strip() == "": return default
         return float(value)
@@ -50,7 +50,7 @@ def handle_model_upload(request_obj):
         model_file.save(model_path)
         global_model = YOLO(model_path)
 
-def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m):
+def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
     
@@ -59,16 +59,17 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
 
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
-            if i < len(image_data) - 1 and image_data[i+1]['lat'] != 0.0:
-                heading = calculate_bearing(image_data[i]['lat'], image_data[i]['lon'], image_data[i+1]['lat'], image_data[i+1]['lon'])
+            lat, lon = image_data[i]['lat'], image_data[i]['lon']
+            
+            if i < len(image_data) - 1 and image_data[i+1]['lat'] is not None and lat is not None:
+                heading = calculate_bearing(lat, lon, image_data[i+1]['lat'], image_data[i+1]['lon'])
             else:
                 heading = image_data[i-1].get('heading', 0.0) if i > 0 else 0.0
             image_data[i]['heading'] = heading
             
-            lat, lon = image_data[i]['lat'], image_data[i]['lon']
-            if lat != 0.0 and lon != 0.0:
+            if lat is not None and lon is not None:
                 trail_coordinates.append([lon, lat])
-                if last_lat != 0.0 and last_lon != 0.0:
+                if last_lat is not None and last_lon is not None:
                     dist = haversine_distance(last_lat, last_lon, lat, lon)
                     if dist > 50.0:
                         loc_id += 1
@@ -80,7 +81,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
             video_frames = get_video_frame_metadata(image_data[i]['path'], interval_m, image_data[i]['original_name'], gps_snap)
             for vf in video_frames:
                 initial_ui_state.append(vf)
-                if vf['lat'] != 0.0 and vf['lon'] != 0.0:
+                if vf.get('lat') is not None and vf.get('lon') is not None:
                     trail_coordinates.append([vf['lon'], vf['lat']])
                     last_lat, last_lon = vf['lat'], vf['lon']
 
@@ -90,53 +91,59 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
     active_tasks[task_id] = queue.Queue()
     total_est_frames = len(initial_ui_state)
 
-    def process_worker(assets, t_id, height, snap, _is_360, _interval_m):
+    def process_worker(assets, t_id, height, snap, _is_360, _interval_m, _draw_grid):
         try:
             for asset in assets:
                 def on_frame_processed(payload):
-                    active_tasks[t_id].put({"type": "update", "data": payload})
+                    if "error" in payload:
+                        active_tasks[t_id].put({"type": "item_error", "original_name": payload.get("original_name", asset['original_name']), "message": payload["error"], "is_video": payload.get("is_video", False)})
+                    else:
+                        active_tasks[t_id].put({"type": "update", "data": payload})
                     
                 if asset['ext'] in ALLOWED_VIDEO_EXT:
                     process_video_frames_async(
                         asset['path'], global_model, app.config['UPLOAD_FOLDER'], height,
-                        asset['filename'], asset['original_name'], snap, _interval_m, model_lock, _is_360, asset['location'], on_frame_processed
+                        asset['filename'], asset['original_name'], snap, _interval_m, model_lock, _is_360, asset['location'], on_frame_processed, _draw_grid
                     )
                 else:
-                    defects, geo_feats, base_filename, footprints = process_single_image(
-                        asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                        asset['lat'], asset['lon'], asset['heading'], height, asset.get('pitch', -15.0), asset.get('roll', 0.0), asset.get('klns', None), model_lock, _is_360, asset['original_name']
-                    )
-                    
-                    result_payload = {
-                        "original_name": asset['original_name'],
-                        "filename": asset['filename'],
-                        "lat": round(asset['lat'], 6),
-                        "lon": round(asset['lon'], 6),
-                        "pitch": round(asset.get('pitch', -15.0), 2),
-                        "roll": round(asset.get('roll', 0.0), 2),
-                        "location": asset['location'],
-                        "geojson": geo_feats,
-                        "views": {}
-                    }
-                    
-                    for view in (['front', 'rear'] if _is_360 else ['front']):
-                        result_payload["views"][view] = {
-                            "raw_filename": f"raw_rect_{view}_{base_filename}",
-                            "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
-                            "raw_bev_url": f"/static/uploads/raw_bev_{view}_{base_filename}",
-                            "rect_url": f"/static/uploads/rect_{view}_{base_filename}",
-                            "bev_url": f"/static/uploads/bev_{view}_{base_filename}",
-                            "defects": defects[view],
-                            "footprint": footprints[view]
+                    try:
+                        defects, geo_feats, base_filename, footprints = process_single_image(
+                            asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
+                            asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], asset['roll'], asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
+                        )
+                        
+                        result_payload = {
+                            "original_name": asset['original_name'],
+                            "filename": asset['filename'],
+                            "lat": round(asset['lat'], 6),
+                            "lon": round(asset['lon'], 6),
+                            "pitch": round(asset.get('pitch'), 2) if asset.get('pitch') is not None else None,
+                            "roll": round(asset.get('roll'), 2) if asset.get('roll') is not None else None,
+                            "location": asset['location'],
+                            "geojson": geo_feats,
+                            "views": {}
                         }
-                    
-                    active_tasks[t_id].put({"type": "update", "data": result_payload})
+                        
+                        for view in (['front', 'rear'] if _is_360 else ['front']):
+                            result_payload["views"][view] = {
+                                "raw_filename": f"raw_rect_{view}_{base_filename}",
+                                "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
+                                "raw_bev_url": f"/static/uploads/raw_bev_{view}_{base_filename}",
+                                "rect_url": f"/static/uploads/rect_{view}_{base_filename}",
+                                "bev_url": f"/static/uploads/bev_{view}_{base_filename}",
+                                "defects": defects[view],
+                                "footprint": footprints[view]
+                            }
+                        
+                        active_tasks[t_id].put({"type": "update", "data": result_payload})
+                    except Exception as e:
+                        active_tasks[t_id].put({"type": "item_error", "original_name": asset['original_name'], "message": str(e), "is_video": False})
             
             active_tasks[t_id].put({"type": "complete"})
         except Exception as e:
             active_tasks[t_id].put({"type": "error", "message": str(e)})
 
-    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, interval_m)).start()
+    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, interval_m, draw_grid)).start()
 
     initial_geojson = []
     if len(trail_coordinates) > 1:
@@ -173,10 +180,11 @@ def process():
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
+    draw_grid = request.form.get('draw_grid') == 'true'
     interval_m = safe_float(request.form.get('interval_m'), 2.0)
     
-    last_lat = safe_float(request.form.get('last_lat'), 0.0)
-    last_lon = safe_float(request.form.get('last_lon'), 0.0)
+    last_lat = safe_float(request.form.get('last_lat'), None)
+    last_lon = safe_float(request.form.get('last_lon'), None)
     loc_id = int(request.form.get('last_loc_id', 1))
 
     image_data = []
@@ -186,16 +194,16 @@ def process():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
         
-        file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": 0.0, "lon": 0.0, "pitch": -15.0, "roll": 0.0, "klns": None}
+        file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
 
         if ext in ALLOWED_IMAGE_EXT:
             lat, lon = get_exif_gps(filepath)
-            dynamic_pitch, dynamic_roll, klns = extract_photo_telemetry(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns})
+            dynamic_pitch, dynamic_roll, klns, fov_meta = extract_photo_telemetry(filepath)
+            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
             
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m)
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid)
 
 @app.route('/process_pipeline_folder', methods=['POST'])
 def process_pipeline_folder():
@@ -205,10 +213,11 @@ def process_pipeline_folder():
     cam_height = safe_float(request.form.get('cam_height'), 1.6)
     gps_snap = request.form.get('gps_snap') == 'true'
     is_360 = request.form.get('is_360') == 'true'
+    draw_grid = request.form.get('draw_grid') == 'true'
     interval_m = safe_float(request.form.get('interval_m'), 2.0)
 
-    last_lat = safe_float(request.form.get('last_lat'), 0.0)
-    last_lon = safe_float(request.form.get('last_lon'), 0.0)
+    last_lat = safe_float(request.form.get('last_lat'), None)
+    last_lon = safe_float(request.form.get('last_lon'), None)
     loc_id = int(request.form.get('last_loc_id', 1))
 
     found_files = []
@@ -228,16 +237,16 @@ def process_pipeline_folder():
         ext = filepath_obj.suffix.lower()
         filename = secure_filename(filepath_obj.name)
         
-        file_meta = {"filename": filename, "original_name": filepath_obj.name, "path": filepath, "ext": ext, "lat": 0.0, "lon": 0.0, "pitch": -15.0, "roll": 0.0, "klns": None}
+        file_meta = {"filename": filename, "original_name": filepath_obj.name, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
 
         if ext in ALLOWED_IMAGE_EXT:
             lat, lon = get_exif_gps(filepath)
-            dynamic_pitch, dynamic_roll, klns = extract_photo_telemetry(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns})
+            dynamic_pitch, dynamic_roll, klns, fov_meta = extract_photo_telemetry(filepath)
+            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
             
         image_data.append(file_meta)
         
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m)
+    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid)
 
 @app.route('/stream/<task_id>')
 def stream(task_id):

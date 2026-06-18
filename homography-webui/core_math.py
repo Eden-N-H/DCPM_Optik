@@ -16,21 +16,57 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 def extract_photo_telemetry(filepath):
     try:
-        from extract_gpmf import extract_gpmf_from_jpeg, parse_gpmf, extract_all_telemetry
-        payload = extract_gpmf_from_jpeg(filepath)
-        if payload:
-            ast = parse_gpmf(payload)
+        from extract_gpmf import extract_jpeg_metadata_blocks, parse_xmp_gpano, parse_gpmf, extract_all_telemetry, flatten_global_ast
+        xmp_raw, gpmf_raw = extract_jpeg_metadata_blocks(filepath)
+        
+        pitch, roll, fov, klns = None, None, None, None
+        
+        # 1. Primary: High-Precision GPMF Data
+        if gpmf_raw:
+            ast = parse_gpmf(gpmf_raw)
             constants, _ = extract_all_telemetry(ast)
+            global_constants = flatten_global_ast(ast)
+            constants.update(global_constants)
             
-            pitch, roll = -15.0, 0.0
             if 'GRAV' in constants:
                 x, y, z = constants['GRAV']
                 pitch = -math.degrees(math.atan2(z, y))
                 roll = math.degrees(math.atan2(x, y))
+            
+            fov = constants.get('MFOV', None)
+            
+            # Mathematical Fallback for Standard Hero Lenses (ZFOV + ARUW)
+            if fov is None:
+                zfov = constants.get('ZFOV')
+                aruw = constants.get('ARUW')
+                if zfov is not None and aruw is not None:
+                    try:
+                        zfov_rad = math.radians(float(zfov))
+                        aruw_val = float(aruw)
+                        tan_half_dfov = math.tan(zfov_rad / 2.0)
+                        ratio = aruw_val / math.sqrt(aruw_val**2 + 1)
+                        hfov_rad = 2.0 * math.atan(tan_half_dfov * ratio)
+                        fov = math.degrees(hfov_rad)
+                    except Exception: pass
+            
+            klns = constants.get('KLNS', None)
+
+        # 2. Strict Fallback: XMP / GPano Data (Google Panorama Standard)
+        if xmp_raw:
+            gpano = parse_xmp_gpano(xmp_raw)
+            if pitch is None and 'PosePitchDegrees' in gpano:
+                pitch = float(gpano['PosePitchDegrees'])
+            if roll is None and 'PoseRollDegrees' in gpano:
+                roll = float(gpano['PoseRollDegrees'])
+            
+            # GPano defines full 360 sphere. Defaulting to 100 ensures safe rectilinear extraction mapping.
+            if fov is None and gpano.get('ProjectionType') == 'equirectangular':
+                fov = 100.0 
                 
-            return pitch, roll, constants.get('KLNS', None)
-    except Exception: pass
-    return -15.0, 0.0, None
+        return pitch, roll, klns, fov
+    except Exception:
+        pass
+    return None, None, None, None
 
 def get_exif_gps(filepath):
     try:
@@ -39,14 +75,15 @@ def get_exif_gps(filepath):
         if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
             def convert_to_degrees(value):
                 d, m, s = value.values
-                return d.num/d.den + (m.num/m.den)/60.0 + (s.num/s.den)/3600.0
+                return float(d.num)/d.den + (float(m.num)/m.den)/60.0 + (float(s.num)/s.den)/3600.0
             lat = convert_to_degrees(tags['GPS GPSLatitude'])
             if tags.get('GPS GPSLatitudeRef', None) and tags['GPS GPSLatitudeRef'].printable != 'N': lat = -lat
             lon = convert_to_degrees(tags['GPS GPSLongitude'])
             if tags.get('GPS GPSLongitudeRef', None) and tags['GPS GPSLongitudeRef'].printable != 'E': lon = -lon
             return lat, lon
-    except Exception: pass
-    return 0.0, 0.0
+    except Exception:
+        pass
+    return None, None
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
@@ -63,7 +100,7 @@ def local_to_global(lat, lon, heading_deg, local_x, local_z):
     out_lon = lon_rad + math.atan2(math.sin(true_heading_rad)*math.sin(d/R)*math.cos(lat_rad), math.cos(d/R) - math.sin(lat_rad)*math.sin(out_lat))
     return math.degrees(out_lat), math.degrees(out_lon)
 
-def equirectangular_to_rectilinear(equi_img, fov_deg=100, pitch_deg=-15, roll_deg=0, yaw_deg=0, output_width=1280, output_height=720):
+def equirectangular_to_rectilinear(equi_img, fov_deg, pitch_deg, roll_deg, yaw_deg, output_width=1280, output_height=720):
     h, w = equi_img.shape[:2]
     f = (output_width / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
     K = np.array([[f, 0, output_width / 2.0], [0, f, output_height / 2.0], [0, 0, 1]], dtype=np.float32)
@@ -108,7 +145,47 @@ def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01, z_near=2.
 
     return cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts), bev_w, bev_h, gsd, x_range, z_far
 
-def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, roll, klns, model_lock, is_360=True, original_filename=""):
+def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near=2.0, z_far=8.0, x_range=3.0):
+    pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
+    Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
+    Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
+    R = Rx @ Rz 
+    
+    for z in np.arange(math.floor(z_near), math.ceil(z_far) + 1, 1.0):
+        pts = []
+        for x in np.arange(-x_range, x_range + 0.5, 0.5):
+            xyz = R @ np.array([x, cam_height_m, z])
+            if xyz[2] <= 0: continue
+            u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
+            v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+            pts.append((u, v))
+        if len(pts) > 1:
+            for i in range(len(pts)-1):
+                cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+                
+    for x in np.arange(math.floor(-x_range), math.ceil(x_range) + 1, 1.0):
+        pts = []
+        for z in np.arange(z_near, z_far + 0.5, 0.5):
+            xyz = R @ np.array([x, cam_height_m, z])
+            if xyz[2] <= 0: continue
+            u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
+            v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+            pts.append((u, v))
+        if len(pts) > 1:
+            for i in range(len(pts)-1):
+                cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+                
+    return img
+
+def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, roll, klns, fov_from_meta, model_lock, is_360=True, original_filename="", draw_grid=False):
+    if fov_from_meta is None: raise ValueError("Missing Field of View (MFOV/ZFOV) in metadata.")
+    if pitch is None or roll is None: raise ValueError("Missing Camera Pose (GRAV/GPano) in metadata.")
+    if gps_lat is None or gps_lon is None: raise ValueError("Missing GPS data.")
+
+    fov_val = float(fov_from_meta)
+    if fov_val <= 0 or fov_val >= 180:
+        raise ValueError(f"Invalid calculated FOV value: {fov_val}")
+
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
     all_defects, all_geojson_features, bev_footprints = {}, [], {}
     
@@ -119,14 +196,13 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         all_defects[view_name] = []
         
         if is_360:
-            rect_img, K = equirectangular_to_rectilinear(img_mat, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
+            rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
         else:
             rect_img = img_mat.copy()
             h, w = rect_img.shape[:2]
-            f = (w / 2.0) / math.tan(math.radians(112) / 2.0)
+            f = (w / 2.0) / math.tan(math.radians(fov_val) / 2.0)
             K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
             
-            # Exact Lens Undistortion
             if klns and len(klns) >= 5:
                 try:
                     dist_coeffs = np.array(klns[1:6], dtype=np.float32)
@@ -151,8 +227,12 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         bev_footprints[view_name] = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_range, "height_m": z_far - z_near}
 
         annotated_rect = rect_img.copy()
+        
+        if draw_grid:
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, pitch, roll, z_near, z_far, x_range)
+
         for r in results:
-            annotated_rect = r.plot()
+            annotated_rect = r.plot(img=annotated_rect)
             if r.masks is not None:
                 for i, mask_pts in enumerate(r.masks.xy):
                     cls_id, conf = int(r.boxes.cls[i]), float(r.boxes.conf[i])
@@ -182,12 +262,11 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     return all_defects, all_geojson_features, base_filename, bev_footprints
 
-def process_video_frames_async(video_path, model, upload_dir, cam_height, file_name, original_name, gps_snap, interval_m, model_lock, is_360, location_str, callback):
+def process_video_frames_async(video_path, model, upload_dir, cam_height, file_name, original_name, gps_snap, interval_m, model_lock, is_360, location_str, callback, draw_grid=False):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(file_name)[0]
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     
-    gps_interp, speed_interp, pitch_interp, roll_interp, klns = None, None, None, None, None
     try:
         from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators
         streams, constants = extract_streams_with_time(video_path)
@@ -197,7 +276,30 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         pitch_interp = interpolators.get("pitch")
         roll_interp = interpolators.get("roll")
         klns = constants.get('KLNS', None)
-    except Exception: pass
+        
+        fov_from_meta = constants.get('MFOV', None)
+        if fov_from_meta is None:
+            zfov = constants.get('ZFOV')
+            aruw = constants.get('ARUW')
+            if zfov is not None and aruw is not None:
+                try:
+                    zfov_rad = math.radians(float(zfov))
+                    aruw_val = float(aruw)
+                    tan_half_dfov = math.tan(zfov_rad / 2.0)
+                    ratio = aruw_val / math.sqrt(aruw_val**2 + 1)
+                    hfov_rad = 2.0 * math.atan(tan_half_dfov * ratio)
+                    fov_from_meta = math.degrees(hfov_rad)
+                except Exception: pass
+                
+    except Exception as e:
+        callback({"error": f"Failed to parse GPMF for video: {str(e)}", "is_video": True, "original_name": original_name})
+        cap.release()
+        return
+
+    if not all([gps_interp, speed_interp, pitch_interp, roll_interp, fov_from_meta]):
+        callback({"error": "Missing required GPMF telemetry streams (GPS, Speed, GRAV, or computed FOV).", "is_video": True, "original_name": original_name})
+        cap.release()
+        return
 
     dist_accum, last_time = 0.0, 0.0
     frame_idx = -1
@@ -208,37 +310,33 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         frame_idx += 1
         elapsed_sec = frame_idx / fps
         
-        # Spatial Distance Frame Processing
-        if speed_interp:
-            dist_accum += float(speed_interp(elapsed_sec)) * (elapsed_sec - last_time)
-        else:
-            # Fallback if no speed telemetry is found (process roughly every ~1 second)
-            dist_accum += interval_m * (1/fps) * (interval_m / max(0.1, interval_m)) 
-            
+        dist_accum += float(speed_interp(elapsed_sec)) * (elapsed_sec - last_time)
         last_time = elapsed_sec
 
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0 
             
-            current_pitch = float(pitch_interp(elapsed_sec)) if pitch_interp else -15.0
-            current_roll = float(roll_interp(elapsed_sec)) if roll_interp else 0.0
+            current_pitch = float(pitch_interp(elapsed_sec))
+            current_roll = float(roll_interp(elapsed_sec))
 
-            if gps_interp:
-                try:
-                    c_loc = gps_interp(elapsed_sec)
-                    n_loc = gps_interp(elapsed_sec + 0.5)
-                    current_lat, current_lon = float(c_loc[0]), float(c_loc[1])
-                    current_heading = calculate_bearing(current_lat, current_lon, float(n_loc[0]), float(n_loc[1]))
-                except: current_lat, current_lon, current_heading = 37.7749, -122.4194, 0.0
-            else: current_lat, current_lon, current_heading = 37.7749, -122.4194, 0.0
+            try:
+                c_loc = gps_interp(elapsed_sec)
+                n_loc = gps_interp(elapsed_sec + 0.5)
+                current_lat, current_lon = float(c_loc[0]), float(c_loc[1])
+                current_heading = calculate_bearing(current_lat, current_lon, float(n_loc[0]), float(n_loc[1]))
+            except Exception: continue
 
             frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
             original_frame_name = f"{original_name} (Frame {frame_idx})"
 
-            defects, geo_feats, _, footprints = process_single_image(
-                frame, model, frame_base_name, upload_dir,
-                current_lat, current_lon, current_heading, cam_height, current_pitch, current_roll, klns, model_lock, is_360, original_frame_name
-            )
+            try:
+                defects, geo_feats, _, footprints = process_single_image(
+                    frame, model, frame_base_name, upload_dir,
+                    current_lat, current_lon, current_heading, cam_height, current_pitch, current_roll, klns, fov_from_meta, model_lock, is_360, original_frame_name, draw_grid
+                )
+            except Exception as e:
+                callback({"error": str(e), "is_video": False, "original_name": original_frame_name})
+                continue
             
             result_payload = {"original_name": original_frame_name, "filename": frame_base_name, "lat": round(current_lat, 6), "lon": round(current_lon, 6), "pitch": round(current_pitch, 2), "roll": round(current_roll, 2), "location": location_str, "geojson": geo_feats, "views": {}}
             for view in (['front', 'rear'] if is_360 else ['front']):
@@ -248,40 +346,35 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
     cap.release()
 
 def get_video_frame_metadata(video_path, interval_m, original_name, gps_snap):
-    # Generates UI preview state based on interval math
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return []
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
     
-    gps_interp, speed_interp = None, None
     try:
         from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators
         streams, _ = extract_streams_with_time(video_path)
         interpolators = get_telemetry_interpolators(streams)
-        gps_interp, speed_interp = interpolators.get("gps"), interpolators.get("speed")
-    except Exception: pass
+        gps_interp = interpolators.get("gps")
+        speed_interp = interpolators.get("speed")
+    except Exception: return []
+
+    if not gps_interp or not speed_interp: return []
 
     frames_meta = []
     dist_accum, last_time = 0.0, 0.0
-    base_lat, base_lon = 37.7749, -122.4194
     
     for frame_idx in range(total_frames):
         elapsed_sec = frame_idx / fps
-        if speed_interp: dist_accum += float(speed_interp(elapsed_sec)) * (elapsed_sec - last_time)
-        else: dist_accum += interval_m * (1/fps) * (interval_m / max(0.1, interval_m))
+        dist_accum += float(speed_interp(elapsed_sec)) * (elapsed_sec - last_time)
         last_time = elapsed_sec
 
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0
-            lat, lon = base_lat, base_lon
-            if gps_interp:
-                try:
-                    loc = gps_interp(elapsed_sec)
-                    lat, lon = float(loc[0]), float(loc[1])
-                except: pass
-            
-            frames_meta.append({"original_name": f"{original_name} (Frame {frame_idx})", "lat": lat, "lon": lon})
+            try:
+                loc = gps_interp(elapsed_sec)
+                frames_meta.append({"original_name": f"{original_name} (Frame {frame_idx})", "lat": float(loc[0]), "lon": float(loc[1])})
+            except Exception: pass
             
     return frames_meta

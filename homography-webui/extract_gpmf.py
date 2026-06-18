@@ -6,22 +6,38 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
 
-def extract_gpmf_from_jpeg(file_path):
-    if not os.path.exists(file_path): return None
+def extract_jpeg_metadata_blocks(file_path):
+    if not os.path.exists(file_path): return None, None
+    xmp_data, gpmf_data = None, None
     with open(file_path, 'rb') as f:
-        if f.read(2) != b'\xff\xd8': return None
+        if f.read(2) != b'\xff\xd8': return None, None
         while True:
             marker_header = f.read(2)
             if len(marker_header) < 2 or marker_header[0] != 0xff: break
             marker_type = marker_header[1]
             if marker_type in (0xd9, 0xda): break
-            len_bytes = f.read(2)
-            if len(len_bytes) < 2: break
-            length = struct.unpack('>H', len_bytes)[0]
+            length_bytes = f.read(2)
+            if len(length_bytes) < 2: break
+            length = struct.unpack('>H', length_bytes)[0]
             payload = f.read(length - 2)
-            if marker_type == 0xe6 and payload.startswith(b'GoPro\x00'):
-                return payload[6:]
-    return None
+            
+            # APP1: XMP Metadata
+            if marker_type == 0xe1 and payload.startswith(b'http://ns.adobe.com/xap/1.0/\x00'):
+                xmp_data = payload[29:].decode('utf-8', errors='ignore')
+            # APP6: GoPro GPMF Metadata
+            elif marker_type == 0xe6 and payload.startswith(b'GoPro\x00'):
+                gpmf_data = payload[6:]
+                
+    return xmp_data, gpmf_data
+
+def parse_xmp_gpano(xmp_string):
+    gpano_data = {}
+    if not xmp_string: return gpano_data
+    attr_matches = re.findall(r'GPano:(\w+)=["\']([^"\']+)["\']', xmp_string)
+    for key, val in attr_matches: gpano_data[key] = val
+    elem_matches = re.findall(r'<GPano:(\w+)>([^<]+)</GPano:\1>', xmp_string)
+    for key, val in elem_matches: gpano_data[key] = val
+    return gpano_data
 
 def unpack_gpmf_data(type_val, size, repeat, raw_data):
     type_char = type_val.decode('ascii', errors='ignore')
@@ -94,6 +110,17 @@ def parse_gpmf(data, offset=0, end=None):
         offset += 8 + padded_length
     return elements
 
+def flatten_global_ast(ast):
+    out = {}
+    for node in ast:
+        if node.get('children'): out.update(flatten_global_ast(node['children']))
+        else:
+            val = node.get('value')
+            if val is None: val = node.get('raw')
+            if isinstance(val, list) and len(val) == 1: val = val[0]
+            out[node['key']] = val
+    return out
+
 def extract_all_telemetry(ast):
     constants, streams = {}, {}
     METADATA_KEYS = {'STNM', 'SCAL', 'UNIT', 'SIUN', 'TYPE', 'MTRY', 'OUTR', 'ORIN', 'TICK', 'TSMP', 'TIMO', 'EMP'}
@@ -132,12 +159,11 @@ def extract_all_telemetry(ast):
                             else: streams[d_key].append(row)
     return constants, streams
 
-# MP4 BOX Parsing logic for perfectly timestamped chunk extraction
 def _iter_boxes(data, offset=0, end=None):
     if end is None: end = len(data)
     while offset + 8 <= end:
         size = struct.unpack_from(">I", data, offset)[0]
-        box_type = data[offset + 4: offset + 8].decode("latin-1")
+        box_type = data[offset + 4: offset + 8].decode("latin-1", errors="ignore")
         if size == 1: size = struct.unpack_from(">Q", data, offset + 8)[0]; header = 16
         elif size == 0: size = end - offset; header = 8
         else: header = 8
@@ -212,15 +238,21 @@ def _find_gpmf_samples_with_timing(mp4_bytes):
 
 def extract_streams_with_time(mp4_path):
     data = Path(mp4_path).read_bytes()
+    
+    global_constants = {}
+    gpmf_global_blob = _find_box(data, "moov", "udta", "GPMF")
+    if gpmf_global_blob:
+        global_ast = parse_gpmf(gpmf_global_blob)
+        global_constants = flatten_global_ast(global_ast)
+        
     samples = _find_gpmf_samples_with_timing(data)
     timed_streams = {}
-    global_constants = {}
     
     for off, sz, t_start, t_dur in samples:
         if sz == 0: continue
         ast = parse_gpmf(data[off: off + sz])
         constants, chunk_streams = extract_all_telemetry(ast)
-        global_constants.update(constants)
+        global_constants.update(constants) 
         
         for key, val_list in chunk_streams.items():
             if not val_list: continue
@@ -240,7 +272,6 @@ def get_telemetry_interpolators(streams):
         valid_gps = []
         for s in streams["GPS9"]:
             lat, lon, alt, s2d, s3d, days, secs, dop, fix = s["data"]
-            # GPS9 Integrity Filter
             if fix >= 2 and dop <= 5.0:
                 valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
                 

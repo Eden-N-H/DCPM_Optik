@@ -6,21 +6,86 @@ import subprocess
 FILE_PATH = "/home/mezza/Downloads/Airstrip Road.mp4"
 BIN_PATH = "telemetry.bin"
 
+# ==============================================================================
+# 1. MP4 NATIVE HEADER PARSER (For Global Metadata / ExifTool replacement)
+# ==============================================================================
+
+def extract_global_gpmf(mp4_path):
+    """
+    Rapidly seeks through the MP4 box structure to find the global settings payload
+    located at: moov -> udta -> GPMF. Reads efficiently without loading the whole file.
+    """
+    print("--- 1. EXTRACTING GLOBAL METADATA FROM MP4 HEADER ---")
+    if not os.path.exists(mp4_path):
+        print(f"[-] File not found: {mp4_path}")
+        return None
+
+    with open(mp4_path, "rb") as f:
+        f.seek(0, 2)
+        eof = f.tell()
+        f.seek(0)
+        
+        def find_atom(target, end_offset):
+            while f.tell() + 8 <= end_offset:
+                offset = f.tell()
+                header = f.read(8)
+                if len(header) < 8: break
+                
+                size = struct.unpack(">I", header[:4])[0]
+                btype = header[4:8].decode("latin-1", errors="ignore")
+                
+                header_len = 8
+                if size == 1:
+                    size = struct.unpack(">Q", f.read(8))[0]
+                    header_len = 16
+                elif size == 0:
+                    size = end_offset - offset
+                    
+                if btype == target:
+                    return offset + header_len, offset + size
+                    
+                f.seek(offset + size)
+            return None, None
+
+        # Traverse hierarchy
+        moov_start, moov_end = find_atom("moov", eof)
+        if not moov_start: return None
+        
+        f.seek(moov_start)
+        udta_start, udta_end = find_atom("udta", moov_end)
+        if not udta_start: return None
+        
+        f.seek(udta_start)
+        gpmf_start, gpmf_end = find_atom("GPMF", udta_end)
+        if not gpmf_start: return None
+        
+        f.seek(gpmf_start)
+        blob = f.read(gpmf_end - gpmf_start)
+        print(f"[+] Successfully extracted moov/udta/GPMF payload ({len(blob)} bytes)\n")
+        return blob
+
+# ==============================================================================
+# 2. TELEMETRY TRACK EXTRACTION (For Time-Series Sensor Data)
+# ==============================================================================
+
 def extract_binary_stream(mp4_path, bin_path):
-    print("--- 1. EXTRACTING BINARY STREAM VIA FFMPEG ---")
+    print("--- 2. EXTRACTING TELEMETRY TRACK VIA FFMPEG ---")
     cmd = ["ffmpeg", "-y", "-i", mp4_path, "-map", "0:3", "-f", "data", "-c", "copy", bin_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print("FFmpeg failed to extract stream. Ensure ffmpeg is installed.")
+        print("[-] FFmpeg failed to extract stream. Ensure ffmpeg is installed.")
         return False
-    print(f"Extracted binary track to {bin_path} ({os.path.getsize(bin_path) / 1024:.1f} KB)\n")
+    print(f"[+] Extracted time-series binary track to {bin_path} ({os.path.getsize(bin_path) / 1024:.1f} KB)\n")
     return True
+
+# ==============================================================================
+# 3. GPMF UNPACKING AND PARSING
+# ==============================================================================
 
 def unpack_gpmf_data(type_val, size, repeat, raw_data):
     """Unpacks basic homogeneous binary data arrays."""
     type_char = type_val.decode('ascii', errors='ignore')
     
-    # Standard Numeric Types
     fmt_map = {
         's': 'h', 'S': 'H', 'l': 'i', 'L': 'I', 
         'f': 'f', 'd': 'd', 'B': 'B', 'b': 'b', 
@@ -40,11 +105,9 @@ def unpack_gpmf_data(type_val, size, repeat, raw_data):
         except Exception:
             return raw_data
             
-    # Standard String/Char Type (size is usually 1, repeat is length)
     elif type_char == 'c':
         return raw_data.decode('ascii', errors='ignore').strip('\x00')
         
-    # Specialty String Types: 'F' (FourCC 4-byte string), 'U' (UTC 16-byte string)
     elif type_char in ['F', 'U']:
         results = []
         for i in range(repeat):
@@ -52,10 +115,10 @@ def unpack_gpmf_data(type_val, size, repeat, raw_data):
             results.append(chunk.decode('ascii', errors='ignore').strip('\x00'))
         return results if repeat > 1 else results[0]
         
-    return raw_data # Raw bytes fallback for completely unknown types
+    return raw_data 
 
 def unpack_complex_gpmf(type_str, size, repeat, raw_data):
-    """Dynamically compiles a C-Struct schema to unpack heterogeneous payloads (like GPS9 and SCEN)."""
+    """Dynamically compiles a C-Struct schema to unpack heterogeneous payloads."""
     matches = re.findall(r'(\[\d+\])?([a-zA-Z])', type_str)
     parsed = []
     for bracket, char in matches:
@@ -102,7 +165,7 @@ def unpack_complex_gpmf(type_str, size, repeat, raw_data):
             cleaned = []
             for j, char in enumerate(flat_chars):
                 val = unpacked[j]
-                if char in ('F', 'U', 'c'): # Decode byte arrays back to Text Strings
+                if char in ('F', 'U', 'c'):
                     try: val = val.decode('ascii', errors='ignore').strip('\x00')
                     except: pass
                 cleaned.append(val)
@@ -148,6 +211,19 @@ def parse_gpmf(data, offset=0, end=None):
         
     return elements
 
+def flatten_global_ast(ast):
+    """Flattens nested global setting AST nodes into a single key-value dictionary."""
+    out = {}
+    for node in ast:
+        if node.get('children'):
+            out.update(flatten_global_ast(node['children']))
+        else:
+            val = node.get('value')
+            if val is None: val = node.get('raw')
+            if isinstance(val, list) and len(val) == 1: val = val[0]
+            out[node['key']] = val
+    return out
+
 def extract_all_telemetry(ast):
     constants = {}
     streams = {}
@@ -158,14 +234,14 @@ def extract_all_telemetry(ast):
         if devc['key'] == 'DEVC':
             for item in devc.get('children', []):
                 
-                # 1. Map Device Constants
+                # Map Device Constants
                 if item['key'] != 'STRM':
                     val = item.get('value')
                     if val is None: val = item.get('raw')
                     if isinstance(val, list) and len(val) == 1: val = val[0]
                     constants[item['key']] = val
                     
-                # 2. Map Time-Series Streams
+                # Map Time-Series Streams
                 else:
                     strm_dict = {t['key']: t for t in item.get('children', [])}
                     
@@ -191,7 +267,6 @@ def extract_all_telemetry(ast):
                         d_node = strm_dict[d_key]
                         raw_samples = d_node.get('value')
                         
-                        # Try complex schema unpack if data is still raw bytes
                         if isinstance(raw_samples, bytes) and type_str:
                             if d_node['repeat'] == 0:
                                 raw_samples = []
@@ -207,7 +282,6 @@ def extract_all_telemetry(ast):
                         if d_key not in streams:
                             streams[d_key] = {'name': stnm, 'units': unit, 'samples': []}
                             
-                        # Apply scales to numerics, pass strings/chars natively
                         for row in raw_samples:
                             if isinstance(row, (tuple, list)):
                                 scaled_row = []
@@ -226,22 +300,48 @@ def extract_all_telemetry(ast):
 
     return constants, streams
 
+# ==============================================================================
+# 4. MAIN EXECUTION
+# ==============================================================================
+
 def main():
     if not os.path.exists(FILE_PATH):
         print(f"File not found: {FILE_PATH}")
         return
         
+    # --- PHASE 1: GLOBAL METADATA (ExifTool Alternative) ---
+    global_blob = extract_global_gpmf(FILE_PATH)
+    global_dict = {}
+    if global_blob:
+        global_ast = parse_gpmf(global_blob)
+        global_dict = flatten_global_ast(global_ast)
+        
+    # --- PHASE 2: TIME-SERIES TELEMETRY TRACK ---
     if not extract_binary_stream(FILE_PATH, BIN_PATH): return
 
-    print("--- 2. PARSING GPMF AST ---")
+    print("--- 3. PARSING TELEMETRY AST ---")
     with open(BIN_PATH, "rb") as f:
         ast = parse_gpmf(f.read())
     
-    print("--- 3. EXTRACTING ALL DATA STREAMS ---")
+    print("--- 4. EXTRACTING TELEMETRY DATA STREAMS ---")
     constants, streams = extract_all_telemetry(ast)
 
+    # --- PRINTING UNIFIED RESULTS ---
     print("\n==============================================")
-    print("           DEVICE CONSTANTS / INFO            ")
+    print("      GLOBAL CAMERA/OPTICAL SETTINGS (moov)   ")
+    print("==============================================")
+    if global_dict:
+        for key, val in sorted(global_dict.items()):
+            # Filter out massive binary blobs for cleaner output
+            if isinstance(val, bytes) and len(val) > 100:
+                print(f"  {key:<6} : [Binary Data: {len(val)} bytes]")
+            else:
+                print(f"  {key:<6} : {val}")
+    else:
+        print("  [-] No global settings found in moov/udta.")
+
+    print("\n==============================================")
+    print("      TELEMETRY DEVICE CONSTANTS (track)      ")
     print("==============================================")
     for key, val in constants.items():
         print(f"  {key:<6} : {val}")
@@ -268,7 +368,7 @@ def main():
         print(f"       -> Sample [0]   : {sample_str}")
         print("-" * 50)
         
-    print("\nExtraction complete! Every valid data stream has been successfully parsed.")
+    print("\nExtraction complete! Both Global Metadata and Telemetry Tracks successfully parsed.")
 
 if __name__ == "__main__":
     main()
