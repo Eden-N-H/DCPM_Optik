@@ -8,8 +8,15 @@
     border-color: #3b82f6;     
 }
 
-.leaflet-control-custom {
-    border: 2px solid rgba(0, 0, 0, 0.2);
-    border-radius: 6px;
-    background-clip: padding-box;
+/* MapLibre Popup Styling adjustments */
+.maplibregl-popup-content {
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    padding: 10px 14px;
+    font-family: inherit;
+    border: 1px solid rgba(0,0,0,0.05);
+}
+
+.maplibregl-popup-tip {
+    border-top-color: white;
 }

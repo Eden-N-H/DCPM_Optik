@@ -4,13 +4,17 @@ document.addEventListener("DOMContentLoaded", () => {
     let imageFiles = [];
     let appIs360 = true;
     
+    // MapLibre Globals
     let map = null;
-    let geoJsonLayer = null;
-    let pathLayer = null;
-    let mapMarkers = {}; 
+    let mapLoaded = false;
+    let mapPopup = null;
+    
+    // Source Geometries
+    let fullGeojson = { type: "FeatureCollection", features: [] };
+    let nodesGeoJson = { type: "FeatureCollection", features: [] };
+    let trailGeoJson = { type: "FeatureCollection", features: [] };
     
     let fullResults = [];
-    let fullGeojson = { type: "FeatureCollection", features: [] };
     let appResults = []; 
     let currentIndex = 0;
     let currentDirection = 'front'; 
@@ -35,44 +39,143 @@ document.addEventListener("DOMContentLoaded", () => {
         return color;
     }
 
+    // Safely update MapLibre Sources
+    function updateMapSource(sourceId, data) {
+        if (mapLoaded && map) {
+            const src = map.getSource(sourceId);
+            if (src) src.setData(data);
+        }
+    }
+
+    // Safely fit map bounds using Turf.js
+    function fitMapToBounds(geoJsonData, maxZoom = 20) {
+        if (!mapLoaded || !map || !geoJsonData || !geoJsonData.features || geoJsonData.features.length === 0) return;
+        try {
+            const bbox = turf.bbox(geoJsonData);
+            if (bbox.some(val => isNaN(val) || !isFinite(val))) return;
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50, maxZoom: maxZoom });
+        } catch (e) {
+            console.warn("Could not calculate bounds", e);
+        }
+    }
+
     function initMap() {
         if (!map) {
-            map = L.map('map').setView([-32.06, 151.90], 15);
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                maxZoom: 24, maxNativeZoom: 17 
-            }).addTo(map);
-
-            map.createPane('trailPane'); map.getPane('trailPane').style.zIndex = 300;
-            map.createPane('nodePane'); map.getPane('nodePane').style.zIndex = 450; 
-
-            geoJsonLayer = L.geoJSON(null, {
-                style: (feature) => {
-                    const fColor = feature.properties.color || stringToColor(feature.properties.class || "Unknown");
-                    const fOpacity = feature.properties.conf !== undefined ? feature.properties.conf : 0.4;
-                    return { color: "#ffffff", weight: 2, opacity: 1, fillColor: fColor, fillOpacity: fOpacity };
+            map = new maplibregl.Map({
+                container: 'map',
+                style: {
+                    version: 8,
+                    sources: {
+                        'google-satellite': {
+                            type: 'raster',
+                            tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+                            tileSize: 256,
+                            maxzoom: 22 // Google Maps supports extremely high zoom levels natively
+                        }
+                    },
+                    layers: [{ id: 'google-satellite-layer', type: 'raster', source: 'google-satellite' }]
                 },
-                onEachFeature: (feature, layer) => {
-                    if (feature.geometry && feature.geometry.type === 'Polygon') {
-                        layer.bindPopup(`<b>${feature.properties.class}</b><br>View: ${feature.properties.view}<br>Area: ${feature.properties.area_sqm} m²`);
-                        layer.on('click', () => {
-                            const fname = feature.properties.filename;
-                            if (fname) {
-                                const target = fullResults.find(r => r.original_name === fname);
-                                if (target) {
-                                    if (selLocation.value !== target.location) {
-                                        selLocation.value = target.location;
-                                        appResults = fullResults.filter(r => r.location === target.location);
-                                    }
-                                    currentIndex = appResults.findIndex(r => r.original_name === target.original_name);
-                                    updateCarousel(false);
-                                }
-                            }
-                        });
-                    }
-                }
-            }).addTo(map);
+                center: [151.90, -32.06], // Note: [Lng, Lat] for MapLibre
+                zoom: 15
+            });
 
-            pathLayer = L.geoJSON(null, { pane: 'trailPane', style: { color: "#94a3b8", weight: 2, dashArray: "4, 6" } }).addTo(map);
+            mapPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false });
+
+            map.on('load', () => {
+                mapLoaded = true;
+
+                // 1. Add Sources
+                map.addSource('trail-source', { type: 'geojson', data: trailGeoJson });
+                map.addSource('defects-source', { type: 'geojson', data: fullGeojson });
+                map.addSource('nodes-source', { type: 'geojson', data: nodesGeoJson });
+
+                // 2. Add Layers (Order dictates Z-Index automatically)
+                map.addLayer({
+                    id: 'trail-layer', type: 'line', source: 'trail-source',
+                    paint: { 'line-color': '#94a3b8', 'line-width': 2, 'line-dasharray': [2, 3] }
+                });
+
+                map.addLayer({
+                    id: 'defects-layer', type: 'fill', source: 'defects-source',
+                    paint: {
+                        'fill-color': ['coalesce', ['get', 'color'], '#ffffff'],
+                        'fill-opacity': ['coalesce', ['get', 'conf'], 0.4]
+                    }
+                });
+
+                map.addLayer({
+                    id: 'defects-outline-layer', type: 'line', source: 'defects-source',
+                    paint: { 'line-color': '#ffffff', 'line-width': 1.5 }
+                });
+
+                map.addLayer({
+                    id: 'nodes-layer', type: 'circle', source: 'nodes-source',
+                    paint: {
+                        'circle-radius': ['case', ['boolean', ['get', 'active'], false], 6, 3],
+                        'circle-color': ['case',
+                            ['boolean', ['get', 'active'], false], '#fde047',  // Active: Yellow
+                            ['boolean', ['get', 'processed'], false], '#3b82f6', // Processed: Blue
+                            '#ef4444' // Pending: Red
+                        ],
+                        'circle-stroke-width': ['case', ['boolean', ['get', 'active'], false], 2, 0.5],
+                        'circle-stroke-color': ['case', ['boolean', ['get', 'active'], false], '#000000', '#ffffff']
+                    }
+                });
+
+                // 3. Map Interactions & Event Delegation
+                
+                // --- Nodes ---
+                map.on('mouseenter', 'nodes-layer', (e) => {
+                    map.getCanvas().style.cursor = 'pointer';
+                    const f = e.features[0];
+                    const status = f.properties.processed ? "Photo Location" : "Pending Process";
+                    mapPopup.setLngLat(e.lngLat).setHTML(`<div class="text-xs"><b>${status}</b><br>${f.properties.original_name}</div>`).addTo(map);
+                });
+                
+                map.on('mouseleave', 'nodes-layer', () => {
+                    map.getCanvas().style.cursor = '';
+                    mapPopup.remove();
+                });
+                
+                map.on('click', 'nodes-layer', (e) => {
+                    const f = e.features[0];
+                    if (!f.properties.processed) return;
+                    handleMapClick(f.properties.original_name, f.properties.location);
+                });
+
+                // --- Defects ---
+                map.on('mouseenter', 'defects-layer', (e) => {
+                    map.getCanvas().style.cursor = 'pointer';
+                    const f = e.features[0];
+                    mapPopup.setLngLat(e.lngLat).setHTML(`<div class="text-xs"><b>${f.properties.class}</b><br>View: ${f.properties.view}<br>Area: ${f.properties.area_sqm} m²</div>`).addTo(map);
+                });
+                
+                map.on('mouseleave', 'defects-layer', () => {
+                    map.getCanvas().style.cursor = '';
+                    mapPopup.remove();
+                });
+                
+                map.on('click', 'defects-layer', (e) => {
+                    const f = e.features[0];
+                    handleMapClick(f.properties.filename, null);
+                });
+                
+                // Immediately refresh bounding boxes if we loaded with existing data
+                if (fullGeojson.features.length > 0) fitMapToBounds(fullGeojson);
+                else if (trailGeoJson.features.length > 0) fitMapToBounds(trailGeoJson);
+            });
+        }
+    }
+
+    function handleMapClick(originalName, locationStr) {
+        const target = fullResults.find(r => r.original_name === originalName);
+        if (target) {
+            if (selLocation.value !== target.location) {
+                selLocation.value = target.location;
+                appResults = fullResults.filter(r => r.location === target.location);
+            }
+            currentIndex = appResults.findIndex(r => r.original_name === target.original_name);
+            updateCarousel(false);
         }
     }
 
@@ -134,6 +237,14 @@ document.addEventListener("DOMContentLoaded", () => {
         
         btnProcess.disabled = true;
         btnScan.disabled = true;
+        
+        // Reset Map Data
+        fullGeojson = { type: "FeatureCollection", features: [] };
+        nodesGeoJson = { type: "FeatureCollection", features: [] };
+        trailGeoJson = { type: "FeatureCollection", features: [] };
+        fullResults = [];
+        appResults = [];
+
         initMap();
 
         try {
@@ -145,23 +256,29 @@ document.addEventListener("DOMContentLoaded", () => {
             stateLastLon = data.last_lon;
             stateLastLocId = data.last_loc_id;
 
-            setTimeout(() => {
-                map.invalidateSize();
-                if (data.initial_trail && data.initial_trail.features) {
-                    pathLayer.addData(data.initial_trail);
-                    if(pathLayer.getBounds().isValid()) map.fitBounds(pathLayer.getBounds(), { padding: [50, 50] });
+            // Load Initial Telemetry Trail
+            if (data.initial_trail && data.initial_trail.features) {
+                trailGeoJson = data.initial_trail;
+                updateMapSource('trail-source', trailGeoJson);
+                fitMapToBounds(trailGeoJson);
+            }
+
+            // Prepare Initial Nodes (Red pending dots)
+            data.initial_state.forEach(img => {
+                if(img.lat !== 0.0) {
+                    nodesGeoJson.features.push({
+                        type: "Feature",
+                        geometry: { type: "Point", coordinates: [img.lon, img.lat] },
+                        properties: { original_name: img.original_name, location: img.location, processed: false, active: false }
+                    });
                 }
+            });
+            updateMapSource('nodes-source', nodesGeoJson);
 
-                data.initial_state.forEach(img => {
-                    if(img.lat !== 0.0) {
-                        const marker = L.circleMarker([img.lat, img.lon], { radius: 2, fillColor: "#ef4444", color: "#ffffff", weight: 0.5, opacity: 1, fillOpacity: 1, pane: 'nodePane' }).addTo(map);
-                        marker.bindTooltip(`<b>Pending Process</b><br>${img.original_name}`, { direction: 'top', className: 'text-xs border-0 shadow-sm bg-white/90' });
-                        mapMarkers[img.original_name] = marker;
-                    }
-                });
+            // Resize map layout to fix rendering bugs caused by hidden divs
+            setTimeout(() => { if (map) map.resize(); }, 300);
 
-                startSSE(data.task_id, data.total_images);
-            }, 200);
+            startSSE(data.task_id, data.total_images);
         } catch (e) {
             alert(e.message); uploadPanel.classList.remove("hidden"); document.getElementById("progress-container").classList.add("hidden"); checkCanProcess();
         }
@@ -190,27 +307,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 const r = msg.data;
                 fullResults.push(r);
                 
+                // Add new Defects to map
                 let hasDefects = r.geojson && r.geojson.length > 0;
                 if (hasDefects) {
                     fullGeojson.features.push(...r.geojson);
-                    geoJsonLayer.addData({
-                        type: "FeatureCollection",
-                        features: r.geojson
-                    });
+                    updateMapSource('defects-source', fullGeojson);
                 }
 
-                if (mapMarkers[r.original_name]) {
-                    const marker = mapMarkers[r.original_name];
-                    if (activeMarkerFilename !== r.original_name) marker.setStyle({ fillColor: "#3b82f6", radius: 2, color: "#ffffff", weight: 0.5 });
-                    marker.bindTooltip(`<b>Photo Location</b><br>${r.original_name}`, { direction: 'top', className: 'text-xs border-0 shadow-sm bg-white/90' });
-                    marker.off('click'); 
-                    marker.on('click', () => {
-                        if (selLocation.value !== r.location) { selLocation.value = r.location; appResults = fullResults.filter(x => x.location === r.location); }
-                        currentIndex = appResults.findIndex(x => x.original_name === r.original_name);
-                        updateCarousel(false);
+                // Update node status to "Processed" (Blue)
+                const fIndex = nodesGeoJson.features.findIndex(f => f.properties.original_name === r.original_name);
+                if (fIndex > -1) {
+                    nodesGeoJson.features[fIndex].properties.processed = true;
+                    nodesGeoJson.features[fIndex].properties.location = r.location;
+                } else if (r.lat !== 0.0) {
+                    // Fallback if node wasn't in the initial preview calculations
+                    nodesGeoJson.features.push({
+                        type: "Feature",
+                        geometry: { type: "Point", coordinates: [r.lon, r.lat] },
+                        properties: { original_name: r.original_name, location: r.location, processed: true, active: false }
                     });
                 }
+                updateMapSource('nodes-source', nodesGeoJson);
 
+                // Progress Bar Math
                 processedCount++;
                 const pct = totalImages > 0 ? (processedCount / totalImages) * 100 : 100;
                 document.getElementById("progress-bar").style.width = `${pct}%`;
@@ -282,30 +401,42 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("btn-export-zip").classList.remove("hidden");
                 document.getElementById("btn-export-flat-zip").classList.remove("hidden");
                 
-                initMap();
-                setTimeout(() => {
-                    map.invalidateSize();
-                    geoJsonLayer.addData(fullGeojson);
-                    
-                    let tCoords = fullResults.filter(r => r.lat !== 0.0).map(r => [r.lon, r.lat]);
-                    if (tCoords.length > 1) pathLayer.addData({ type: "Feature", geometry: { type: "LineString", coordinates: tCoords } });
+                // Reconstruct Map Sources
+                nodesGeoJson = { type: "FeatureCollection", features: [] };
+                let trailCoords = [];
 
-                    fullResults.forEach(img => {
-                        if (!mapMarkers[img.original_name] && img.lat !== 0.0) {
-                            const marker = L.circleMarker([img.lat, img.lon], { radius: 2, fillColor: "#3b82f6", color: "#ffffff", weight: 0.5, opacity: 1, fillOpacity: 1, pane: 'nodePane' }).addTo(map);
-                            marker.bindTooltip(`<b>Photo Location</b><br>${img.original_name}`, { direction: 'top', className: 'text-xs border-0 shadow-sm bg-white/90' });
-                            mapMarkers[img.original_name] = marker;
-                            marker.on('click', () => {
-                                if (selLocation.value !== img.location) { selLocation.value = img.location; appResults = fullResults.filter(r => r.location === img.location); }
-                                currentIndex = appResults.findIndex(r => r.original_name === img.original_name);
-                                updateCarousel(false);
-                            });
-                        }
-                    });
-                    
-                    if (geoJsonLayer.getBounds().isValid()) map.fitBounds(geoJsonLayer.getBounds(), { padding: [50, 50] });
-                    refreshLocationsUI(); setView('front'); if (appResults.length > 0) updateCarousel(true);
-                }, 200);
+                fullResults.forEach(img => {
+                    if (img.lat !== 0.0) {
+                        trailCoords.push([img.lon, img.lat]);
+                        nodesGeoJson.features.push({
+                            type: "Feature",
+                            geometry: { type: "Point", coordinates: [img.lon, img.lat] },
+                            properties: { original_name: img.original_name, location: img.location, processed: true, active: false }
+                        });
+                    }
+                });
+
+                if (trailCoords.length > 1) {
+                    trailGeoJson = { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: trailCoords }, properties: {} }] };
+                } else {
+                    trailGeoJson = { type: "FeatureCollection", features: [] };
+                }
+
+                initMap();
+
+                setTimeout(() => {
+                    if (map) map.resize();
+                    updateMapSource('defects-source', fullGeojson);
+                    updateMapSource('nodes-source', nodesGeoJson);
+                    updateMapSource('trail-source', trailGeoJson);
+
+                    if (fullGeojson.features.length > 0) fitMapToBounds(fullGeojson);
+                    else if (trailGeoJson.features.length > 0) fitMapToBounds(trailGeoJson);
+
+                    refreshLocationsUI(); 
+                    setView('front'); 
+                    if (appResults.length > 0) updateCarousel(true);
+                }, 300);
             } catch (err) { alert("Error loading project: " + err.message); }
         };
         reader.readAsText(file);
@@ -366,12 +497,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
         document.getElementById("table-defects").innerHTML = activeViewData.defects.map(d => `<tr><td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${d.color || stringToColor(d.class)}; border: 1px solid #ccc;"></span>${d.class}</td><td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td><td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td></tr>`).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No detections</td></tr>`;
 
-        if (activeMarkerFilename && mapMarkers[activeMarkerFilename]) mapMarkers[activeMarkerFilename].setStyle({ fillColor: "#3b82f6", radius: 2, weight: 0.5, color: "#ffffff" });
+        // Update active map node styling by toggling the "active" boolean property
         activeMarkerFilename = current.original_name;
-        const newActiveMarker = mapMarkers[activeMarkerFilename];
-        if (newActiveMarker) {
-            newActiveMarker.setStyle({ fillColor: "#fde047", radius: 6, weight: 2, color: "#000000" }); newActiveMarker.bringToFront();
-            if (panMap) map.setView(newActiveMarker.getLatLng(), 20, { animate: true });
+        nodesGeoJson.features.forEach(f => {
+            f.properties.active = (f.properties.original_name === activeMarkerFilename);
+        });
+        updateMapSource('nodes-source', nodesGeoJson);
+
+        // Pan MapLibre map to node
+        if (panMap && mapLoaded && current.lat !== 0.0) {
+            map.flyTo({ center: [current.lon, current.lat], zoom: 20, speed: 1.5 });
         }
 
         document.getElementById("btn-prev").disabled = (currentIndex === 0);
