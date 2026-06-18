@@ -29,6 +29,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const chkIs360 = document.getElementById("chk-is-360");
     const chkDrawGrid = document.getElementById("chk-draw-grid");
     const containerBevRear = document.getElementById("container-bev-rear");
+    
+    // Warnings Panel DOM Elements
+    const warningsContainer = document.getElementById("warnings-container");
+    const warningsList = document.getElementById("warnings-list");
 
     function stringToColor(str) {
         let hash = 0;
@@ -226,6 +230,10 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("btn-export-flat-zip").classList.remove("hidden");
         document.getElementById("progress-container").classList.remove("hidden");
         
+        // Reset Warnings UI
+        warningsList.innerHTML = "";
+        warningsContainer.classList.add("hidden");
+        
         btnProcess.disabled = true;
         btnScan.disabled = true;
         
@@ -290,9 +298,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (msg.type === "error") {
                     alert(`Background Task Error: ${msg.message}`);
                 } else if (msg.type === "complete" && fullResults.length === 0) {
-                    alert("Processing complete, but 0 frames were successfully extracted. Check the browser console for GPMF Validation Errors.");
+                    alert("Processing complete, but 0 frames were successfully extracted. Check the warnings panel for metadata rejection details.");
                     
-                    // Reset the workspace UI since there is nothing to show
                     document.getElementById("workspace").classList.add("hidden");
                     document.getElementById("upload-panel").classList.remove("hidden");
                     document.getElementById("btn-save-project").classList.add("hidden");
@@ -304,6 +311,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (msg.type === "item_error") {
                 console.warn(`[GPMF Skip] ${msg.original_name}: ${msg.message}`);
+                
+                // Unhide the warnings box and append the specific error
+                warningsContainer.classList.remove("hidden");
+                const li = document.createElement("li");
+                li.textContent = `Skipped ${msg.original_name}: ${msg.message}`;
+                warningsList.appendChild(li);
                 
                 if (!msg.is_video) {
                     processedCount++;

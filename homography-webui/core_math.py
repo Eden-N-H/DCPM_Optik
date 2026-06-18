@@ -59,9 +59,7 @@ def extract_photo_telemetry(filepath):
             if roll is None and 'PoseRollDegrees' in gpano:
                 roll = float(gpano['PoseRollDegrees'])
             
-            # GPano defines full 360 sphere. Defaulting to 100 ensures safe rectilinear extraction mapping.
-            if fov is None and gpano.get('ProjectionType') == 'equirectangular':
-                fov = 100.0 
+            # Note: No 'guess' fallbacks are applied here. If FOV is not in metadata, it remains None.
                 
         return pitch, roll, klns, fov
     except Exception:
@@ -180,7 +178,7 @@ def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near=2.0, z_far=8
 def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, roll, klns, fov_from_meta, model_lock, is_360=True, original_filename="", draw_grid=False):
     if fov_from_meta is None: raise ValueError("Missing Field of View (MFOV/ZFOV) in metadata.")
     if pitch is None or roll is None: raise ValueError("Missing Camera Pose (GRAV/GPano) in metadata.")
-    if gps_lat is None or gps_lon is None: raise ValueError("Missing GPS data.")
+    if gps_lat is None or gps_lon is None: raise ValueError("Missing GPS Coordinates.")
 
     fov_val = float(fov_from_meta)
     if fov_val <= 0 or fov_val >= 180:

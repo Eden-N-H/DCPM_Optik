@@ -92,6 +92,12 @@
             </div>
         </div>
 
+        <!-- NEW: Warnings / Skipped Media Panel -->
+        <div id="warnings-container" class="hidden bg-red-50 border border-red-200 p-4 rounded-xl shadow-sm flex flex-col gap-2 mt-2 max-h-48 overflow-y-auto">
+            <span class="text-sm font-bold text-red-800">⚠️ Processing Warnings (Skipped Media)</span>
+            <ul id="warnings-list" class="text-xs text-red-700 list-disc pl-5 space-y-1"></ul>
+        </div>
+
         <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4 h-[75vh]">
             <div class="lg:col-span-5 bg-white p-4 rounded-xl shadow-sm border flex flex-col h-full overflow-hidden">
                 <div class="flex justify-between items-center mb-4 flex-none">
