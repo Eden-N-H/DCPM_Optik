@@ -1,6 +1,7 @@
 import os
 import re
 import struct
+import math
 from pathlib import Path
 import numpy as np
 from scipy.interpolate import interp1d
@@ -21,10 +22,8 @@ def extract_jpeg_metadata_blocks(file_path):
             length = struct.unpack('>H', length_bytes)[0]
             payload = f.read(length - 2)
             
-            # APP1: XMP Metadata
             if marker_type == 0xe1 and payload.startswith(b'http://ns.adobe.com/xap/1.0/\x00'):
                 xmp_data = payload[29:].decode('utf-8', errors='ignore')
-            # APP6: GoPro GPMF Metadata
             elif marker_type == 0xe6 and payload.startswith(b'GoPro\x00'):
                 gpmf_data = payload[6:]
                 
@@ -264,6 +263,110 @@ def extract_streams_with_time(mp4_path):
                     "data": val
                 })
     return timed_streams, global_constants
+
+# =======================================================================
+# INTERNAL ACCURACY & SENSOR HEALTH EVALUATION
+# =======================================================================
+def _local_haversine(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def evaluate_telemetry_health(streams):
+    """
+    Evaluates GoPro telemetry against physical constraints and internal consistency
+    without requiring ground truth hardware.
+    """
+    report = {
+        "gps_score": 100.0,
+        "imu_score": 100.0,
+        "warnings": [],
+        "metrics": {
+            "avg_gps_speed_error_ms": 0.0,
+            "bad_fix_ratio": 0.0,
+            "avg_grav_mag_error": 0.0,
+            "max_jerk_detected": 0.0
+        }
+    }
+    
+    # 1. GPS Internal Consistency & Physical Constraints (Jerk)
+    if "GPS9" in streams and len(streams["GPS9"]) > 1:
+        gps_data = streams["GPS9"]
+        speed_errors = []
+        jerks = []
+        bad_dop_count = 0
+        bad_fix_count = 0
+        
+        for i in range(1, len(gps_data)):
+            prev = gps_data[i-1]
+            curr = gps_data[i]
+            
+            dt = curr["time_sec"] - prev["time_sec"]
+            if dt <= 0: continue
+            
+            lat1, lon1 = prev["data"][0], prev["data"][1]
+            lat2, lon2 = curr["data"][0], curr["data"][1]
+            doppler_speed_prev = prev["data"][3]
+            doppler_speed_curr = curr["data"][3]
+            dop = curr["data"][7]
+            fix = curr["data"][8]
+            
+            if fix < 3: bad_fix_count += 1
+            if dop > 3.0: bad_dop_count += 1
+            
+            dist = _local_haversine(lat1, lon1, lat2, lon2)
+            derived_speed = dist / dt
+            
+            # Acceleration / Jerk Physics check
+            accel = abs(doppler_speed_curr - doppler_speed_prev) / dt
+            jerks.append(accel / dt)
+            
+            # Compare derived speed to doppler speed (filter noise at standstill)
+            if doppler_speed_curr > 1.0 or derived_speed > 1.0:
+                speed_errors.append(abs(derived_speed - doppler_speed_curr))
+        
+        avg_speed_error = sum(speed_errors) / len(speed_errors) if speed_errors else 0
+        max_jerk = max(jerks) if jerks else 0
+        
+        report["metrics"]["avg_gps_speed_error_ms"] = round(avg_speed_error, 3)
+        report["metrics"]["bad_fix_ratio"] = round(bad_fix_count / len(gps_data), 3)
+        report["metrics"]["max_jerk_detected"] = round(max_jerk, 2)
+        
+        # Penalties for GPS
+        gps_penalty = (avg_speed_error * 5) + ((bad_fix_count / len(gps_data)) * 40) + ((bad_dop_count / len(gps_data)) * 15)
+        if max_jerk > 20.0: gps_penalty += 15  # Impossible kinematic movement penalty
+            
+        report["gps_score"] = max(0.0, min(100.0, 100.0 - gps_penalty))
+        
+        if max_jerk > 20.0:
+            report["warnings"].append(f"Kinematic Anomaly: GPS coordinate jumped violently (Jerk: {max_jerk:.1f} m/s³).")
+        if report["gps_score"] < 80:
+            report["warnings"].append(f"GPS Quality Degraded (Score: {report['gps_score']:.1f}%). High spatial drift.")
+            
+    # 2. IMU Gravity Magnitude (1G Check)
+    if "GRAV" in streams and len(streams["GRAV"]) > 0:
+        grav_data = streams["GRAV"]
+        mag_errors = []
+        
+        for item in grav_data:
+            x, y, z = item["data"]
+            mag = math.sqrt(x*x + y*y + z*z)
+            mag_errors.append(abs(1.0 - mag))
+            
+        avg_mag_error = sum(mag_errors) / len(mag_errors) if mag_errors else 0
+        report["metrics"]["avg_grav_mag_error"] = round(avg_mag_error, 4)
+        
+        # Penalty: 0.05 average deviation is a 10% penalty
+        imu_penalty = avg_mag_error * 200 
+        report["imu_score"] = max(0.0, min(100.0, 100.0 - imu_penalty))
+        
+        if report["imu_score"] < 90:
+            report["warnings"].append(f"IMU Calibration/Vibration Issue (Score: {report['imu_score']:.1f}%). Gravity vector unstable.")
+            
+    return report
 
 def get_telemetry_interpolators(streams):
     interpolators = {}

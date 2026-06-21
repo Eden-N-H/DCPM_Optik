@@ -30,9 +30,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const chkDrawGrid = document.getElementById("chk-draw-grid");
     const containerBevRear = document.getElementById("container-bev-rear");
     
-    // Warnings Panel DOM Elements
     const warningsContainer = document.getElementById("warnings-container");
     const warningsList = document.getElementById("warnings-list");
+    const healthPanel = document.getElementById("health-panel");
+    const healthContent = document.getElementById("health-content");
+    const healthWarnings = document.getElementById("health-warnings");
 
     function stringToColor(str) {
         let hash = 0;
@@ -230,9 +232,11 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("btn-export-flat-zip").classList.remove("hidden");
         document.getElementById("progress-container").classList.remove("hidden");
         
-        // Reset Warnings UI
         warningsList.innerHTML = "";
         warningsContainer.classList.add("hidden");
+        healthContent.innerHTML = "";
+        healthWarnings.innerHTML = "";
+        healthPanel.classList.add("hidden");
         
         btnProcess.disabled = true;
         btnScan.disabled = true;
@@ -309,10 +313,42 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
+            if (msg.type === "health_report") {
+                healthPanel.classList.remove("hidden");
+                const hr = msg.data;
+                
+                let gpsColor = hr.gps_score > 80 ? 'text-green-600' : 'text-orange-500';
+                let imuColor = hr.imu_score > 90 ? 'text-green-600' : 'text-orange-500';
+
+                // Displaying metric cards
+                healthContent.innerHTML += `
+                    <div class="p-3 bg-gray-50 rounded border shadow-sm flex flex-col justify-center">
+                        <p class="text-[10px] text-gray-500 uppercase font-bold tracking-wider">${msg.original_name} - GPS Confidence</p>
+                        <p class="text-2xl font-bold ${gpsColor}">${hr.gps_score.toFixed(1)}%</p>
+                        <p class="text-xs text-gray-600 mt-1">Spatial Drift: ${hr.metrics.avg_gps_speed_error_ms.toFixed(2)} m/s</p>
+                        <p class="text-xs text-gray-600">Poor Sat Fix Ratio: ${(hr.metrics.bad_fix_ratio * 100).toFixed(1)}%</p>
+                        <p class="text-xs text-gray-600">Max Physical Jerk: ${hr.metrics.max_jerk_detected.toFixed(1)} m/s³</p>
+                    </div>
+                    <div class="p-3 bg-gray-50 rounded border shadow-sm flex flex-col justify-center">
+                        <p class="text-[10px] text-gray-500 uppercase font-bold tracking-wider">${msg.original_name} - IMU Integrity</p>
+                        <p class="text-2xl font-bold ${imuColor}">${hr.imu_score.toFixed(1)}%</p>
+                        <p class="text-xs text-gray-600 mt-1">1G Deviation: ${hr.metrics.avg_grav_mag_error.toFixed(4)} G</p>
+                    </div>
+                `;
+                
+                if (hr.warnings.length > 0) {
+                    hr.warnings.forEach(w => {
+                        const li = document.createElement("li");
+                        li.textContent = `[${msg.original_name}] ${w}`;
+                        healthWarnings.appendChild(li);
+                    });
+                }
+                return;
+            }
+
             if (msg.type === "item_error") {
                 console.warn(`[GPMF Skip] ${msg.original_name}: ${msg.message}`);
                 
-                // Unhide the warnings box and append the specific error
                 warningsContainer.classList.remove("hidden");
                 const li = document.createElement("li");
                 li.textContent = `Skipped ${msg.original_name}: ${msg.message}`;

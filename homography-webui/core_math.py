@@ -21,7 +21,6 @@ def extract_photo_telemetry(filepath):
         
         pitch, roll, fov, klns = None, None, None, None
         
-        # 1. Primary: High-Precision GPMF Data
         if gpmf_raw:
             ast = parse_gpmf(gpmf_raw)
             constants, _ = extract_all_telemetry(ast)
@@ -35,7 +34,6 @@ def extract_photo_telemetry(filepath):
             
             fov = constants.get('MFOV', None)
             
-            # Mathematical Fallback for Standard Hero Lenses (ZFOV + ARUW)
             if fov is None:
                 zfov = constants.get('ZFOV')
                 aruw = constants.get('ARUW')
@@ -51,15 +49,12 @@ def extract_photo_telemetry(filepath):
             
             klns = constants.get('KLNS', None)
 
-        # 2. Strict Fallback: XMP / GPano Data (Google Panorama Standard)
         if xmp_raw:
             gpano = parse_xmp_gpano(xmp_raw)
             if pitch is None and 'PosePitchDegrees' in gpano:
                 pitch = float(gpano['PosePitchDegrees'])
             if roll is None and 'PoseRollDegrees' in gpano:
                 roll = float(gpano['PoseRollDegrees'])
-            
-            # Note: No 'guess' fallbacks are applied here. If FOV is not in metadata, it remains None.
                 
         return pitch, roll, klns, fov
     except Exception:
@@ -266,8 +261,13 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     
     try:
-        from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators
+        from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators, evaluate_telemetry_health
         streams, constants = extract_streams_with_time(video_path)
+        
+        # Trigger health assessment on the raw streams
+        health_report = evaluate_telemetry_health(streams)
+        callback({"type": "health_report", "is_video": True, "original_name": original_name, "data": health_report})
+        
         interpolators = get_telemetry_interpolators(streams)
         gps_interp = interpolators.get("gps")
         speed_interp = interpolators.get("speed")

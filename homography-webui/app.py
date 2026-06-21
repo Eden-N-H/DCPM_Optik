@@ -97,6 +97,8 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                 def on_frame_processed(payload):
                     if "error" in payload:
                         active_tasks[t_id].put({"type": "item_error", "original_name": payload.get("original_name", asset['original_name']), "message": payload["error"], "is_video": payload.get("is_video", False)})
+                    elif payload.get("type") == "health_report":
+                        active_tasks[t_id].put({"type": "health_report", "original_name": payload.get("original_name"), "data": payload["data"]})
                     else:
                         active_tasks[t_id].put({"type": "update", "data": payload})
                     
