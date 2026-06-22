@@ -21,16 +21,29 @@ def extract_photo_telemetry(filepath):
         
         pitch, roll, fov, klns = None, None, None, None
         
+        # 1. Parse XMP GPano FIRST. This is the ultimate truth for 360 stitched images.
+        #    If GoPro Max stitched it, it world-locks the sphere, and PosePitch/Roll will be 0.0.
+        if xmp_raw:
+            gpano = parse_xmp_gpano(xmp_raw)
+            if 'PosePitchDegrees' in gpano:
+                pitch = float(gpano['PosePitchDegrees'])
+            if 'PoseRollDegrees' in gpano:
+                roll = float(gpano['PoseRollDegrees'])
+
+        # 2. Parse GPMF
         if gpmf_raw:
             ast = parse_gpmf(gpmf_raw)
             constants, _ = extract_all_telemetry(ast)
             global_constants = flatten_global_ast(ast)
             constants.update(global_constants)
             
+            # Only fallback to the physical IMU GRAV track if GPano didn't explicitly set pitch/roll
             if 'GRAV' in constants:
                 x, y, z = constants['GRAV']
-                pitch = -math.degrees(math.atan2(z, y))
-                roll = math.degrees(math.atan2(x, y))
+                if pitch is None:
+                    pitch = -math.degrees(math.atan2(z, y))
+                if roll is None:
+                    roll = math.degrees(math.atan2(x, y))
             
             fov = constants.get('MFOV', None)
             
@@ -48,13 +61,6 @@ def extract_photo_telemetry(filepath):
                     except Exception: pass
             
             klns = constants.get('KLNS', None)
-
-        if xmp_raw:
-            gpano = parse_xmp_gpano(xmp_raw)
-            if pitch is None and 'PosePitchDegrees' in gpano:
-                pitch = float(gpano['PosePitchDegrees'])
-            if roll is None and 'PoseRollDegrees' in gpano:
-                roll = float(gpano['PoseRollDegrees'])
                 
         return pitch, roll, klns, fov
     except Exception:
@@ -188,8 +194,15 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
     for view_name, config in views_to_process.items():
         all_defects[view_name] = []
         
+        # We explicitly separate the image extraction pitch/roll from the BEV pitch/roll
+        bev_pitch, bev_roll = 0.0, 0.0
+        
         if is_360:
+            # For 360, pitch and roll (often 0.0 if world-locked) orient our virtual extraction camera.
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
+            # Since the virtual camera has been stabilized perfectly parallel to the horizon,
+            # the BEV Homography MUST use 0.0 pitch and 0.0 roll, regardless of physical hardware tilt.
+            bev_pitch, bev_roll = 0.0, 0.0
         else:
             rect_img = img_mat.copy()
             h, w = rect_img.shape[:2]
@@ -203,13 +216,17 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                     rect_img = cv2.undistort(rect_img, K_undist, dist_coeffs)
                     K = K_undist
                 except: pass
+            
+            # For flat images/videos, the passed pitch/roll IS the physical tilt relative to the ground.
+            bev_pitch, bev_roll = pitch, roll
 
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
         
         with model_lock: results = model.predict(source=rect_img, conf=0.25, save=False, verbose=False)
             
-        H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, pitch, roll)
+        # Homography driven by correct situational variables
+        H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, bev_pitch, bev_roll)
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
         
         cv2.imwrite(os.path.join(output_dir, f"raw_bev_{view_name}_{base_filename}"), bev_img.copy())
@@ -222,7 +239,7 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         annotated_rect = rect_img.copy()
         
         if draw_grid:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, pitch, roll, z_near, z_far, x_range)
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, z_near, z_far, x_range)
 
         for r in results:
             annotated_rect = r.plot(img=annotated_rect)
@@ -314,8 +331,10 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0 
             
-            current_pitch = float(pitch_interp(elapsed_sec))
-            current_roll = float(roll_interp(elapsed_sec))
+            # If handling a 360 equirectangular video, it has already been world-locked by stitching software.
+            # Imposing physical IMU tilt on an already leveled sphere would distort the extraction space.
+            current_pitch = 0.0 if is_360 else float(pitch_interp(elapsed_sec))
+            current_roll = 0.0 if is_360 else float(roll_interp(elapsed_sec))
 
             try:
                 c_loc = gps_interp(elapsed_sec)
