@@ -5,6 +5,7 @@ from ultralytics.utils.plotting import colors
 import math
 import exifread
 import os
+import json
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000.0
@@ -14,39 +15,86 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def extract_photo_telemetry(filepath):
+def sanitize_meta(obj):
+    """Recursively makes metadata JSON serializable (handles bytes, numpy, and NaNs)."""
+    if isinstance(obj, dict):
+        return {str(k): sanitize_meta(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_meta(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return [sanitize_meta(v) for v in obj]
+    elif isinstance(obj, bytes):
+        if len(obj) > 1024:
+            return f"<binary data: {len(obj)} bytes>"
+        try:
+            return obj.decode('utf-8', errors='ignore')
+        except:
+            return f"<binary data: {len(obj)} bytes>"
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif hasattr(obj, 'tolist') and callable(obj.tolist):
+        return sanitize_meta(obj.tolist())
+    elif hasattr(obj, 'item') and callable(obj.item):
+        return sanitize_meta(obj.item())
+    elif hasattr(obj, 'printable'):
+        return str(obj.printable)
+    return obj
+
+def extract_full_photo_metadata(filepath):
+    """Unified extractor that returns core tracking variables + the FULL metadata payload."""
+    lat, lon = None, None
+    exif_dict = {}
+    
+    # 1. EXIF & GPS
+    try:
+        with open(filepath, 'rb') as f:
+            tags = exifread.process_file(f, details=False)
+            
+        for tag, val in tags.items():
+            if tag.startswith('JPEG') or tag.startswith('Thumbnail') or tag.startswith('EXIF MakerNote'):
+                continue
+            exif_dict[tag] = str(val.printable) if hasattr(val, 'printable') else str(val)
+            
+        if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
+            def convert_to_degrees(value):
+                d, m, s = value.values
+                return float(d.num)/d.den + (float(m.num)/m.den)/60.0 + (float(s.num)/s.den)/3600.0
+            lat = convert_to_degrees(tags['GPS GPSLatitude'])
+            if tags.get('GPS GPSLatitudeRef') and tags['GPS GPSLatitudeRef'].printable != 'N': lat = -lat
+            lon = convert_to_degrees(tags['GPS GPSLongitude'])
+            if tags.get('GPS GPSLongitudeRef') and tags['GPS GPSLongitudeRef'].printable != 'E': lon = -lon
+            exif_dict['Parsed_Latitude'] = lat
+            exif_dict['Parsed_Longitude'] = lon
+    except Exception:
+        pass
+
+    # 2. XMP / GPMF
+    pitch, roll, fov, klns = None, None, None, None
+    xmp_dict, gpmf_dict = {}, {}
     try:
         from extract_gpmf import extract_jpeg_metadata_blocks, parse_xmp_gpano, parse_gpmf, extract_all_telemetry, flatten_global_ast
         xmp_raw, gpmf_raw = extract_jpeg_metadata_blocks(filepath)
         
-        pitch, roll, fov, klns = None, None, None, None
-        
-        # 1. Parse XMP GPano FIRST. This is the ultimate truth for 360 stitched images.
-        #    If GoPro Max stitched it, it world-locks the sphere, and PosePitch/Roll will be 0.0.
         if xmp_raw:
-            gpano = parse_xmp_gpano(xmp_raw)
-            if 'PosePitchDegrees' in gpano:
-                pitch = float(gpano['PosePitchDegrees'])
-            if 'PoseRollDegrees' in gpano:
-                roll = float(gpano['PoseRollDegrees'])
+            xmp_dict = parse_xmp_gpano(xmp_raw)
+            if 'PosePitchDegrees' in xmp_dict: pitch = float(xmp_dict['PosePitchDegrees'])
+            if 'PoseRollDegrees' in xmp_dict: roll = float(xmp_dict['PoseRollDegrees'])
 
-        # 2. Parse GPMF
         if gpmf_raw:
             ast = parse_gpmf(gpmf_raw)
             constants, _ = extract_all_telemetry(ast)
             global_constants = flatten_global_ast(ast)
             constants.update(global_constants)
+            gpmf_dict = constants
             
-            # Only fallback to the physical IMU GRAV track if GPano didn't explicitly set pitch/roll
             if 'GRAV' in constants:
                 x, y, z = constants['GRAV']
-                if pitch is None:
-                    pitch = -math.degrees(math.atan2(z, y))
-                if roll is None:
-                    roll = math.degrees(math.atan2(x, y))
+                if pitch is None: pitch = -math.degrees(math.atan2(z, y))
+                if roll is None: roll = math.degrees(math.atan2(x, y))
             
             fov = constants.get('MFOV', None)
-            
             if fov is None:
                 zfov = constants.get('ZFOV')
                 aruw = constants.get('ARUW')
@@ -54,35 +102,28 @@ def extract_photo_telemetry(filepath):
                     try:
                         zfov_rad = math.radians(float(zfov))
                         aruw_val = float(aruw)
-                        tan_half_dfov = math.tan(zfov_rad / 2.0)
-                        ratio = aruw_val / math.sqrt(aruw_val**2 + 1)
-                        hfov_rad = 2.0 * math.atan(tan_half_dfov * ratio)
-                        fov = math.degrees(hfov_rad)
+                        fov = math.degrees(2.0 * math.atan(math.tan(zfov_rad / 2.0) * (aruw_val / math.sqrt(aruw_val**2 + 1))))
                     except Exception: pass
             
             klns = constants.get('KLNS', None)
-                
-        return pitch, roll, klns, fov
     except Exception:
         pass
-    return None, None, None, None
 
-def get_exif_gps(filepath):
-    try:
-        with open(filepath, 'rb') as f:
-            tags = exifread.process_file(f, details=False)
-        if 'GPS GPSLatitude' in tags and 'GPS GPSLongitude' in tags:
-            def convert_to_degrees(value):
-                d, m, s = value.values
-                return float(d.num)/d.den + (float(m.num)/m.den)/60.0 + (float(s.num)/s.den)/3600.0
-            lat = convert_to_degrees(tags['GPS GPSLatitude'])
-            if tags.get('GPS GPSLatitudeRef', None) and tags['GPS GPSLatitudeRef'].printable != 'N': lat = -lat
-            lon = convert_to_degrees(tags['GPS GPSLongitude'])
-            if tags.get('GPS GPSLongitudeRef', None) and tags['GPS GPSLongitudeRef'].printable != 'E': lon = -lon
-            return lat, lon
-    except Exception:
-        pass
-    return None, None
+    full_meta = {
+        "EXIF": sanitize_meta(exif_dict),
+        "XMP_GPano": sanitize_meta(xmp_dict),
+        "GPMF": sanitize_meta(gpmf_dict),
+        "Computed_Variables": {
+            "Latitude": lat,
+            "Longitude": lon,
+            "Pitch": pitch,
+            "Roll": roll,
+            "FOV": fov,
+            "KLNS": klns
+        }
+    }
+    
+    return lat, lon, pitch, roll, klns, fov, full_meta
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
@@ -193,15 +234,10 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     for view_name, config in views_to_process.items():
         all_defects[view_name] = []
-        
-        # We explicitly separate the image extraction pitch/roll from the BEV pitch/roll
         bev_pitch, bev_roll = 0.0, 0.0
         
         if is_360:
-            # For 360, pitch and roll (often 0.0 if world-locked) orient our virtual extraction camera.
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
-            # Since the virtual camera has been stabilized perfectly parallel to the horizon,
-            # the BEV Homography MUST use 0.0 pitch and 0.0 roll, regardless of physical hardware tilt.
             bev_pitch, bev_roll = 0.0, 0.0
         else:
             rect_img = img_mat.copy()
@@ -217,7 +253,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                     K = K_undist
                 except: pass
             
-            # For flat images/videos, the passed pitch/roll IS the physical tilt relative to the ground.
             bev_pitch, bev_roll = pitch, roll
 
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
@@ -225,7 +260,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
         with model_lock: results = model.predict(source=rect_img, conf=0.25, save=False, verbose=False)
             
-        # Homography driven by correct situational variables
         H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, bev_pitch, bev_roll)
         bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
         
@@ -281,7 +315,6 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         from extract_gpmf import extract_streams_with_time, get_telemetry_interpolators, evaluate_telemetry_health
         streams, constants = extract_streams_with_time(video_path)
         
-        # Trigger health assessment on the raw streams
         health_report = evaluate_telemetry_health(streams)
         callback({"type": "health_report", "is_video": True, "original_name": original_name, "data": health_report})
         
@@ -300,9 +333,7 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
                 try:
                     zfov_rad = math.radians(float(zfov))
                     aruw_val = float(aruw)
-                    tan_half_dfov = math.tan(zfov_rad / 2.0)
-                    ratio = aruw_val / math.sqrt(aruw_val**2 + 1)
-                    hfov_rad = 2.0 * math.atan(tan_half_dfov * ratio)
+                    hfov_rad = 2.0 * math.atan(math.tan(zfov_rad / 2.0) * (aruw_val / math.sqrt(aruw_val**2 + 1)))
                     fov_from_meta = math.degrees(hfov_rad)
                 except Exception: pass
                 
@@ -331,8 +362,6 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0 
             
-            # If handling a 360 equirectangular video, it has already been world-locked by stitching software.
-            # Imposing physical IMU tilt on an already leveled sphere would distort the extraction space.
             current_pitch = 0.0 if is_360 else float(pitch_interp(elapsed_sec))
             current_roll = 0.0 if is_360 else float(roll_interp(elapsed_sec))
 
@@ -345,6 +374,24 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
 
             frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
             original_frame_name = f"{original_name} (Frame {frame_idx})"
+            
+            # Write sidecar JSON for this video frame
+            frame_meta = {
+                "Video_Global_GPMF": sanitize_meta(constants),
+                "Frame_Telemetry": sanitize_meta({
+                    "Timestamp_sec": elapsed_sec,
+                    "Latitude": current_lat,
+                    "Longitude": current_lon,
+                    "Heading": current_heading,
+                    "Pitch": current_pitch,
+                    "Roll": current_roll,
+                    "Speed_ms": float(speed_interp(elapsed_sec)) if speed_interp else None,
+                    "FOV": fov_from_meta,
+                    "KLNS": klns
+                })
+            }
+            with open(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), 'w') as mf:
+                json.dump(frame_meta, mf, indent=2)
 
             try:
                 defects, geo_feats, _, footprints = process_single_image(
