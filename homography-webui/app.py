@@ -13,7 +13,7 @@ from werkzeug.utils import secure_filename
 from ultralytics import YOLO
 
 from core_math import (
-    process_single_image, get_exif_gps, extract_photo_telemetry,
+    process_single_image, extract_full_photo_metadata,
     haversine_distance, calculate_bearing, process_video_frames_async,
     get_video_frame_metadata
 )
@@ -199,9 +199,13 @@ def process():
         file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
 
         if ext in ALLOWED_IMAGE_EXT:
-            lat, lon = get_exif_gps(filepath)
-            dynamic_pitch, dynamic_roll, klns, fov_meta = extract_photo_telemetry(filepath)
+            lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
             file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
+            
+            # Cache the full metadata JSON
+            meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json")
+            with open(meta_path, 'w') as mf:
+                json.dump(full_meta, mf, indent=2)
             
         image_data.append(file_meta)
     
@@ -242,9 +246,12 @@ def process_pipeline_folder():
         file_meta = {"filename": filename, "original_name": filepath_obj.name, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
 
         if ext in ALLOWED_IMAGE_EXT:
-            lat, lon = get_exif_gps(filepath)
-            dynamic_pitch, dynamic_roll, klns, fov_meta = extract_photo_telemetry(filepath)
+            lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
             file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
+            
+            meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json")
+            with open(meta_path, 'w') as mf:
+                json.dump(full_meta, mf, indent=2)
             
         image_data.append(file_meta)
         
@@ -267,12 +274,26 @@ def export_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
     memory_file = BytesIO()
+    
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
+            
+            # Format output naming to ensure standard image extensions
+            safe_orig = secure_filename(r['original_name'])
+            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)):
+                safe_orig += ".jpg"
+            base_orig = os.path.splitext(safe_orig)[0]
+            
             for view in r['views'].keys():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view]['raw_filename'])
-                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/RAW_{secure_filename(r['original_name'])}")
+                if os.path.exists(file_path): 
+                    zf.write(file_path, f"{loc}/{view}/RAW_{safe_orig}")
+                    
+                meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
+                if os.path.exists(meta_path):
+                    zf.write(meta_path, f"{loc}/{view}/RAW_{base_orig}.json")
+                    
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
 
@@ -281,12 +302,25 @@ def export_flat_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
     memory_file = BytesIO()
+    
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
+            
+            safe_orig = secure_filename(r['original_name'])
+            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)):
+                safe_orig += ".jpg"
+            base_orig = os.path.splitext(safe_orig)[0]
+            
             for view in r['views'].keys():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view].get('raw_bev_filename', ''))
-                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/FLAT_{secure_filename(r['original_name'])}")
+                if os.path.exists(file_path): 
+                    zf.write(file_path, f"{loc}/{view}/FLAT_{safe_orig}")
+                
+                meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
+                if os.path.exists(meta_path):
+                    zf.write(meta_path, f"{loc}/{view}/FLAT_{base_orig}.json")
+                    
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
