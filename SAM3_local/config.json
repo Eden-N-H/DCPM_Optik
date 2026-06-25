@@ -1,0 +1,13 @@
+{
+    "input_dir": "data/raw_images",
+    "output_dir": "data/dataset",
+    "classes": [
+        {
+            "id": 0,
+            "name": "Foreground",
+            "prompt": "the main subject",
+            "invert": false,
+            "color": "#00ff00"
+        }
+    ]
+}
