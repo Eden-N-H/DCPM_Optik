@@ -32,9 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     const warningsContainer = document.getElementById("warnings-container");
     const warningsList = document.getElementById("warnings-list");
-    const healthPanel = document.getElementById("health-panel");
-    const healthContent = document.getElementById("health-content");
-    const healthWarnings = document.getElementById("health-warnings");
+    const telemetryHud = document.getElementById("telemetry-hud");
 
     function stringToColor(str) {
         let hash = 0;
@@ -234,9 +232,9 @@ document.addEventListener("DOMContentLoaded", () => {
         
         warningsList.innerHTML = "";
         warningsContainer.classList.add("hidden");
-        healthContent.innerHTML = "";
-        healthWarnings.innerHTML = "";
-        healthPanel.classList.add("hidden");
+        
+        telemetryHud.innerHTML = "";
+        telemetryHud.classList.add("hidden");
         
         btnProcess.disabled = true;
         btnScan.disabled = true;
@@ -314,40 +312,36 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             if (msg.type === "health_report") {
-                healthPanel.classList.remove("hidden");
+                telemetryHud.classList.remove("hidden");
                 const hr = msg.data;
                 
-                let gpsColor = hr.gps_score > 80 ? 'text-green-600' : 'text-orange-500';
-                let imuColor = hr.imu_score > 90 ? 'text-green-600' : 'text-orange-500';
+                let gpsColor = hr.gps_score > 80 ? 'text-green-400' : 'text-orange-400';
+                let imuColor = hr.imu_score > 90 ? 'text-green-400' : 'text-orange-400';
 
-                // Displaying metric cards
-                healthContent.innerHTML += `
-                    <div class="p-3 bg-gray-50 rounded border shadow-sm flex flex-col justify-center">
-                        <p class="text-[10px] text-gray-500 uppercase font-bold tracking-wider">${msg.original_name} - GPS Confidence</p>
-                        <p class="text-2xl font-bold ${gpsColor}">${hr.gps_score.toFixed(1)}%</p>
-                        <p class="text-xs text-gray-600 mt-1">Spatial Drift: ${hr.metrics.avg_gps_speed_error_ms.toFixed(2)} m/s</p>
-                        <p class="text-xs text-gray-600">Poor Sat Fix Ratio: ${(hr.metrics.bad_fix_ratio * 100).toFixed(1)}%</p>
-                        <p class="text-xs text-gray-600">Max Physical Jerk: ${hr.metrics.max_jerk_detected.toFixed(1)} m/s³</p>
-                    </div>
-                    <div class="p-3 bg-gray-50 rounded border shadow-sm flex flex-col justify-center">
-                        <p class="text-[10px] text-gray-500 uppercase font-bold tracking-wider">${msg.original_name} - IMU Integrity</p>
-                        <p class="text-2xl font-bold ${imuColor}">${hr.imu_score.toFixed(1)}%</p>
-                        <p class="text-xs text-gray-600 mt-1">1G Deviation: ${hr.metrics.avg_grav_mag_error.toFixed(4)} G</p>
-                    </div>
+                // Compact HUD output
+                const hudLine = document.createElement("div");
+                hudLine.innerHTML = `
+                    <span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> 
+                    GPS: <span class="${gpsColor} font-bold">${hr.gps_score.toFixed(0)}%</span> | 
+                    IMU: <span class="${imuColor} font-bold">${hr.imu_score.toFixed(0)}%</span> | 
+                    Drift: <span class="text-gray-300">${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s</span>
                 `;
+                telemetryHud.appendChild(hudLine);
                 
+                // Route warnings to the main warnings container
                 if (hr.warnings.length > 0) {
+                    warningsContainer.classList.remove("hidden");
                     hr.warnings.forEach(w => {
                         const li = document.createElement("li");
-                        li.textContent = `[${msg.original_name}] ${w}`;
-                        healthWarnings.appendChild(li);
+                        li.textContent = `[${msg.original_name} Telemetry] ${w}`;
+                        warningsList.appendChild(li);
                     });
                 }
                 return;
             }
 
             if (msg.type === "item_error") {
-                console.warn(`[GPMF Skip] ${msg.original_name}: ${msg.message}`);
+                console.warn(`[Processing Skip] ${msg.original_name}: ${msg.message}`);
                 
                 warningsContainer.classList.remove("hidden");
                 const li = document.createElement("li");
