@@ -51,6 +51,9 @@ from ultralytics import YOLO
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# Increase maximum upload size to 10 GB
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
+
 # ==========================================
 # 1. GLOBAL STATE & MODELS
 # ==========================================
@@ -103,7 +106,6 @@ def log_msg(msg):
     if len(PIPELINE_STATE["logs"]) > 50: PIPELINE_STATE["logs"].pop(0)
 
 def mask_to_yolo_polygons(binary_mask, img_w, img_h):
-    # binary_mask expected shape: (H, W)
     binary_mask = np.squeeze(binary_mask)
     if binary_mask.ndim != 2: return []
     mask_uint8 = np.ascontiguousarray((binary_mask * 255).astype(np.uint8))
@@ -194,7 +196,6 @@ def pipeline_worker():
                         cls_id = int(classes[idx])
                         if len(allowed_classes) > 0 and cls_id not in allowed_classes: continue
                         
-                        # Convert YOLO [x1, y1, x2, y2] to SAM3 [cx, cy, w, h] normalized [0, 1]
                         x1, y1, x2, y2 = box
                         cx = ((x1 + x2) / 2.0) / img_w
                         cy = ((y1 + y2) / 2.0) / img_h
@@ -205,11 +206,10 @@ def pipeline_worker():
                         sam_processor.reset_all_prompts(state=inference_state)
                         output = sam_processor.add_geometric_prompt(box=norm_box, label=True, state=inference_state)
                         
-                        # Fix: Handle 3 multimasks by extracting scores and finding the best mask
-                        masks = output["masks"].cpu().numpy()[0]   # Shape: (3, H, W)
-                        scores = output["scores"].cpu().numpy()[0] # Shape: (3,)
+                        masks = output["masks"].cpu().numpy()[0]
+                        scores = output["scores"].cpu().numpy()[0]
                         best_idx = np.argmax(scores)
-                        best_mask = masks[best_idx]                # Shape: (H, W)
+                        best_mask = masks[best_idx]
                         
                         polys = mask_to_yolo_polygons(best_mask, img_w, img_h)
                         for p in polys:
@@ -257,7 +257,6 @@ def api_upload_model():
         return jsonify({"success": True, "classes": yolo_classes})
     except Exception as e: return jsonify({"error": str(e)})
 
-# --- Filesystem Endpoints ---
 @app.route('/api/gallery')
 def api_gallery():
     target_dir = request.args.get('path', '/content/drive/MyDrive')
@@ -275,33 +274,45 @@ def api_gallery():
 
 @app.route('/api/upload_files', methods=['POST'])
 def api_upload_files():
-    target_dir = request.form.get('path', '/content/drive/MyDrive')
-    os.makedirs(target_dir, exist_ok=True)
-    count = 0
-    for file in request.files.getlist('files'):
-        if file.filename:
-            file.save(os.path.join(target_dir, file.filename))
-            count += 1
-    return jsonify({"success": True, "uploaded": count})
+    try:
+        target_dir = request.form.get('path', '/content/drive/MyDrive')
+        os.makedirs(target_dir, exist_ok=True)
+        count = 0
+        for file in request.files.getlist('files'):
+            if file.filename:
+                file.save(os.path.join(target_dir, file.filename))
+                count += 1
+        return jsonify({"success": True, "uploaded": count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 @app.route('/api/upload_zip', methods=['POST'])
 def api_upload_zip():
-    target_dir = request.form.get('path', '/content/drive/MyDrive')
-    zip_file = request.files.get('zip')
-    if not zip_file: return jsonify({"success": False})
-    
     tmp_path = "/content/temp_upload.zip"
-    zip_file.save(tmp_path)
-    count = 0
-    with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-        for member in zip_ref.namelist():
-            if member.lower().endswith(('.png', '.jpg', '.jpeg')) and not member.startswith('__MACOSX'):
-                dest = os.path.join(target_dir, os.path.basename(member))
-                with zip_ref.open(member) as src, open(dest, 'wb') as dst:
-                    shutil.copyfileobj(src, dst)
-                count += 1
-    os.remove(tmp_path)
-    return jsonify({"success": True, "uploaded": count})
+    try:
+        target_dir = request.form.get('path', '/content/drive/MyDrive')
+        os.makedirs(target_dir, exist_ok=True)
+        zip_file = request.files.get('zip')
+        
+        if not zip_file: 
+            return jsonify({"success": False, "error": "No ZIP file uploaded"})
+        
+        zip_file.save(tmp_path)
+        count = 0
+        with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+            for member in zip_ref.namelist():
+                if member.lower().endswith(('.png', '.jpg', '.jpeg')) and not member.startswith('__MACOSX'):
+                    dest = os.path.join(target_dir, os.path.basename(member))
+                    with zip_ref.open(member) as src, open(dest, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    count += 1
+                    
+        return jsonify({"success": True, "uploaded": count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 @app.route('/api/file_ops', methods=['POST'])
 def api_file_ops():
@@ -328,7 +339,6 @@ def api_mkdir():
         return jsonify({"success": True})
     except Exception as e: return jsonify({"success": False, "error": str(e)})
 
-# --- Queue & Config ---
 @app.route('/api/queue/add', methods=['POST'])
 def api_queue_add():
     global WORKER_QUEUE
@@ -357,7 +367,6 @@ def api_config():
     APP_CONFIG.update(request.json)
     return jsonify({"success": True})
 
-# --- Pipeline Control ---
 @app.route('/api/pipeline/start', methods=['POST'])
 def api_pipeline_start():
     if PIPELINE_STATE["is_running"]: return jsonify({"error": "Already running"})
@@ -379,14 +388,12 @@ def api_pipeline_status():
             time.sleep(1)
     return Response(generate(), mimetype='text/event-stream')
 
-# --- QA Station Endpoints ---
 @app.route('/api/qa/list')
 def api_qa_list():
     out_img_dir = os.path.join(OUTPUT_DIR, "images")
     out_lbl_dir = os.path.join(OUTPUT_DIR, "labels")
     if not os.path.exists(out_img_dir): return jsonify([])
     
-    # Fix: Actually read images and check if label exists, solving case-sensitivity
     valid_files = []
     for fname in os.listdir(out_img_dir):
         if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -492,6 +499,7 @@ if __name__ == '__main__':
 
         .progress-bg { width: 100%; height: 20px; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); margin: 20px 0;}
         .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: 0.3s; }
+        
         .live-preview { width: 100%; max-width: 640px; height: 360px; background: #000; border: 1px solid var(--border); border-radius: 8px; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         .live-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
         #logs { background: #000; font-family: monospace; font-size: 12px; padding: 15px; border-radius: 4px; height: 150px; overflow-y: auto; color: #0f0; border: 1px solid var(--border); }
@@ -557,6 +565,17 @@ if __name__ == '__main__':
                     <input type="file" id="zip-upload" accept=".zip" style="display:none;" onchange="uploadZip(event)">
                     <button class="btn-outline" onclick="document.getElementById('file-upload').click()">📄 Upload Images</button>
                     <button class="btn-outline" onclick="document.getElementById('zip-upload').click()">📦 Upload ZIP</button>
+                </div>
+
+                <!-- UPLOAD PROGRESS UI -->
+                <div id="upload-progress-container" style="display: none; margin-bottom: 15px; padding: 10px; background: #000; border: 1px solid var(--border); border-radius: 6px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: bold; margin-bottom: 5px;">
+                        <span id="upload-status-text" style="color: var(--accent);">Uploading...</span>
+                        <span id="upload-percent">0%</span>
+                    </div>
+                    <div class="progress-bg" style="margin: 0; height: 12px;">
+                        <div id="upload-progress-fill" class="progress-fill" style="width: 0%; background: var(--success);"></div>
+                    </div>
                 </div>
 
                 <!-- Bulk Action Bar -->
@@ -668,6 +687,61 @@ if __name__ == '__main__':
             
             if(view === 'explorer') loadGallery(currentPath);
             if(view === 'qa') initQA();
+        }
+
+        // --- XHR Uploader with Progress Bar ---
+        function performUpload(url, formData, successMsg) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                const container = document.getElementById('upload-progress-container');
+                const fill = document.getElementById('upload-progress-fill');
+                const percentText = document.getElementById('upload-percent');
+                const statusText = document.getElementById('upload-status-text');
+
+                container.style.display = 'block';
+                fill.style.width = '0%';
+                percentText.innerText = '0%';
+                statusText.innerText = 'Uploading...';
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        fill.style.width = percent + '%';
+                        percentText.innerText = percent + '%';
+                        
+                        // Once data is sent, the backend needs time to extract/process
+                        if (percent === 100) {
+                            statusText.innerText = 'Processing on server... (Please wait)';
+                        }
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    container.style.display = 'none';
+                    try {
+                        const res = JSON.parse(xhr.responseText);
+                        if (res.success) {
+                            showToast(`${successMsg} (${res.uploaded || 0} files)`);
+                            resolve(res);
+                        } else {
+                            showToast(`Upload Error: ${res.error}`, true);
+                            reject(res.error);
+                        }
+                    } catch (err) {
+                        showToast(`Server encountered an unknown error`, true);
+                        reject(err);
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    container.style.display = 'none';
+                    showToast('Network error during upload', true);
+                    reject('Network error');
+                });
+
+                xhr.open('POST', url, true);
+                xhr.send(formData);
+            });
         }
 
         // --- CONFIG ---
@@ -786,20 +860,31 @@ if __name__ == '__main__':
             loadGallery(currentPath);
         }
 
+        // Updated Upload Functions
         async function uploadFiles(e) {
-            const fd = new FormData(); fd.append('path', currentPath);
+            if (!e.target.files.length) return;
+            const fd = new FormData(); 
+            fd.append('path', currentPath);
             for(let f of e.target.files) fd.append('files', f);
-            showToast("Uploading...");
-            await fetch('/api/upload_files', { method: 'POST', body: fd });
-            loadGallery(currentPath); e.target.value = "";
+            
+            try {
+                await performUpload('/api/upload_files', fd, 'Images uploaded!');
+                loadGallery(currentPath);
+            } catch (err) {}
+            e.target.value = "";
         }
 
         async function uploadZip(e) {
-            if(!e.target.files[0]) return;
-            const fd = new FormData(); fd.append('path', currentPath); fd.append('zip', e.target.files[0]);
-            showToast("Uploading & Extracting ZIP...");
-            await fetch('/api/upload_zip', { method: 'POST', body: fd });
-            loadGallery(currentPath); e.target.value = "";
+            if(!e.target.files.length) return;
+            const fd = new FormData(); 
+            fd.append('path', currentPath); 
+            fd.append('zip', e.target.files[0]);
+            
+            try {
+                await performUpload('/api/upload_zip', fd, 'ZIP extracted successfully!');
+                loadGallery(currentPath);
+            } catch (err) {}
+            e.target.value = "";
         }
 
         async function addSelectedToQueue() {
@@ -859,7 +944,7 @@ if __name__ == '__main__':
         // --- QA STATION (CACHED) ---
         let qaFiles = []; 
         let qaIndex = 0; 
-        let qaCache = {}; // { filename: dataObject }
+        let qaCache = {}; 
         let qaSelectedPoly = -1;
         const canvas = document.getElementById('qa-canvas'); 
         const ctx = canvas.getContext('2d');
@@ -888,13 +973,11 @@ if __name__ == '__main__':
             let start = Math.max(0, qaIndex - CACHE_BEHIND);
             let end = Math.min(qaFiles.length - 1, qaIndex + CACHE_AHEAD);
             
-            // Garbage Collect old cache
             for(let fname in qaCache) {
                 let idx = qaFiles.indexOf(fname);
                 if(idx < start || idx > end) delete qaCache[fname];
             }
 
-            // Fetch Window
             for(let i=start; i<=end; i++) {
                 let fname = qaFiles[i];
                 if(!qaCache[fname]) {
@@ -902,14 +985,11 @@ if __name__ == '__main__':
                     fetch(`/api/qa/image/${fname}`).then(r=>r.json()).then(data => {
                         if(data.success) {
                             if(Object.keys(yoloClasses).length === 0) yoloClasses = data.classes || {};
-                            
-                            // Pre-create Image element
                             let img = new Image();
                             img.src = "data:image/jpeg;base64," + data.image_b64;
                             data.imgElement = img;
-                            
                             qaCache[fname] = data;
-                            if(i === qaIndex) drawQA(); // Render if it was waiting
+                            if(i === qaIndex) drawQA(); 
                         } else delete qaCache[fname];
                     }).catch(()=> delete qaCache[fname]);
                 }
@@ -958,8 +1038,6 @@ if __name__ == '__main__':
 
         async function navigateQA(dir) {
             if(qaFiles.length === 0) return;
-            
-            // Auto-Save current
             const fname = qaFiles[qaIndex];
             const data = qaCache[fname];
             if(data && data !== "loading") {
@@ -984,13 +1062,11 @@ if __name__ == '__main__':
             delete qaCache[fname];
             
             if(qaIndex >= qaFiles.length) qaIndex = qaFiles.length - 1;
-            
             if(qaFiles.length > 0) { renderQALoading(); preloadWindow(); }
             else { document.getElementById('qa-filename').innerText = "Empty."; ctx.clearRect(0,0,canvas.width,canvas.height); }
             showToast("Trashed.");
         }
 
-        // QA Canvas Interaction
         canvas.addEventListener('mousedown', (e) => {
             const fname = qaFiles[qaIndex];
             if(!qaCache[fname] || qaCache[fname] === "loading") return;
@@ -1036,7 +1112,6 @@ if __name__ == '__main__':
             return inside;
         }
 
-        // Start
         loadGallery(currentPath);
     </script>
 </body>
