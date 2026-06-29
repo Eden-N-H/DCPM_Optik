@@ -71,8 +71,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                 trail_coordinates.append([lon, lat])
                 if last_lat is not None and last_lon is not None:
                     dist = haversine_distance(last_lat, last_lon, lat, lon)
-                    if dist > 50.0:
-                        loc_id += 1
+                    if dist > 50.0: loc_id += 1
                 last_lat, last_lon = lat, lon
                 
             initial_ui_state.append(image_data[i])
@@ -111,7 +110,9 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                     try:
                         defects, geo_feats, gen_files, footprints = process_single_image(
                             asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                            asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], asset['roll'], asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
+                            asset['lat'], asset['lon'], asset['heading'], height, 
+                            asset['pitch'], asset['roll'], asset['pitch'], asset['roll'], # Baseline is same as inst for photos
+                            asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
                         )
                         
                         result_payload = {
@@ -278,20 +279,16 @@ def export_zip():
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
-            
             safe_orig = secure_filename(r['original_name'])
-            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)):
-                safe_orig += ".jpg"
+            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)): safe_orig += ".jpg"
             base_orig = os.path.splitext(safe_orig)[0]
             
             for view in r['views'].keys():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view]['raw_filename'])
-                if os.path.exists(file_path): 
-                    zf.write(file_path, f"{loc}/{view}/RAW_{safe_orig}")
+                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/RAW_{safe_orig}")
                     
                 meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
-                if os.path.exists(meta_path):
-                    zf.write(meta_path, f"{loc}/{view}/RAW_{base_orig}.json")
+                if os.path.exists(meta_path): zf.write(meta_path, f"{loc}/{view}/RAW_{base_orig}.json")
                     
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
@@ -305,20 +302,16 @@ def export_flat_zip():
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
-            
             safe_orig = secure_filename(r['original_name'])
-            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)):
-                safe_orig += ".jpg"
+            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)): safe_orig += ".jpg"
             base_orig = os.path.splitext(safe_orig)[0]
             
             for view in r['views'].keys():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view].get('raw_bev_filename', ''))
-                if os.path.exists(file_path): 
-                    zf.write(file_path, f"{loc}/{view}/FLAT_{safe_orig}")
+                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/FLAT_{safe_orig}")
                 
                 meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
-                if os.path.exists(meta_path):
-                    zf.write(meta_path, f"{loc}/{view}/FLAT_{base_orig}.json")
+                if os.path.exists(meta_path): zf.write(meta_path, f"{loc}/{view}/FLAT_{base_orig}.json")
                     
     memory_file.seek(0)
     return send_file(memory_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)

@@ -12,6 +12,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let nodesGeoJson = { type: "FeatureCollection", features: [] };
     let trailGeoJson = { type: "FeatureCollection", features: [] };
     
+    // NEW: MapLibre Orthomosaic Raster Tracking
+    let orthoLayerIds = []; 
+    let lowestRasterLayerId = 'defects-layer'; // Z-Ordering: Shingles always go BELOW the polygons
+
     let fullResults = [];
     let appResults = []; 
     let currentIndex = 0;
@@ -161,6 +165,43 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // NEW: Clears old orthomosaics from the map when loading a new job
+    function clearOrthomosaics() {
+        if (!mapLoaded || !map) return;
+        orthoLayerIds.forEach(id => {
+            if (map.getLayer(id)) map.removeLayer(id);
+            if (map.getSource(id)) map.removeSource(id);
+        });
+        orthoLayerIds = [];
+        lowestRasterLayerId = 'defects-layer';
+    }
+
+    function addOrthomosaicShingle(r) {
+        if (!mapLoaded || !map) return;
+        ['front', 'rear'].forEach(view => {
+            if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
+                const rawBevUrl = r.views[view].raw_bev_url;
+                const corners = r.views[view].footprint.corners;
+                const sourceId = 'ortho-' + r.filename + '-' + view;
+                
+                if (!map.getSource(sourceId)) {
+                    map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: corners });
+                    
+                    // Add directly underneath the last added raster layer (Roof Shingle Effect!)
+                    map.addLayer({
+                        id: sourceId,
+                        type: 'raster',
+                        source: sourceId,
+                        paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
+                    }, lowestRasterLayerId);
+                    
+                    orthoLayerIds.push(sourceId);
+                    lowestRasterLayerId = sourceId; // The next frame will be inserted under THIS one.
+                }
+            }
+        });
+    }
+
     function handleMapClick(originalName, locationStr) {
         const target = fullResults.find(r => r.original_name === originalName);
         if (target) {
@@ -239,6 +280,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnProcess.disabled = true;
         btnScan.disabled = true;
         
+        clearOrthomosaics(); // Reset the map layers for a clean job
         fullGeojson = { type: "FeatureCollection", features: [] };
         nodesGeoJson = { type: "FeatureCollection", features: [] };
         trailGeoJson = { type: "FeatureCollection", features: [] };
@@ -314,11 +356,9 @@ document.addEventListener("DOMContentLoaded", () => {
             if (msg.type === "health_report") {
                 telemetryHud.classList.remove("hidden");
                 const hr = msg.data;
-                
                 let gpsColor = hr.gps_score > 80 ? 'text-green-400' : 'text-orange-400';
                 let imuColor = hr.imu_score > 90 ? 'text-green-400' : 'text-orange-400';
 
-                // Compact HUD output
                 const hudLine = document.createElement("div");
                 hudLine.innerHTML = `
                     <span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> 
@@ -328,7 +368,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 `;
                 telemetryHud.appendChild(hudLine);
                 
-                // Route warnings to the main warnings container
                 if (hr.warnings.length > 0) {
                     warningsContainer.classList.remove("hidden");
                     hr.warnings.forEach(w => {
@@ -341,8 +380,6 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             if (msg.type === "item_error") {
-                console.warn(`[Processing Skip] ${msg.original_name}: ${msg.message}`);
-                
                 warningsContainer.classList.remove("hidden");
                 const li = document.createElement("li");
                 li.textContent = `Skipped ${msg.original_name}: ${msg.message}`;
@@ -360,6 +397,9 @@ document.addEventListener("DOMContentLoaded", () => {
             if (msg.type === "update") {
                 const r = msg.data;
                 fullResults.push(r);
+                
+                // Add the new Orthomosaic frame instantly to the map
+                addOrthomosaicShingle(r);
                 
                 let hasDefects = r.geojson && r.geojson.length > 0;
                 if (hasDefects) {
@@ -451,6 +491,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("btn-export-zip").classList.remove("hidden");
                 document.getElementById("btn-export-flat-zip").classList.remove("hidden");
                 
+                clearOrthomosaics();
                 nodesGeoJson = { type: "FeatureCollection", features: [] };
                 let trailCoords = [];
 
@@ -479,6 +520,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     updateMapSource('nodes-source', nodesGeoJson);
                     updateMapSource('trail-source', trailGeoJson);
 
+                    // Reconstruct the orthomosaic map
+                    fullResults.forEach(r => addOrthomosaicShingle(r));
+
                     if (fullGeojson.features.length > 0) fitMapToBounds(fullGeojson);
                     else if (trailGeoJson.features.length > 0) fitMapToBounds(trailGeoJson);
 
@@ -504,7 +548,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     document.getElementById("btn-export-zip").onclick = () => triggerZipExport("/export-zip", "btn-export-zip", "⏳ Compiling ZIP...", "DCPM_RAW_Export.zip");
-    document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport("/export-flat-zip", "btn-export-flat-zip", "⏳ Compiling Flattened ZIP...", "DCPM_FLAT_Export.zip");
+    document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport("/export-flat-zip", "btn-export-flat-zip", "⏳ Compiling Flattened...", "DCPM_FLAT_Export.zip");
 
     function setView(dir) {
         currentDirection = dir;

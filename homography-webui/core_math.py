@@ -159,45 +159,45 @@ def equirectangular_to_rectilinear(equi_img, fov_deg, pitch_deg, roll_deg, yaw_d
     map_x, map_y = u.reshape((output_height, output_width)).astype(np.float32), v.reshape((output_height, output_width)).astype(np.float32)
     return cv2.remap(equi_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP), K
 
-# --- NEW IMPROVED VISUAL FUNCTIONS ---
+# --- NEW IMPROVED VISUAL & GIMBAL FUNCTIONS ---
 
 def apply_bev_feathering(bev_bgr):
-    """Adds a smooth RGBA gradient to the BEV image, fading out the stretched edges."""
     h, w = bev_bgr.shape[:2]
     rgba = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2BGRA)
     alpha = np.ones((h, w), dtype=np.float32)
     
-    # 1. Fade out the extreme top (Horizon Smear)
     top_fade = int(h * 0.3)
-    for y in range(top_fade):
-        alpha[y, :] *= (y / top_fade) ** 2.0
+    for y in range(top_fade): alpha[y, :] *= (y / top_fade) ** 2.0
         
-    # 2. Fade out the left and right peripheral edges
     side_fade = int(w * 0.15)
     for x in range(side_fade):
         fade_val = (x / side_fade) ** 1.5
         alpha[:, x] *= fade_val
         alpha[:, w - 1 - x] *= fade_val
         
-    # 3. Apply Alpha Channel
     rgba[:, :, 3] = (alpha * 255).astype(np.uint8)
     return rgba
 
 def apply_ego_mask(img, mask_pct=0.15):
-    """Blacks out the ego vehicle at the bottom of the frame before inference."""
     h, w = img.shape[:2]
     mask_h = int(h * mask_pct)
     img[h - mask_h:, :] = 0
     return img
 
+def digital_gimbal_warp(img, K, delta_pitch, delta_roll):
+    """Shifts and rotates the 2D image to cancel out suspension bounce."""
+    h, w = img.shape[:2]
+    f = K[0,0]
+    dy = f * math.tan(math.radians(delta_pitch))
+    
+    M = cv2.getRotationMatrix2D((K[0,2], K[1,2]), -delta_roll, 1.0)
+    M[1, 2] += dy
+    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
 def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01):
-    """Dynamically calculates the appropriate BEV cutoff lengths."""
-    # Dynamic Masking: 
-    # z_near skips the hood/bumper (roughly 1.2x camera height forward)
-    # z_far limits severe perspective stretching (max 12 meters total depth)
     z_near = max(1.5, cam_height_m * 1.2)
     z_far = min(12.0, z_near + 8.0)
-    x_range = 4.0  # Wider mapping (8m total width)
+    x_range = 4.0 
     
     pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
     road_pts = np.array([[-x_range, z_near], [x_range, z_near], [x_range, z_far], [-x_range, z_far]], dtype=np.float32)
@@ -212,7 +212,7 @@ def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01):
     rect_pts = []
     for pt in road_pts:
         xyz = R @ np.array([pt[0], cam_height_m, pt[1]])
-        if xyz[2] <= 1e-5: xyz[2] = 1e-5 # Prevent division by zero
+        if xyz[2] <= 1e-5: xyz[2] = 1e-5 
         u = (K[0,0] * xyz[0] / xyz[2]) + K[0,2]
         v = (K[1,1] * xyz[1] / xyz[2]) + K[1,2]
         rect_pts.append([u, v])
@@ -235,8 +235,7 @@ def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_ra
             v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
             pts.append((u, v))
         if len(pts) > 1:
-            for i in range(len(pts)-1):
-                cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+            for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
                 
     for x in np.arange(math.floor(-x_range), math.ceil(x_range) + 1, 1.0):
         pts = []
@@ -247,20 +246,15 @@ def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_ra
             v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
             pts.append((u, v))
         if len(pts) > 1:
-            for i in range(len(pts)-1):
-                cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+            for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
                 
     return img
 
-def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, roll, klns, fov_from_meta, model_lock, is_360=True, original_filename="", draw_grid=False):
-    if fov_from_meta is None: raise ValueError("Missing Field of View (MFOV/ZFOV) in metadata.")
-    if pitch is None or roll is None: raise ValueError("Missing Camera Pose (GRAV/GPano) in metadata.")
-    if gps_lat is None or gps_lon is None: raise ValueError("Missing GPS Coordinates.")
+def process_single_image(img_input, model, base_filename, output_dir, gps_lat, gps_lon, heading, cam_height, pitch, roll, base_pitch, base_roll, klns, fov_from_meta, model_lock, is_360=True, original_filename="", draw_grid=False):
+    if fov_from_meta is None or pitch is None or roll is None or gps_lat is None or gps_lon is None:
+        raise ValueError("Missing critical metadata (GPS, FOV, or Pose).")
 
     fov_val = float(fov_from_meta)
-    if fov_val <= 0 or fov_val >= 180:
-        raise ValueError(f"Invalid calculated FOV value: {fov_val}")
-
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
     base_name_no_ext = os.path.splitext(base_filename)[0]
     
@@ -271,8 +265,10 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
     for view_name, config in views_to_process.items():
         all_defects[view_name] = []
         
-        # 1. Image Extraction & Camera Matrix
+        # 1. Image Extraction, Gimbaling, & Camera Matrix
         if is_360:
+            # 360 inherently corrects bounce if extracted with instantaneous pitch/roll.
+            # The resulting rectilinear image acts as if the camera has 0 pitch, 0 roll.
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
             bev_pitch, bev_roll = 0.0, 0.0
         else:
@@ -287,30 +283,49 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                     rect_img = cv2.undistort(rect_img, K_undist, dist_coeffs)
                     K = K_undist
                 except: pass
-            bev_pitch, bev_roll = pitch, roll
+            
+            # Apply Digital Gimbal Shift to counteract instantaneous suspension bounce
+            rect_img = digital_gimbal_warp(rect_img, K, pitch - base_pitch, roll - base_roll)
+            # The homography uses the smoothed, pure baseline mount angle
+            bev_pitch, bev_roll = base_pitch, base_roll
 
-        # 2. Get the Dynamic ROI geometry
+        # 2. Get Dynamic ROI geometry
         H_mat, bev_w, bev_h, gsd, x_range, z_far, z_near = get_bev_homography(K, cam_height, bev_pitch, bev_roll)
         
-        # 3. Create RAW outputs (applying RGBA feathering to BEV)
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
         
         raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
         raw_bev_rgba = apply_bev_feathering(raw_bev_bgr)
-        raw_bev_filename = f"raw_bev_{view_name}_{base_name_no_ext}.png" # Must save as PNG for transparency
+        raw_bev_filename = f"raw_bev_{view_name}_{base_name_no_ext}.png" 
         cv2.imwrite(os.path.join(output_dir, raw_bev_filename), raw_bev_rgba)
 
-        # 4. Geo Footprint tracking
+        # 3. Geo Footprint tracking (Generating 4 exact corners for MapLibre Stitching)
         view_heading = (heading + config['heading_offset']) % 360
         bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (z_near + z_far) / 2.0)
-        bev_footprints[view_name] = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_range, "height_m": z_far - z_near}
+        
+        def to_lng_lat(x, z):
+            lat_out, lon_out = local_to_global(gps_lat, gps_lon, view_heading, x, z)
+            return [lon_out, lat_out] # MapLibre format [lng, lat]
+            
+        maplibre_corners = [
+            to_lng_lat(-x_range, z_far), # Top-Left
+            to_lng_lat(x_range, z_far),  # Top-Right
+            to_lng_lat(x_range, z_near), # Bottom-Right
+            to_lng_lat(-x_range, z_near) # Bottom-Left
+        ]
 
-        # 5. Setup canvases for drawing
+        bev_footprints[view_name] = {
+            "lat": bev_center_lat, "lon": bev_center_lon, 
+            "heading": view_heading, 
+            "width_m": 2 * x_range, "height_m": z_far - z_near,
+            "corners": maplibre_corners
+        }
+
         annotated_rect = rect_img.copy()
         annotated_bev_bgr = raw_bev_bgr.copy()
 
-        # 6. Draw the clear ROI Trapezoid on annotated_rect
+        # 4. Draw the clear ROI Trapezoid on annotated_rect
         pitch_rad, roll_rad = math.radians(-bev_pitch), math.radians(bev_roll)
         Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
         Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
@@ -335,14 +350,12 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         if draw_grid:
             annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, z_near, z_far, x_range)
 
-        # 7. Model Inference (Applying Ego Mask first!)
+        # 5. Model Inference (Applying Ego Mask first!)
         inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15)
-        with model_lock: 
-            results = model.predict(source=inference_img, conf=0.25, save=False, verbose=False)
+        with model_lock: results = model.predict(source=inference_img, conf=0.25, save=False, verbose=False)
 
-        # 8. Render Defect Outputs
         for r in results:
-            annotated_rect = r.plot(img=annotated_rect) # Plots standard boxes
+            annotated_rect = r.plot(img=annotated_rect)
             if r.masks is not None:
                 for i, mask_pts in enumerate(r.masks.xy):
                     cls_id, conf = int(r.boxes.cls[i]), float(r.boxes.conf[i])
@@ -358,7 +371,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                         if area_sqm <= 0.0001: continue
                             
-                        # Draw polygons on BEV
                         overlay = annotated_bev_bgr.copy()
                         cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
                         cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
@@ -369,7 +381,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color})
                         all_geojson_features.append({"type": "Feature", "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": original_filename, "conf": round(conf, 2)}, "geometry": {"type": "Polygon", "coordinates": [geo_coords]}})
 
-        # 9. Save Annotated Outputs
         annotated_bev_rgba = apply_bev_feathering(annotated_bev_bgr)
         rect_filename = f"rect_{view_name}_{base_filename}"
         bev_filename = f"bev_{view_name}_{base_name_no_ext}.png"
@@ -386,7 +397,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
     return all_defects, all_geojson_features, generated_files, bev_footprints
 
-# ... (process_video_frames_async and get_video_frame_metadata remain unchanged, but will benefit automatically)
 def process_video_frames_async(video_path, model, upload_dir, cam_height, file_name, original_name, gps_snap, interval_m, model_lock, is_360, location_str, callback, draw_grid=False):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(file_name)[0]
@@ -404,8 +414,12 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         speed_interp = interpolators.get("speed")
         pitch_interp = interpolators.get("pitch")
         roll_interp = interpolators.get("roll")
-        klns = constants.get('KLNS', None)
         
+        # New Baseline Interpolators for Gimbal Logic
+        pitch_base_interp = interpolators.get("pitch_base")
+        roll_base_interp = interpolators.get("roll_base")
+        
+        klns = constants.get('KLNS', None)
         fov_from_meta = constants.get('MFOV', None)
         if fov_from_meta is None:
             zfov = constants.get('ZFOV')
@@ -445,6 +459,9 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
             
             current_pitch = 0.0 if is_360 else float(pitch_interp(elapsed_sec))
             current_roll = 0.0 if is_360 else float(roll_interp(elapsed_sec))
+            
+            current_base_pitch = 0.0 if is_360 else float(pitch_base_interp(elapsed_sec)) if pitch_base_interp else current_pitch
+            current_base_roll = 0.0 if is_360 else float(roll_base_interp(elapsed_sec)) if roll_base_interp else current_roll
 
             try:
                 c_loc = gps_interp(elapsed_sec)
@@ -463,8 +480,10 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
                     "Latitude": current_lat,
                     "Longitude": current_lon,
                     "Heading": current_heading,
-                    "Pitch": current_pitch,
-                    "Roll": current_roll,
+                    "Pitch_Inst": current_pitch,
+                    "Pitch_Base": current_base_pitch,
+                    "Roll_Inst": current_roll,
+                    "Roll_Base": current_base_roll,
                     "Speed_ms": float(speed_interp(elapsed_sec)) if speed_interp else None,
                     "FOV": fov_from_meta,
                     "KLNS": klns
@@ -476,7 +495,9 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
             try:
                 defects, geo_feats, gen_files, footprints = process_single_image(
                     frame, model, frame_base_name, upload_dir,
-                    current_lat, current_lon, current_heading, cam_height, current_pitch, current_roll, klns, fov_from_meta, model_lock, is_360, original_frame_name, draw_grid
+                    current_lat, current_lon, current_heading, cam_height, 
+                    current_pitch, current_roll, current_base_pitch, current_base_roll, 
+                    klns, fov_from_meta, model_lock, is_360, original_frame_name, draw_grid
                 )
             except Exception as e:
                 callback({"error": str(e), "is_video": False, "original_name": original_frame_name})

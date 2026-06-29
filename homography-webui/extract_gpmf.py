@@ -264,9 +264,6 @@ def extract_streams_with_time(mp4_path):
                 })
     return timed_streams, global_constants
 
-# =======================================================================
-# INTERNAL ACCURACY & SENSOR HEALTH EVALUATION
-# =======================================================================
 def _local_haversine(lat1, lon1, lat2, lon2):
     R = 6371000.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -276,10 +273,6 @@ def _local_haversine(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def evaluate_telemetry_health(streams):
-    """
-    Evaluates GoPro telemetry against physical constraints and internal consistency
-    without requiring ground truth hardware.
-    """
     report = {
         "gps_score": 100.0,
         "imu_score": 100.0,
@@ -292,7 +285,6 @@ def evaluate_telemetry_health(streams):
         }
     }
     
-    # 1. GPS Internal Consistency & Physical Constraints (Jerk)
     if "GPS9" in streams and len(streams["GPS9"]) > 1:
         gps_data = streams["GPS9"]
         speed_errors = []
@@ -320,11 +312,9 @@ def evaluate_telemetry_health(streams):
             dist = _local_haversine(lat1, lon1, lat2, lon2)
             derived_speed = dist / dt
             
-            # Acceleration / Jerk Physics check
             accel = abs(doppler_speed_curr - doppler_speed_prev) / dt
             jerks.append(accel / dt)
             
-            # Compare derived speed to doppler speed (filter noise at standstill)
             if doppler_speed_curr > 1.0 or derived_speed > 1.0:
                 speed_errors.append(abs(derived_speed - doppler_speed_curr))
         
@@ -335,9 +325,8 @@ def evaluate_telemetry_health(streams):
         report["metrics"]["bad_fix_ratio"] = round(bad_fix_count / len(gps_data), 3)
         report["metrics"]["max_jerk_detected"] = round(max_jerk, 2)
         
-        # Penalties for GPS
         gps_penalty = (avg_speed_error * 5) + ((bad_fix_count / len(gps_data)) * 40) + ((bad_dop_count / len(gps_data)) * 15)
-        if max_jerk > 20.0: gps_penalty += 15  # Impossible kinematic movement penalty
+        if max_jerk > 20.0: gps_penalty += 15  
             
         report["gps_score"] = max(0.0, min(100.0, 100.0 - gps_penalty))
         
@@ -346,7 +335,6 @@ def evaluate_telemetry_health(streams):
         if report["gps_score"] < 80:
             report["warnings"].append(f"GPS Quality Degraded (Score: {report['gps_score']:.1f}%). High spatial drift.")
             
-    # 2. IMU Gravity Magnitude (1G Check)
     if "GRAV" in streams and len(streams["GRAV"]) > 0:
         grav_data = streams["GRAV"]
         mag_errors = []
@@ -359,7 +347,6 @@ def evaluate_telemetry_health(streams):
         avg_mag_error = sum(mag_errors) / len(mag_errors) if mag_errors else 0
         report["metrics"]["avg_grav_mag_error"] = round(avg_mag_error, 4)
         
-        # Penalty: 0.05 average deviation is a 10% penalty
         imu_penalty = avg_mag_error * 200 
         report["imu_score"] = max(0.0, min(100.0, 100.0 - imu_penalty))
         
@@ -399,12 +386,28 @@ def get_telemetry_interpolators(streams):
             rolls.append(np.degrees(np.arctan2(x, y)))
             
         p_arr, r_arr = np.array(pitches), np.array(rolls)
+        
+        # 1. Instantaneous (Light Smoothing to remove micro-vibrations)
         if len(p_arr) > 11:
             w = min(31, len(p_arr) if len(p_arr)%2!=0 else len(p_arr)-1)
-            p_arr = savgol_filter(p_arr, w, 3)
-            r_arr = savgol_filter(r_arr, w, 3)
+            p_inst = savgol_filter(p_arr, w, 3)
+            r_inst = savgol_filter(r_arr, w, 3)
+        else:
+            p_inst, r_inst = p_arr, r_arr
             
-        interpolators["pitch"] = interp1d(times, p_arr, bounds_error=False, fill_value="extrapolate")
-        interpolators["roll"] = interp1d(times, r_arr, bounds_error=False, fill_value="extrapolate")
+        interpolators["pitch"] = interp1d(times, p_inst, bounds_error=False, fill_value="extrapolate")
+        interpolators["roll"] = interp1d(times, r_inst, bounds_error=False, fill_value="extrapolate")
+
+        # 2. Baseline (Heavy Smoothing to find the true vehicle mounting angle/road grade)
+        # Using a ~5 second window (151 samples at 30fps) with a simple linear trend (polyorder 1)
+        w_heavy = min(151, len(p_arr) if len(p_arr)%2!=0 else len(p_arr)-1)
+        if len(p_arr) > 31:
+            p_base = savgol_filter(p_arr, w_heavy, 1)
+            r_base = savgol_filter(r_arr, w_heavy, 1)
+            interpolators["pitch_base"] = interp1d(times, p_base, bounds_error=False, fill_value="extrapolate")
+            interpolators["roll_base"] = interp1d(times, r_base, bounds_error=False, fill_value="extrapolate")
+        else:
+            interpolators["pitch_base"] = interpolators["pitch"]
+            interpolators["roll_base"] = interpolators["roll"]
 
     return interpolators
