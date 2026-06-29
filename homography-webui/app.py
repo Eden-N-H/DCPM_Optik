@@ -109,7 +109,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                     )
                 else:
                     try:
-                        defects, geo_feats, base_filename, footprints = process_single_image(
+                        defects, geo_feats, gen_files, footprints = process_single_image(
                             asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
                             asset['lat'], asset['lon'], asset['heading'], height, asset['pitch'], asset['roll'], asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
                         )
@@ -127,12 +127,13 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         }
                         
                         for view in (['front', 'rear'] if _is_360 else ['front']):
+                            gf = gen_files[view]
                             result_payload["views"][view] = {
-                                "raw_filename": f"raw_rect_{view}_{base_filename}",
-                                "raw_bev_filename": f"raw_bev_{view}_{base_filename}",
-                                "raw_bev_url": f"/static/uploads/raw_bev_{view}_{base_filename}",
-                                "rect_url": f"/static/uploads/rect_{view}_{base_filename}",
-                                "bev_url": f"/static/uploads/bev_{view}_{base_filename}",
+                                "raw_filename": gf["raw_rect"],
+                                "raw_bev_filename": gf["raw_bev"],
+                                "raw_bev_url": f"/static/uploads/{gf['raw_bev']}",
+                                "rect_url": f"/static/uploads/{gf['rect']}",
+                                "bev_url": f"/static/uploads/{gf['bev']}",
                                 "defects": defects[view],
                                 "footprint": footprints[view]
                             }
@@ -202,7 +203,6 @@ def process():
             lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
             file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
             
-            # Cache the full metadata JSON
             meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json")
             with open(meta_path, 'w') as mf:
                 json.dump(full_meta, mf, indent=2)
@@ -279,7 +279,6 @@ def export_zip():
         for r in project_data:
             loc = r.get('location', 'Unknown Location')
             
-            # Format output naming to ensure standard image extensions
             safe_orig = secure_filename(r['original_name'])
             if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)):
                 safe_orig += ".jpg"

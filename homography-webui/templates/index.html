@@ -123,11 +123,12 @@
                         <div class="text-xs font-bold text-gray-500 uppercase">Metric BEV</div>
                     </div>
                     <div class="flex-1 min-h-0 flex gap-2">
-                        <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group">
+                        <!-- Replaced bg-gray-50 with bev-grid-bg -->
+                        <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group">
                             <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬆️ Front</span>
                             <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
                         </div>
-                        <div id="container-bev-rear" class="flex-1 relative border-2 border-transparent rounded bg-gray-50 cursor-pointer overflow-hidden transition-all group hidden">
+                        <div id="container-bev-rear" class="flex-1 relative border-2 border-transparent rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group hidden">
                             <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬇️ Rear</span>
                             <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
                         </div>
@@ -146,7 +147,6 @@
             <div class="lg:col-span-7 relative h-full">
                 <div id="map" class="w-full h-full rounded-xl border border-gray-200 shadow-sm z-0"></div>
                 
-                <!-- NEW: Telemetry HUD Map Overlay -->
                 <div id="telemetry-hud" class="hidden absolute top-4 left-4 z-[1000] bg-gray-900/85 backdrop-blur text-white px-3 py-2 rounded-lg shadow-lg border border-gray-700 text-[11px] font-mono flex flex-col gap-1 max-w-sm pointer-events-none transition-all">
                     <!-- Populated via JS -->
                 </div>

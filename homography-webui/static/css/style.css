@@ -20,3 +20,13 @@
 .maplibregl-popup-tip {
     border-top-color: white;
 }
+
+/* NEW HUD Backdrop for feathered transparent BEV images */
+.bev-grid-bg {
+    background-color: #1e293b; 
+    background-image: 
+        linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px), 
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-position: center bottom;
+}

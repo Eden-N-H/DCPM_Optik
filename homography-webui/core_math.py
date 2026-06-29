@@ -16,7 +16,6 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def sanitize_meta(obj):
-    """Recursively makes metadata JSON serializable (handles bytes, numpy, and NaNs)."""
     if isinstance(obj, dict):
         return {str(k): sanitize_meta(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -43,15 +42,11 @@ def sanitize_meta(obj):
     return obj
 
 def extract_full_photo_metadata(filepath):
-    """Unified extractor that returns core tracking variables + the FULL metadata payload."""
     lat, lon = None, None
     exif_dict = {}
-    
-    # 1. EXIF & GPS
     try:
         with open(filepath, 'rb') as f:
             tags = exifread.process_file(f, details=False)
-            
         for tag, val in tags.items():
             if tag.startswith('JPEG') or tag.startswith('Thumbnail') or tag.startswith('EXIF MakerNote'):
                 continue
@@ -70,7 +65,6 @@ def extract_full_photo_metadata(filepath):
     except Exception:
         pass
 
-    # 2. XMP / GPMF
     pitch, roll, fov, klns = None, None, None, None
     xmp_dict, gpmf_dict = {}, {}
     try:
@@ -165,7 +159,46 @@ def equirectangular_to_rectilinear(equi_img, fov_deg, pitch_deg, roll_deg, yaw_d
     map_x, map_y = u.reshape((output_height, output_width)).astype(np.float32), v.reshape((output_height, output_width)).astype(np.float32)
     return cv2.remap(equi_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP), K
 
-def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01, z_near=2.0, z_far=8.0, x_range=3.0):
+# --- NEW IMPROVED VISUAL FUNCTIONS ---
+
+def apply_bev_feathering(bev_bgr):
+    """Adds a smooth RGBA gradient to the BEV image, fading out the stretched edges."""
+    h, w = bev_bgr.shape[:2]
+    rgba = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2BGRA)
+    alpha = np.ones((h, w), dtype=np.float32)
+    
+    # 1. Fade out the extreme top (Horizon Smear)
+    top_fade = int(h * 0.3)
+    for y in range(top_fade):
+        alpha[y, :] *= (y / top_fade) ** 2.0
+        
+    # 2. Fade out the left and right peripheral edges
+    side_fade = int(w * 0.15)
+    for x in range(side_fade):
+        fade_val = (x / side_fade) ** 1.5
+        alpha[:, x] *= fade_val
+        alpha[:, w - 1 - x] *= fade_val
+        
+    # 3. Apply Alpha Channel
+    rgba[:, :, 3] = (alpha * 255).astype(np.uint8)
+    return rgba
+
+def apply_ego_mask(img, mask_pct=0.15):
+    """Blacks out the ego vehicle at the bottom of the frame before inference."""
+    h, w = img.shape[:2]
+    mask_h = int(h * mask_pct)
+    img[h - mask_h:, :] = 0
+    return img
+
+def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01):
+    """Dynamically calculates the appropriate BEV cutoff lengths."""
+    # Dynamic Masking: 
+    # z_near skips the hood/bumper (roughly 1.2x camera height forward)
+    # z_far limits severe perspective stretching (max 12 meters total depth)
+    z_near = max(1.5, cam_height_m * 1.2)
+    z_far = min(12.0, z_near + 8.0)
+    x_range = 4.0  # Wider mapping (8m total width)
+    
     pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
     road_pts = np.array([[-x_range, z_near], [x_range, z_near], [x_range, z_far], [-x_range, z_far]], dtype=np.float32)
     
@@ -179,13 +212,15 @@ def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, gsd=0.01, z_near=2.
     rect_pts = []
     for pt in road_pts:
         xyz = R @ np.array([pt[0], cam_height_m, pt[1]])
+        if xyz[2] <= 1e-5: xyz[2] = 1e-5 # Prevent division by zero
         u = (K[0,0] * xyz[0] / xyz[2]) + K[0,2]
         v = (K[1,1] * xyz[1] / xyz[2]) + K[1,2]
         rect_pts.append([u, v])
 
-    return cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts), bev_w, bev_h, gsd, x_range, z_far
+    H = cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts)
+    return H, bev_w, bev_h, gsd, x_range, z_far, z_near
 
-def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near=2.0, z_far=8.0, x_range=3.0):
+def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_range):
     pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
     Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
     Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
@@ -227,15 +262,16 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         raise ValueError(f"Invalid calculated FOV value: {fov_val}")
 
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
-    all_defects, all_geojson_features, bev_footprints = {}, [], {}
+    base_name_no_ext = os.path.splitext(base_filename)[0]
     
+    all_defects, all_geojson_features, generated_files, bev_footprints = {}, [], {}, {}
     views_to_process = {'front': {'yaw': 0, 'heading_offset': 0}}
     if is_360: views_to_process['rear'] = {'yaw': 180, 'heading_offset': 180}
         
     for view_name, config in views_to_process.items():
         all_defects[view_name] = []
-        bev_pitch, bev_roll = 0.0, 0.0
         
+        # 1. Image Extraction & Camera Matrix
         if is_360:
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
             bev_pitch, bev_roll = 0.0, 0.0
@@ -244,7 +280,6 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
             h, w = rect_img.shape[:2]
             f = (w / 2.0) / math.tan(math.radians(fov_val) / 2.0)
             K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
-            
             if klns and len(klns) >= 5:
                 try:
                     dist_coeffs = np.array(klns[1:6], dtype=np.float32)
@@ -252,31 +287,62 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                     rect_img = cv2.undistort(rect_img, K_undist, dist_coeffs)
                     K = K_undist
                 except: pass
-            
             bev_pitch, bev_roll = pitch, roll
 
+        # 2. Get the Dynamic ROI geometry
+        H_mat, bev_w, bev_h, gsd, x_range, z_far, z_near = get_bev_homography(K, cam_height, bev_pitch, bev_roll)
+        
+        # 3. Create RAW outputs (applying RGBA feathering to BEV)
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
         
-        with model_lock: results = model.predict(source=rect_img, conf=0.25, save=False, verbose=False)
-            
-        H_mat, bev_w, bev_h, gsd, x_range, z_far = get_bev_homography(K, cam_height, bev_pitch, bev_roll)
-        bev_img = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-        
-        cv2.imwrite(os.path.join(output_dir, f"raw_bev_{view_name}_{base_filename}"), bev_img.copy())
-        view_heading = (heading + config['heading_offset']) % 360
+        raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        raw_bev_rgba = apply_bev_feathering(raw_bev_bgr)
+        raw_bev_filename = f"raw_bev_{view_name}_{base_name_no_ext}.png" # Must save as PNG for transparency
+        cv2.imwrite(os.path.join(output_dir, raw_bev_filename), raw_bev_rgba)
 
-        z_near = z_far - (bev_h * gsd)
+        # 4. Geo Footprint tracking
+        view_heading = (heading + config['heading_offset']) % 360
         bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (z_near + z_far) / 2.0)
         bev_footprints[view_name] = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_range, "height_m": z_far - z_near}
 
+        # 5. Setup canvases for drawing
         annotated_rect = rect_img.copy()
+        annotated_bev_bgr = raw_bev_bgr.copy()
+
+        # 6. Draw the clear ROI Trapezoid on annotated_rect
+        pitch_rad, roll_rad = math.radians(-bev_pitch), math.radians(bev_roll)
+        Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
+        Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
+        R = Rx @ Rz
         
+        roi_pts_3d = [[-x_range, cam_height, z_near], [x_range, cam_height, z_near], [x_range, cam_height, z_far], [-x_range, cam_height, z_far]]
+        roi_pts_2d = []
+        for pt in roi_pts_3d:
+            xyz = R @ np.array(pt)
+            if xyz[2] > 1e-5:
+                u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
+                v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+                roi_pts_2d.append([u, v])
+                
+        if len(roi_pts_2d) == 4:
+            overlay = annotated_rect.copy()
+            pts_array = np.array(roi_pts_2d, np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(overlay, [pts_array], (0, 255, 255))
+            cv2.addWeighted(overlay, 0.15, annotated_rect, 0.85, 0, annotated_rect)
+            cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
+
         if draw_grid:
             annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, z_near, z_far, x_range)
 
+        # 7. Model Inference (Applying Ego Mask first!)
+        inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15)
+        with model_lock: 
+            results = model.predict(source=inference_img, conf=0.25, save=False, verbose=False)
+
+        # 8. Render Defect Outputs
         for r in results:
-            annotated_rect = r.plot(img=annotated_rect)
+            annotated_rect = r.plot(img=annotated_rect) # Plots standard boxes
             if r.masks is not None:
                 for i, mask_pts in enumerate(r.masks.xy):
                     cls_id, conf = int(r.boxes.cls[i]), float(r.boxes.conf[i])
@@ -292,11 +358,10 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                         if area_sqm <= 0.0001: continue
                             
-                        # Use an overlay to draw polygons with transparency (alpha = 0.4)
-                        overlay = bev_img.copy()
+                        # Draw polygons on BEV
+                        overlay = annotated_bev_bgr.copy()
                         cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
-                        alpha = 0.4
-                        cv2.addWeighted(overlay, alpha, bev_img, 1.0 - alpha, 0, bev_img)
+                        cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                         
                         geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range, z_far-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range, z_far-(pt[0][1]*gsd))[0]] for pt in contour]
                         if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
@@ -304,11 +369,24 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color})
                         all_geojson_features.append({"type": "Feature", "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": original_filename, "conf": round(conf, 2)}, "geometry": {"type": "Polygon", "coordinates": [geo_coords]}})
 
-        cv2.imwrite(os.path.join(output_dir, f"rect_{view_name}_{base_filename}"), annotated_rect)
-        cv2.imwrite(os.path.join(output_dir, f"bev_{view_name}_{base_filename}"), bev_img)
+        # 9. Save Annotated Outputs
+        annotated_bev_rgba = apply_bev_feathering(annotated_bev_bgr)
+        rect_filename = f"rect_{view_name}_{base_filename}"
+        bev_filename = f"bev_{view_name}_{base_name_no_ext}.png"
         
-    return all_defects, all_geojson_features, base_filename, bev_footprints
+        cv2.imwrite(os.path.join(output_dir, rect_filename), annotated_rect)
+        cv2.imwrite(os.path.join(output_dir, bev_filename), annotated_bev_rgba)
+        
+        generated_files[view_name] = {
+            "raw_rect": raw_rect_filename,
+            "raw_bev": raw_bev_filename,
+            "rect": rect_filename,
+            "bev": bev_filename
+        }
+        
+    return all_defects, all_geojson_features, generated_files, bev_footprints
 
+# ... (process_video_frames_async and get_video_frame_metadata remain unchanged, but will benefit automatically)
 def process_video_frames_async(video_path, model, upload_dir, cam_height, file_name, original_name, gps_snap, interval_m, model_lock, is_360, location_str, callback, draw_grid=False):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(file_name)[0]
@@ -378,7 +456,6 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
             frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
             original_frame_name = f"{original_name} (Frame {frame_idx})"
             
-            # Write sidecar JSON for this video frame
             frame_meta = {
                 "Video_Global_GPMF": sanitize_meta(constants),
                 "Frame_Telemetry": sanitize_meta({
@@ -397,7 +474,7 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
                 json.dump(frame_meta, mf, indent=2)
 
             try:
-                defects, geo_feats, _, footprints = process_single_image(
+                defects, geo_feats, gen_files, footprints = process_single_image(
                     frame, model, frame_base_name, upload_dir,
                     current_lat, current_lon, current_heading, cam_height, current_pitch, current_roll, klns, fov_from_meta, model_lock, is_360, original_frame_name, draw_grid
                 )
@@ -407,7 +484,16 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
             
             result_payload = {"original_name": original_frame_name, "filename": frame_base_name, "lat": round(current_lat, 6), "lon": round(current_lon, 6), "pitch": round(current_pitch, 2), "roll": round(current_roll, 2), "location": location_str, "geojson": geo_feats, "views": {}}
             for view in (['front', 'rear'] if is_360 else ['front']):
-                result_payload["views"][view] = {"raw_filename": f"raw_rect_{view}_{frame_base_name}", "raw_bev_filename": f"raw_bev_{view}_{frame_base_name}", "raw_bev_url": f"/static/uploads/raw_bev_{view}_{frame_base_name}", "rect_url": f"/static/uploads/rect_{view}_{frame_base_name}", "bev_url": f"/static/uploads/bev_{view}_{frame_base_name}", "defects": defects[view], "footprint": footprints[view]}
+                gf = gen_files[view]
+                result_payload["views"][view] = {
+                    "raw_filename": gf["raw_rect"], 
+                    "raw_bev_filename": gf["raw_bev"], 
+                    "raw_bev_url": f"/static/uploads/{gf['raw_bev']}", 
+                    "rect_url": f"/static/uploads/{gf['rect']}", 
+                    "bev_url": f"/static/uploads/{gf['bev']}", 
+                    "defects": defects[view], 
+                    "footprint": footprints[view]
+                }
             callback(result_payload)
 
     cap.release()
