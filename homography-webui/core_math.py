@@ -292,8 +292,11 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                         area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                         if area_sqm <= 0.0001: continue
                             
-                        cv2.fillPoly(bev_img, [contour], color=mask_color_bgr)
-                        cv2.addWeighted(bev_img, conf, bev_img, 1.0 - conf, 0, bev_img)
+                        # Use an overlay to draw polygons with transparency (alpha = 0.4)
+                        overlay = bev_img.copy()
+                        cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
+                        alpha = 0.4
+                        cv2.addWeighted(overlay, alpha, bev_img, 1.0 - alpha, 0, bev_img)
                         
                         geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range, z_far-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range, z_far-(pt[0][1]*gsd))[0]] for pt in contour]
                         if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
