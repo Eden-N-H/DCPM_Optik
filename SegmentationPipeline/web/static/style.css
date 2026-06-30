@@ -1,0 +1,416 @@
+/* === Reset & Base Styles === */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+        Ubuntu, Cantarell, sans-serif;
+    line-height: 1.6;
+    color: #1a1a2e;
+    background-color: #f8f9fa;
+    min-height: 100vh;
+}
+
+main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.5rem 3rem;
+}
+
+h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: #1a1a2e;
+}
+
+/* === Header === */
+header {
+    text-align: center;
+    padding: 2rem 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #1a1a2e;
+}
+
+#model-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+}
+
+#model-name {
+    font-size: 0.85rem;
+    color: #555;
+    font-family: monospace;
+    background: #e9ecef;
+    padding: 0.3rem 0.75rem;
+    border-radius: 4px;
+}
+
+#model-upload-btn {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.75rem;
+    background-color: #6c63ff;
+    color: #fff;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+}
+
+#model-upload-btn:hover {
+    background-color: #5a52d5;
+}
+
+.confidence-label {
+    font-size: 0.85rem;
+    color: #555;
+}
+
+#confidence-input {
+    width: 50px;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.85rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.confidence-pct {
+    font-size: 0.85rem;
+    color: #555;
+}
+
+/* === Drop Zone === */
+#drop-zone {
+    min-height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed #ccc;
+    border-radius: 12px;
+    background-color: #ffffff;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+#drop-zone:hover {
+    border-color: #6c63ff;
+    background-color: #f5f3ff;
+}
+
+#drop-zone.drag-over {
+    border-color: #6c63ff;
+    background-color: #ede9fe;
+    border-style: solid;
+}
+
+.drop-zone-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.drop-zone-icon {
+    font-size: 3rem;
+    line-height: 1;
+}
+
+.drop-zone-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #1a1a2e;
+}
+
+.drop-zone-subtitle {
+    font-size: 0.95rem;
+    color: #555;
+}
+
+.drop-zone-hint {
+    font-size: 0.85rem;
+    color: #888;
+    margin-top: 0.25rem;
+}
+
+/* === Error Area === */
+#error-area {
+    margin-top: 1.5rem;
+    padding: 1rem 1.5rem;
+    background-color: #fff0f0;
+    border: 1px solid #ffcdd2;
+    border-radius: 8px;
+    text-align: center;
+    color: #c62828;
+}
+
+#error-area p {
+    margin-bottom: 0.75rem;
+    font-weight: 500;
+}
+
+/* === Progress Section === */
+#progress-section {
+    margin-top: 2rem;
+    text-align: center;
+    padding: 2rem;
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+#progress-section h2 {
+    margin-bottom: 1.25rem;
+}
+
+progress {
+    width: 100%;
+    height: 12px;
+    border-radius: 6px;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+progress::-webkit-progress-bar {
+    background-color: #e9ecef;
+    border-radius: 6px;
+}
+
+progress::-webkit-progress-value {
+    background-color: #6c63ff;
+    border-radius: 6px;
+    transition: width 0.3s ease;
+}
+
+progress::-moz-progress-bar {
+    background-color: #6c63ff;
+    border-radius: 6px;
+}
+
+#progress-text {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: #555;
+}
+
+/* === Gallery Section === */
+#gallery-section {
+    margin-top: 2rem;
+}
+
+#gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.gallery-item {
+    background-color: #ffffff;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    cursor: pointer;
+}
+
+.gallery-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.gallery-item img {
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+    display: block;
+}
+
+.gallery-item .gallery-item-info {
+    padding: 0.75rem 1rem;
+}
+
+.gallery-item .gallery-item-filename {
+    font-size: 0.85rem;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gallery-item .gallery-item-defects {
+    font-size: 0.8rem;
+    color: #666;
+    margin-top: 0.25rem;
+}
+
+.gallery-item.failed {
+    border: 2px solid #ef5350;
+}
+
+.gallery-item.failed img {
+    opacity: 0.5;
+}
+
+.gallery-item.failed .gallery-item-filename {
+    color: #c62828;
+}
+
+/* === Modal Overlay === */
+#modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#modal-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.85);
+}
+
+#modal-content {
+    position: relative;
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#modal-image {
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: 6px;
+    object-fit: contain;
+}
+
+#modal-close-btn {
+    position: fixed;
+    top: 1rem;
+    right: 1.5rem;
+    background: none;
+    border: none;
+    color: #ffffff;
+    font-size: 2.5rem;
+    cursor: pointer;
+    line-height: 1;
+    z-index: 1002;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+}
+
+#modal-close-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* === Buttons === */
+button {
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 0.6rem 1.25rem;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+button:active {
+    transform: scale(0.97);
+}
+
+#process-another-btn {
+    display: inline-block;
+    background-color: #6c63ff;
+    color: #ffffff;
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    border-radius: 8px;
+}
+
+#process-another-btn:hover {
+    background-color: #5a52d5;
+}
+
+#error-dismiss-btn {
+    background-color: #c62828;
+    color: #ffffff;
+}
+
+#error-dismiss-btn:hover {
+    background-color: #a31f1f;
+}
+
+/* === Utility Classes === */
+.hidden {
+    display: none !important;
+}
+
+/* === Responsive Design === */
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 1.4rem;
+    }
+
+    #drop-zone {
+        min-height: 220px;
+        padding: 1.5rem;
+    }
+
+    .drop-zone-icon {
+        font-size: 2.5rem;
+    }
+
+    .drop-zone-title {
+        font-size: 1.1rem;
+    }
+
+    #gallery-grid {
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 1rem;
+    }
+
+    .gallery-item img {
+        height: 150px;
+    }
+}
+
+@media (max-width: 480px) {
+    main {
+        padding: 0 1rem 2rem;
+    }
+
+    #gallery-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #modal-image {
+        max-width: 95vw;
+        max-height: 85vh;
+    }
+}

@@ -1,0 +1,144 @@
+# =============================================================================
+# Road Defect Segmentation Pipeline - Example Configuration
+# =============================================================================
+# This file documents all configurable parameters for the pipeline.
+# Copy this file and modify values as needed for your deployment.
+# Parameters left as null or omitted will use their documented default values.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Pipeline: General pipeline settings
+# -----------------------------------------------------------------------------
+pipeline:
+  # Frame extraction rate from video files, in frames per second.
+  # Only applies when input is a video file (MP4/MOV).
+  # Valid range: [0.1, 30.0]
+  # Default: 1.0
+  frame_extraction_rate: 1.0
+
+# -----------------------------------------------------------------------------
+# Preprocessing: Frame correction and enhancement settings
+# -----------------------------------------------------------------------------
+preprocessing:
+  # CLAHE (Contrast Limited Adaptive Histogram Equalization) clip limit.
+  # Controls contrast enhancement intensity. Higher values = more contrast.
+  # Valid range: positive float (typically 1.0 - 10.0)
+  # Default: 2.0
+  clip_limit: 2.0
+
+  # CLAHE tile grid size as [rows, columns].
+  # Defines the number of tiles for local histogram equalization.
+  # Default: [8, 8]
+  tile_grid_size: [8, 8]
+
+  # Barrel distortion correction coefficients [k1, k2, p1, p2, k3].
+  # These are camera-specific lens distortion parameters.
+  # Set to null to use default GoPro wide-angle calibration coefficients.
+  # Default: null (uses built-in GoPro defaults)
+  distortion_coefficients: null
+
+  # Camera intrinsic matrix (3x3) for distortion correction.
+  # Format: [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+  # Set to null to use default GoPro wide-angle intrinsic parameters.
+  # Default: null (uses built-in GoPro defaults)
+  camera_matrix: null
+
+# -----------------------------------------------------------------------------
+# Detection: YOLO object detection model settings
+# -----------------------------------------------------------------------------
+detection:
+  # Path to YOLO model weights file (.pt format).
+  # The model should be trained on road defect classes.
+  # Default: "models/yolo_road_defects.pt"
+  model_path: "models/yolo_road_defects.pt"
+
+  # Minimum confidence score for a detection to be kept.
+  # Detections below this threshold are discarded.
+  # Valid range: [0.0, 1.0]
+  # Default: 0.5
+  confidence_threshold: 0.5
+
+  # IoU (Intersection over Union) threshold for Non-Maximum Suppression.
+  # Lower values = more aggressive duplicate elimination.
+  # Valid range: [0.0, 1.0]
+  # Default: 0.45
+  iou_threshold: 0.45
+
+  # Maximum number of detections to return per frame.
+  # Caps the output to prevent excessive processing on noisy frames.
+  # Valid range: positive integer
+  # Default: 50
+  max_detections: 50
+
+# -----------------------------------------------------------------------------
+# Segmentation: SAM2 segmentation model settings
+# -----------------------------------------------------------------------------
+segmentation:
+  # Path to SAM2 model checkpoint file.
+  # Default: "models/sam2_checkpoint.pth"
+  checkpoint_path: "models/sam2.1_hiera_large.pt"
+
+  # SAM2 model configuration file name.
+  # Determines model architecture (e.g., sam2_hiera_l, sam2_hiera_b+).
+  # Default: "sam2_hiera_l.yaml"
+  model_cfg: "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+# -----------------------------------------------------------------------------
+# Verification: Post-segmentation quality checks
+# -----------------------------------------------------------------------------
+verification:
+  # Minimum mask-to-bounding-box area ratio.
+  # Masks with a ratio below this value are discarded as too sparse.
+  # Ratio = (foreground pixels in mask) / (bounding box area in pixels)
+  # Valid range: [0.0, 1.0]
+  # Default: 0.05
+  min_area_ratio: 0.05
+
+  # Maximum mask-to-bounding-box area ratio.
+  # Masks with a ratio above this value are flagged for manual review.
+  # Valid range: [0.0, 1.0]
+  # Default: 0.95
+  max_area_ratio: 0.95
+
+# -----------------------------------------------------------------------------
+# Measurement: Defect size estimation and severity parameters
+# -----------------------------------------------------------------------------
+measurement:
+  # Camera mounting height above road surface, in centimeters.
+  # Required for metric (cm/cm²) measurements and severity scoring.
+  # Set to null if metric measurements are not needed (pixel-only output).
+  # Valid range: positive float, or null
+  # Default: null
+  camera_height_cm: null
+
+  # Camera focal length in pixels.
+  # Required for metric (cm/cm²) measurements and severity scoring.
+  # Set to null if metric measurements are not needed (pixel-only output).
+  # Valid range: positive float, or null
+  # Default: null
+  focal_length_px: null
+
+# -----------------------------------------------------------------------------
+# Output: Result file settings
+# -----------------------------------------------------------------------------
+output:
+  # Directory where output JSON files are written.
+  # Per-frame results and batch summary are saved here.
+  # The directory must exist and be writable, or the pipeline will exit.
+  # Default: "output"
+  directory: "output"
+
+# -----------------------------------------------------------------------------
+# Logging: Logging and error handling settings
+# -----------------------------------------------------------------------------
+logging:
+  # Log verbosity level.
+  # Valid values: "DEBUG", "INFO", "WARNING", "ERROR"
+  # Default: "INFO"
+  level: "INFO"
+
+  # Maximum number of consecutive frame processing failures before the
+  # pipeline exits with a systematic failure error.
+  # Valid range: positive integer
+  # Default: 10
+  max_consecutive_failures: 10

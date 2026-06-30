@@ -1,0 +1,33 @@
+pipeline:
+  frame_extraction_rate: 1.0      # [0.1, 30] fps
+
+preprocessing:
+  clip_limit: 2.0
+  tile_grid_size: [8, 8]
+  distortion_coefficients: null   # [k1, k2, p1, p2, k3] or null for defaults
+  camera_matrix: null             # 3x3 intrinsic matrix or null for defaults
+
+detection:
+  model_path: "models/ihopethisworks.pt"
+  confidence_threshold: 0.1       # [0.0, 1.0]
+  iou_threshold: 0.45            # [0.0, 1.0]
+  max_detections: 50
+
+segmentation:
+  checkpoint_path: "models/sam2.1_hiera_large.pt"
+  model_cfg: "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+verification:
+  min_area_ratio: 0.05           # [0.0, 1.0]
+  max_area_ratio: 0.95           # [0.0, 1.0]
+
+measurement:
+  camera_height_cm: null          # positive float or null
+  focal_length_px: null           # positive float or null
+
+output:
+  directory: "output"
+
+logging:
+  level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
+  max_consecutive_failures: 10

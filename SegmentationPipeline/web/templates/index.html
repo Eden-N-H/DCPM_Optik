@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Road Defect Segmentation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Road Defect Segmentation</h1>
+        <div id="model-info">
+            <span id="model-name">Model: loading...</span>
+            <button id="model-upload-btn" type="button">Change Model</button>
+            <input id="model-file-input" type="file" accept=".pt" class="hidden">
+            <label for="confidence-input" class="confidence-label">Confidence:</label>
+            <input id="confidence-input" type="number" min="0" max="100" step="1" value="10">
+            <span class="confidence-pct">%</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Drop Zone - visible in idle state -->
+        <section id="drop-zone" aria-label="Image upload area">
+            <div class="drop-zone-content">
+                <p class="drop-zone-icon" aria-hidden="true">&#128193;</p>
+                <p class="drop-zone-title">Drag &amp; Drop Images Here</p>
+                <p class="drop-zone-subtitle">Drop a folder or individual .jpg / .jpeg / .png files</p>
+                <p class="drop-zone-hint">Up to 300 images per batch</p>
+            </div>
+        </section>
+
+        <!-- Error message area - hidden by default -->
+        <section id="error-area" class="hidden" role="alert" aria-live="polite">
+            <p id="error-message"></p>
+            <button id="error-dismiss-btn" type="button">Dismiss</button>
+        </section>
+
+        <!-- Progress section - hidden by default -->
+        <section id="progress-section" class="hidden" aria-label="Processing progress">
+            <h2>Processing Images</h2>
+            <progress id="progress-bar" max="100" value="0"></progress>
+            <p id="progress-text">0 of 0 images processed</p>
+        </section>
+
+        <!-- Gallery section - hidden by default -->
+        <section id="gallery-section" class="hidden" aria-label="Results gallery">
+            <h2>Results</h2>
+            <div id="gallery-grid"></div>
+            <button id="process-another-btn" class="hidden" type="button">Process Another Batch</button>
+        </section>
+    </main>
+
+    <!-- Modal overlay - hidden by default -->
+    <div id="modal-overlay" class="hidden" role="dialog" aria-modal="true" aria-label="Full resolution image viewer">
+        <div id="modal-backdrop"></div>
+        <div id="modal-content">
+            <button id="modal-close-btn" type="button" aria-label="Close image viewer">&times;</button>
+            <img id="modal-image" src="" alt="Full resolution result">
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
