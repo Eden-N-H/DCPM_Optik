@@ -123,7 +123,6 @@
                         <div class="text-xs font-bold text-gray-500 uppercase">Metric BEV</div>
                     </div>
                     <div class="flex-1 min-h-0 flex gap-2">
-                        <!-- Replaced bg-gray-50 with bev-grid-bg -->
                         <div id="container-bev-front" class="flex-1 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group">
                             <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬆️ Front</span>
                             <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden" src="">
@@ -155,6 +154,18 @@
                     <span class="text-xs font-bold text-gray-600 uppercase">Location:</span>
                     <select id="sel-location" class="text-sm border-gray-300 rounded shadow-sm p-1 font-semibold text-gray-800 focus:ring-blue-500 cursor-pointer outline-none"></select>
                 </div>
+
+                <!-- NEW: 360 Map Layer Toggle Controls -->
+                <div id="layer-toggle-panel" class="hidden absolute bottom-4 right-4 z-[1000] bg-white/95 backdrop-blur px-3 py-2 rounded-lg shadow-lg border border-gray-200 flex-col gap-2">
+                    <span class="text-xs font-bold text-gray-600 uppercase mb-1 block border-b pb-1">Map Layers (360)</span>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer font-semibold text-gray-800">
+                        <input type="checkbox" id="chk-layer-front" class="w-4 h-4 accent-blue-600" checked> Front View
+                    </label>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer font-semibold text-gray-800">
+                        <input type="checkbox" id="chk-layer-rear" class="w-4 h-4 accent-blue-600" checked> Rear View
+                    </label>
+                </div>
+                
             </div>
         </div>
     </div>

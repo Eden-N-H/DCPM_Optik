@@ -12,9 +12,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let nodesGeoJson = { type: "FeatureCollection", features: [] };
     let trailGeoJson = { type: "FeatureCollection", features: [] };
     
-    // NEW: MapLibre Orthomosaic Raster Tracking
     let orthoLayerIds = []; 
-    let lowestRasterLayerId = 'defects-layer'; // Z-Ordering: Shingles always go BELOW the polygons
+    let lowestRasterLayerId = 'defects-layer'; 
 
     let fullResults = [];
     let appResults = []; 
@@ -37,6 +36,27 @@ document.addEventListener("DOMContentLoaded", () => {
     const warningsContainer = document.getElementById("warnings-container");
     const warningsList = document.getElementById("warnings-list");
     const telemetryHud = document.getElementById("telemetry-hud");
+
+    // NEW: Map Layer Toggle UI Handles
+    const layerTogglePanel = document.getElementById("layer-toggle-panel");
+    const chkLayerFront = document.getElementById("chk-layer-front");
+    const chkLayerRear = document.getElementById("chk-layer-rear");
+
+    // Visibility toggler function
+    function toggleMapLayerVisibility(view, isVisible) {
+        if (!mapLoaded || !map) return;
+        const visibility = isVisible ? 'visible' : 'none';
+        orthoLayerIds.forEach(id => {
+            if (id.endsWith(`-${view}`)) {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', visibility);
+                }
+            }
+        });
+    }
+
+    chkLayerFront.addEventListener('change', (e) => toggleMapLayerVisibility('front', e.target.checked));
+    chkLayerRear.addEventListener('change', (e) => toggleMapLayerVisibility('rear', e.target.checked));
 
     function stringToColor(str) {
         let hash = 0;
@@ -165,7 +185,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // NEW: Clears old orthomosaics from the map when loading a new job
     function clearOrthomosaics() {
         if (!mapLoaded || !map) return;
         orthoLayerIds.forEach(id => {
@@ -187,16 +206,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!map.getSource(sourceId)) {
                     map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: corners });
                     
-                    // Add directly underneath the last added raster layer (Roof Shingle Effect!)
+                    // Determine initial visibility dynamically based on user toggle switches
+                    const isVisible = view === 'front' ? chkLayerFront.checked : chkLayerRear.checked;
+                    
                     map.addLayer({
                         id: sourceId,
                         type: 'raster',
                         source: sourceId,
+                        layout: { 'visibility': isVisible ? 'visible' : 'none' }, // Conditionally visible!
                         paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
                     }, lowestRasterLayerId);
                     
                     orthoLayerIds.push(sourceId);
-                    lowestRasterLayerId = sourceId; // The next frame will be inserted under THIS one.
+                    lowestRasterLayerId = sourceId; 
                 }
             }
         });
@@ -261,8 +283,21 @@ document.addEventListener("DOMContentLoaded", () => {
         if (useUploadedFiles) imageFiles.forEach(f => fd.append("images", f));
 
         appIs360 = chkIs360.checked;
-        if (!appIs360) { containerBevRear.classList.add("hidden"); setView('front'); } 
-        else containerBevRear.classList.remove("hidden");
+
+        // Reset toggles and manage 360 Layer Panel visibility
+        chkLayerFront.checked = true;
+        chkLayerRear.checked = true;
+        
+        if (!appIs360) { 
+            containerBevRear.classList.add("hidden"); 
+            layerTogglePanel.classList.add("hidden");
+            layerTogglePanel.classList.remove("flex");
+            setView('front'); 
+        } else { 
+            containerBevRear.classList.remove("hidden");
+            layerTogglePanel.classList.remove("hidden");
+            layerTogglePanel.classList.add("flex");
+        }
 
         uploadPanel.classList.add("hidden");
         document.getElementById("workspace").classList.remove("hidden");
@@ -280,7 +315,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnProcess.disabled = true;
         btnScan.disabled = true;
         
-        clearOrthomosaics(); // Reset the map layers for a clean job
+        clearOrthomosaics(); 
         fullGeojson = { type: "FeatureCollection", features: [] };
         nodesGeoJson = { type: "FeatureCollection", features: [] };
         trailGeoJson = { type: "FeatureCollection", features: [] };
@@ -398,7 +433,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 const r = msg.data;
                 fullResults.push(r);
                 
-                // Add the new Orthomosaic frame instantly to the map
                 addOrthomosaicShingle(r);
                 
                 let hasDefects = r.geojson && r.geojson.length > 0;
@@ -473,8 +507,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!data.results || !data.geojson) throw new Error("Invalid project format.");
                 
                 appIs360 = data.is_360 !== undefined ? data.is_360 : true;
-                if (!appIs360) { containerBevRear.classList.add("hidden"); setView('front'); } 
-                else containerBevRear.classList.remove("hidden");
+
+                chkLayerFront.checked = true;
+                chkLayerRear.checked = true;
+
+                if (!appIs360) { 
+                    containerBevRear.classList.add("hidden"); 
+                    layerTogglePanel.classList.add("hidden");
+                    layerTogglePanel.classList.remove("flex");
+                    setView('front'); 
+                } else { 
+                    containerBevRear.classList.remove("hidden");
+                    layerTogglePanel.classList.remove("hidden");
+                    layerTogglePanel.classList.add("flex");
+                }
 
                 fullResults = data.results;
                 fullGeojson = data.geojson;
