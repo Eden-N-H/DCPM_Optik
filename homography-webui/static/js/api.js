@@ -1,6 +1,6 @@
 import { state } from './state.js';
 import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds } from './map.js';
-import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick } from './ui.js';
+import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
 
 export async function triggerZipExport(endpoint, btnId, loadingText, filename) {
     if (state.fullResults.length === 0) return;
@@ -14,17 +14,27 @@ export async function triggerZipExport(endpoint, btnId, loadingText, filename) {
     } catch (err) { alert(err.message); } finally { btn.textContent = originalText; btn.disabled = false; }
 }
 
+export async function cancelJob() {
+    if (!state.currentTaskId) return;
+    if (!confirm("Are you sure you want to stop processing? Images completed so far will be saved.")) return;
+    const btn = document.getElementById("btn-cancel-job");
+    btn.disabled = true; btn.textContent = "Cancelling...";
+    try {
+        await fetch(`/cancel/${state.currentTaskId}`, { method: 'POST' });
+    } catch(e) { console.error("Cancel request failed", e); }
+}
+
 function startSSE(taskId, totalImages) {
     const source = new EventSource(`/stream/${taskId}`);
     let processedCount = 0; let startTime = Date.now();
-    const warningsList = document.getElementById("warnings-list");
-    const warningsContainer = document.getElementById("warnings-container");
     const telemetryHud = document.getElementById("telemetry-hud");
 
     source.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        if (msg.type === "error" || msg.type === "complete") {
+        
+        if (msg.type === "error" || msg.type === "complete" || msg.type === "cancelled") {
             source.close();
+            state.currentTaskId = null;
             document.getElementById("progress-container").classList.add("hidden");
             checkCanProcess();
             state.imageFiles = [];
@@ -32,13 +42,16 @@ function startSSE(taskId, totalImages) {
             
             if (msg.type === "error") {
                 alert(`Background Task Error: ${msg.message}`);
-            } else if (msg.type === "complete" && state.fullResults.length === 0) {
-                alert("Processing complete, but 0 frames were successfully extracted. Check the warnings panel for metadata rejection details.");
+            } else if (state.fullResults.length === 0) {
+                alert(msg.type === "cancelled" ? "Process cancelled before any frames finished." : "Processing complete, but 0 frames were successfully extracted. Check warnings.");
                 document.getElementById("workspace").classList.add("hidden");
                 document.getElementById("upload-panel").classList.remove("hidden");
                 document.getElementById("btn-save-project").classList.add("hidden");
                 document.getElementById("btn-export-zip").classList.add("hidden");
                 document.getElementById("btn-export-flat-zip").classList.add("hidden");
+                document.getElementById("btn-toggle-map").classList.add("hidden");
+            } else if (msg.type === "cancelled") {
+                addWarning("⚠️ User Cancelled Process. Partial results have been saved.");
             }
             return;
         }
@@ -50,31 +63,15 @@ function startSSE(taskId, totalImages) {
             let imuColor = hr.imu_score > 90 ? 'text-green-400' : 'text-orange-400';
 
             const hudLine = document.createElement("div");
-            hudLine.innerHTML = `
-                <span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> 
-                GPS: <span class="${gpsColor} font-bold">${hr.gps_score.toFixed(0)}%</span> | 
-                IMU: <span class="${imuColor} font-bold">${hr.imu_score.toFixed(0)}%</span> | 
-                Drift: <span class="text-gray-300">${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s</span>
-            `;
+            hudLine.innerHTML = `<span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> GPS: <span class="${gpsColor} font-bold">${hr.gps_score.toFixed(0)}%</span> | IMU: <span class="${imuColor} font-bold">${hr.imu_score.toFixed(0)}%</span> | Drift: <span class="text-gray-300">${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s</span>`;
             telemetryHud.appendChild(hudLine);
             
-            if (hr.warnings.length > 0) {
-                warningsContainer.classList.remove("hidden");
-                hr.warnings.forEach(w => {
-                    const li = document.createElement("li");
-                    li.textContent = `[${msg.original_name} Telemetry] ${w}`;
-                    warningsList.appendChild(li);
-                });
-            }
+            if (hr.warnings.length > 0) hr.warnings.forEach(w => addWarning(`[${msg.original_name} Telemetry] ${w}`));
             return;
         }
 
         if (msg.type === "item_error") {
-            warningsContainer.classList.remove("hidden");
-            const li = document.createElement("li");
-            li.textContent = `Skipped ${msg.original_name}: ${msg.message}`;
-            warningsList.appendChild(li);
-            
+            addWarning(`Skipped ${msg.original_name}: ${msg.message}`);
             if (!msg.is_video) {
                 processedCount++;
                 const pct = totalImages > 0 ? (processedCount / totalImages) * 100 : 100;
@@ -87,7 +84,6 @@ function startSSE(taskId, totalImages) {
         if (msg.type === "update") {
             const r = msg.data;
             state.fullResults.push(r);
-            
             addOrthomosaicShingle(r, document.getElementById("chk-layer-front").checked, document.getElementById("chk-layer-rear").checked);
             
             let hasDefects = r.geojson && r.geojson.length > 0;
@@ -101,11 +97,7 @@ function startSSE(taskId, totalImages) {
                 state.nodesGeoJson.features[fIndex].properties.processed = true;
                 state.nodesGeoJson.features[fIndex].properties.location = r.location;
             } else if (r.lat !== null && r.lon !== null) {
-                state.nodesGeoJson.features.push({
-                    type: "Feature",
-                    geometry: { type: "Point", coordinates: [r.lon, r.lat] },
-                    properties: { original_name: r.original_name, location: r.location, processed: true, active: false }
-                });
+                state.nodesGeoJson.features.push({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { original_name: r.original_name, location: r.location, processed: true, active: false }});
             }
             updateMapSource('nodes-source', state.nodesGeoJson);
 
@@ -160,13 +152,11 @@ export async function executeJob() {
     
     if (!state.appIs360) { 
         containerBevRear.classList.add("hidden"); 
-        layerTogglePanel.classList.add("hidden");
-        layerTogglePanel.classList.remove("flex");
+        layerTogglePanel.classList.add("hidden"); layerTogglePanel.classList.remove("flex");
         setView('front'); 
     } else { 
         containerBevRear.classList.remove("hidden");
-        layerTogglePanel.classList.remove("hidden");
-        layerTogglePanel.classList.add("flex");
+        layerTogglePanel.classList.remove("hidden"); layerTogglePanel.classList.add("flex");
     }
 
     document.getElementById("upload-panel").classList.add("hidden");
@@ -174,23 +164,35 @@ export async function executeJob() {
     document.getElementById("btn-save-project").classList.remove("hidden");
     document.getElementById("btn-export-zip").classList.remove("hidden");
     document.getElementById("btn-export-flat-zip").classList.remove("hidden");
+    document.getElementById("btn-toggle-map").classList.remove("hidden");
     document.getElementById("progress-container").classList.remove("hidden");
     
+    // Reset Warnings & UI Trackers
+    state.warningCount = 0;
+    
+    // Allow the new job to auto-fit to the perfect size automatically
+    state.layoutPrefs.mapOn.isManual = false;
+    state.layoutPrefs.mapOff.isManual = false;
+    
+    document.getElementById("warnings-badge").textContent = "0";
+    document.getElementById("warnings-badge").classList.add("hidden");
+    document.getElementById("btn-show-warnings").classList.add("hidden");
     document.getElementById("warnings-list").innerHTML = "";
-    document.getElementById("warnings-container").classList.add("hidden");
+    document.getElementById("no-warnings-msg").classList.remove("hidden");
+    
+    // Reset Cancel Button
+    const btnCancel = document.getElementById("btn-cancel-job");
+    btnCancel.disabled = false; btnCancel.textContent = "Stop / Cancel";
     
     const telemetryHud = document.getElementById("telemetry-hud");
-    telemetryHud.innerHTML = "";
-    telemetryHud.classList.add("hidden");
-    
+    telemetryHud.innerHTML = ""; telemetryHud.classList.add("hidden");
     document.getElementById("process-btn").disabled = true;
     
     clearOrthomosaics(); 
     state.fullGeojson = { type: "FeatureCollection", features: [] };
     state.nodesGeoJson = { type: "FeatureCollection", features: [] };
     state.trailGeoJson = { type: "FeatureCollection", features: [] };
-    state.fullResults = [];
-    state.appResults = [];
+    state.fullResults = []; state.appResults = [];
 
     initMap(handleMapClick);
 
@@ -202,6 +204,7 @@ export async function executeJob() {
         state.stateLastLat = data.last_lat;
         state.stateLastLon = data.last_lon;
         state.stateLastLocId = data.last_loc_id;
+        state.currentTaskId = data.task_id;
 
         if (data.initial_trail && data.initial_trail.features) {
             state.trailGeoJson = data.initial_trail;
@@ -212,20 +215,20 @@ export async function executeJob() {
         data.initial_state.forEach(img => {
             if(img.lat !== null && img.lon !== null) {
                 state.nodesGeoJson.features.push({
-                    type: "Feature",
-                    geometry: { type: "Point", coordinates: [img.lon, img.lat] },
+                    type: "Feature", geometry: { type: "Point", coordinates: [img.lon, img.lat] },
                     properties: { original_name: img.original_name, location: img.location, processed: false, active: false }
                 });
             }
         });
         updateMapSource('nodes-source', state.nodesGeoJson);
-
         setTimeout(() => { if (state.map) state.map.resize(); }, 300);
+        
         startSSE(data.task_id, data.total_images);
     } catch (e) {
         alert(e.message); 
         document.getElementById("upload-panel").classList.remove("hidden"); 
-        document.getElementById("progress-container").classList.add("hidden"); 
+        document.getElementById("progress-container").classList.add("hidden");
+        document.getElementById("btn-toggle-map").classList.add("hidden");
         checkCanProcess();
     }
 }

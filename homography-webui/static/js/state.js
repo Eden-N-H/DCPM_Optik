@@ -7,6 +7,7 @@ export const state = {
     map: null,
     mapLoaded: false,
     mapPopup: null,
+    isMapVisible: true,
     
     fullGeojson: { type: "FeatureCollection", features: [] },
     nodesGeoJson: { type: "FeatureCollection", features: [] },
@@ -23,5 +24,13 @@ export const state = {
 
     stateLastLat: null,
     stateLastLon: null,
-    stateLastLocId: 1
+    stateLastLocId: 1,
+    
+    currentTaskId: null,
+    warningCount: 0,
+    
+    layoutPrefs: {
+        mapOn: { mainW: "45%", mediaBasis: "55%", isManual: false },
+        mapOff: { mediaBasis: "50%", isManual: false }
+    }
 };

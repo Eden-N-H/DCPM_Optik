@@ -1,16 +1,19 @@
 import { state } from './state.js';
 import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, addOrthomosaicShingle } from './map.js';
-import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel } from './ui.js';
-import { executeJob, triggerZipExport } from './api.js';
+import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters } from './ui.js';
+import { executeJob, triggerZipExport, cancelJob } from './api.js';
 
 document.addEventListener("DOMContentLoaded", () => {
     
+    initResizers();
+
     // File dropzones
     setupDz("dz-model", "in-model", "name-model", false, f => { state.modelFile = f; checkCanProcess(); });
     setupDz("dz-image", "in-image", "name-image", true, f => { state.imageFiles = f; checkCanProcess(); });
 
     // Processing & Export Commands
     document.getElementById("process-btn").onclick = () => executeJob();
+    document.getElementById("btn-cancel-job").onclick = () => cancelJob();
     document.getElementById("btn-export-zip").onclick = () => triggerZipExport("/export-zip", "btn-export-zip", "⏳ Compiling ZIP...", "DCPM_RAW_Export.zip");
     document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport("/export-flat-zip", "btn-export-flat-zip", "⏳ Compiling Flattened...", "DCPM_FLAT_Export.zip");
 
@@ -20,11 +23,16 @@ document.addEventListener("DOMContentLoaded", () => {
     chkLayerFront.addEventListener('change', (e) => toggleMapLayerVisibility('front', e.target.checked));
     chkLayerRear.addEventListener('change', (e) => toggleMapLayerVisibility('rear', e.target.checked));
     
+    document.getElementById("btn-toggle-map").onclick = () => toggleMapView();
     document.getElementById('container-bev-front').onclick = () => setView('front');
     document.getElementById('container-bev-rear').onclick = () => setView('rear');
 
     document.getElementById("btn-prev").onclick = () => { if (state.currentIndex > 0) { state.currentIndex--; updateCarousel(true); } };
     document.getElementById("btn-next").onclick = () => { if (state.currentIndex < state.appResults.length - 1) { state.currentIndex++; updateCarousel(true); } };
+
+    // Warnings Modal
+    document.getElementById("btn-show-warnings").onclick = () => toggleWarningsModal(true);
+    document.getElementById("btn-close-warnings").onclick = () => toggleWarningsModal(false);
 
     // Save State Project
     document.getElementById("btn-save-project").onclick = () => {
@@ -77,7 +85,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("btn-save-project").classList.remove("hidden");
                 document.getElementById("btn-export-zip").classList.remove("hidden");
                 document.getElementById("btn-export-flat-zip").classList.remove("hidden");
+                document.getElementById("btn-toggle-map").classList.remove("hidden"); 
                 
+                // Allow loaded project to auto-fit beautifully
+                state.layoutPrefs.mapOn.isManual = false;
+                state.layoutPrefs.mapOff.isManual = false;
+
                 clearOrthomosaics();
                 state.nodesGeoJson = { type: "FeatureCollection", features: [] };
                 let trailCoords = [];
