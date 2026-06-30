@@ -26,7 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
     let stateLastLocId = 1;
 
     const btnProcess = document.getElementById("process-btn");
-    const btnScan = document.getElementById("scan-btn");
     const selLocation = document.getElementById("sel-location");
     const uploadPanel = document.getElementById("upload-panel");
     const chkIs360 = document.getElementById("chk-is-360");
@@ -37,7 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const warningsList = document.getElementById("warnings-list");
     const telemetryHud = document.getElementById("telemetry-hud");
 
-    // NEW: Map Layer Toggle UI Handles
+    // Map Layer Toggle UI Handles
     const layerTogglePanel = document.getElementById("layer-toggle-panel");
     const chkLayerFront = document.getElementById("chk-layer-front");
     const chkLayerRear = document.getElementById("chk-layer-rear");
@@ -236,8 +235,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    document.getElementById("btn-toggle-upload").onclick = () => uploadPanel.classList.toggle("hidden");
-
     const setupDz = (dzId, inId, nameId, isMulti, callback) => {
         const dz = document.getElementById(dzId);
         const inp = document.getElementById(inId);
@@ -261,13 +258,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const checkCanProcess = () => {
         const hasModel = (isModelLoaded || modelFile !== null);
         btnProcess.disabled = !(hasModel && imageFiles.length > 0);
-        btnScan.disabled = !hasModel;
     };
 
     setupDz("dz-model", "in-model", "name-model", false, f => modelFile = f);
     setupDz("dz-image", "in-image", "name-image", true, f => imageFiles = f);
 
-    async function executeJob(endpoint, useUploadedFiles) {
+    async function executeJob() {
         const fd = new FormData();
         if (modelFile) fd.append("model", modelFile);
         
@@ -280,7 +276,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if(stateLastLon !== null) fd.append("last_lon", stateLastLon);
         fd.append("last_loc_id", stateLastLocId);
         
-        if (useUploadedFiles) imageFiles.forEach(f => fd.append("images", f));
+        imageFiles.forEach(f => fd.append("images", f));
 
         appIs360 = chkIs360.checked;
 
@@ -313,7 +309,6 @@ document.addEventListener("DOMContentLoaded", () => {
         telemetryHud.classList.add("hidden");
         
         btnProcess.disabled = true;
-        btnScan.disabled = true;
         
         clearOrthomosaics(); 
         fullGeojson = { type: "FeatureCollection", features: [] };
@@ -325,7 +320,7 @@ document.addEventListener("DOMContentLoaded", () => {
         initMap();
 
         try {
-            const res = await fetch(endpoint, { method: "POST", body: fd });
+            const res = await fetch("/process", { method: "POST", body: fd });
             const data = await res.json();
             if (!res.ok || data.error) throw new Error(data.error || "Unknown server error");
 
@@ -358,8 +353,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    btnProcess.onclick = () => executeJob("/process", true);
-    btnScan.onclick = () => executeJob("/process_pipeline_folder", false);
+    btnProcess.onclick = () => executeJob();
 
     function startSSE(taskId, totalImages) {
         const source = new EventSource(`/stream/${taskId}`);

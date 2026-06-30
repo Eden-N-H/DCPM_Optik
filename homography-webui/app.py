@@ -27,10 +27,6 @@ ALLOWED_VIDEO_EXT = {'.mp4', '.mov', '.avi'}
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
-PIPELINE_OUTPUT_ROOTS = [
-    PROJECT_ROOT / "Data_pipelinine" / "output",
-    PROJECT_ROOT / "Data_pipeline" / "output"
-]
 
 global_model = None
 model_lock = threading.Lock()
@@ -210,52 +206,6 @@ def process():
             
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid)
-
-@app.route('/process_pipeline_folder', methods=['POST'])
-def process_pipeline_folder():
-    handle_model_upload(request)
-    if global_model is None: return jsonify({"error": "No ML model loaded into memory"}), 400
-
-    cam_height = safe_float(request.form.get('cam_height'), 1.6)
-    gps_snap = request.form.get('gps_snap') == 'true'
-    is_360 = request.form.get('is_360') == 'true'
-    draw_grid = request.form.get('draw_grid') == 'true'
-    interval_m = safe_float(request.form.get('interval_m'), 2.0)
-
-    last_lat = safe_float(request.form.get('last_lat'), None)
-    last_lon = safe_float(request.form.get('last_lon'), None)
-    loc_id = int(request.form.get('last_loc_id', 1))
-
-    found_files = []
-    for root_dir in PIPELINE_OUTPUT_ROOTS:
-        frames_dir = root_dir / "frames"
-        if frames_dir.exists():
-            for ext in ALLOWED_IMAGE_EXT.union(ALLOWED_VIDEO_EXT):
-                found_files.extend(list(frames_dir.rglob(f"*{ext}")))
-                found_files.extend(list(frames_dir.rglob(f"*{ext.upper()}")))
-            if found_files: break
-
-    if not found_files: return jsonify({"error": "No media files found in the 'Data_pipeline/output/frames' directory."}), 404
-
-    image_data = []
-    for filepath_obj in found_files:
-        filepath = str(filepath_obj)
-        ext = filepath_obj.suffix.lower()
-        filename = secure_filename(filepath_obj.name)
-        
-        file_meta = {"filename": filename, "original_name": filepath_obj.name, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
-
-        if ext in ALLOWED_IMAGE_EXT:
-            lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
-            
-            meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json")
-            with open(meta_path, 'w') as mf:
-                json.dump(full_meta, mf, indent=2)
-            
-        image_data.append(file_meta)
-        
     return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid)
 
 @app.route('/stream/<task_id>')
