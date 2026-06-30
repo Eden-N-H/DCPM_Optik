@@ -185,7 +185,6 @@ def apply_ego_mask(img, mask_pct=0.15):
     return img
 
 def digital_gimbal_warp(img, K, delta_pitch, delta_roll):
-    """Shifts and rotates the 2D image to cancel out suspension bounce."""
     h, w = img.shape[:2]
     f = K[0,0]
     dy = f * math.tan(math.radians(delta_pitch))
@@ -267,9 +266,9 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
         
         # 1. Image Extraction, Gimbaling, & Camera Matrix
         if is_360:
-            # 360 inherently corrects bounce if extracted with instantaneous pitch/roll.
-            # The resulting rectilinear image acts as if the camera has 0 pitch, 0 roll.
+            # For FFmpeg raw stitched files, we pass the IMU pitch/roll into the projector to stabilize it mathematically
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
+            # Since the image is now stabilized relative to gravity, the BEV projection uses perfectly flat inputs (0,0)
             bev_pitch, bev_roll = 0.0, 0.0
         else:
             rect_img = img_mat.copy()
@@ -284,9 +283,7 @@ def process_single_image(img_input, model, base_filename, output_dir, gps_lat, g
                     K = K_undist
                 except: pass
             
-            # Apply Digital Gimbal Shift to counteract instantaneous suspension bounce
             rect_img = digital_gimbal_warp(rect_img, K, pitch - base_pitch, roll - base_roll)
-            # The homography uses the smoothed, pure baseline mount angle
             bev_pitch, bev_roll = base_pitch, base_roll
 
         # 2. Get Dynamic ROI geometry
@@ -415,7 +412,6 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         pitch_interp = interpolators.get("pitch")
         roll_interp = interpolators.get("roll")
         
-        # New Baseline Interpolators for Gimbal Logic
         pitch_base_interp = interpolators.get("pitch_base")
         roll_base_interp = interpolators.get("roll_base")
         
@@ -437,6 +433,11 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         cap.release()
         return
 
+    # FOR FFmpeg STITCHED 360: FFmpeg strips the global metadata block. 
+    # We fallback to a target 100-degree rectilinear FOV extraction.
+    if is_360 and fov_from_meta is None:
+        fov_from_meta = 100.0
+
     if not all([gps_interp, speed_interp, pitch_interp, roll_interp, fov_from_meta]):
         callback({"error": "Missing required GPMF telemetry streams (GPS, Speed, GRAV, or computed FOV).", "is_video": True, "original_name": original_name})
         cap.release()
@@ -457,11 +458,12 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0 
             
-            current_pitch = 0.0 if is_360 else float(pitch_interp(elapsed_sec))
-            current_roll = 0.0 if is_360 else float(roll_interp(elapsed_sec))
+            # Using actual pitch/roll for 360 allows the math engine to Horizon-Level raw stitched FFmpeg video!
+            current_pitch = float(pitch_interp(elapsed_sec)) if pitch_interp else 0.0
+            current_roll = float(roll_interp(elapsed_sec)) if roll_interp else 0.0
             
-            current_base_pitch = 0.0 if is_360 else float(pitch_base_interp(elapsed_sec)) if pitch_base_interp else current_pitch
-            current_base_roll = 0.0 if is_360 else float(roll_base_interp(elapsed_sec)) if roll_base_interp else current_roll
+            current_base_pitch = float(pitch_base_interp(elapsed_sec)) if pitch_base_interp else current_pitch
+            current_base_roll = float(roll_base_interp(elapsed_sec)) if roll_base_interp else current_roll
 
             try:
                 c_loc = gps_interp(elapsed_sec)
