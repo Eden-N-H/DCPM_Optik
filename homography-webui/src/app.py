@@ -18,15 +18,15 @@ from core_math import (
     get_video_frame_metadata
 )
 
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+
+app = Flask(__name__, static_folder='../static', template_folder='../templates')
+app.config['UPLOAD_FOLDER'] = os.path.join(PROJECT_ROOT, 'static', 'uploads')
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 ALLOWED_IMAGE_EXT = {'.jpg', '.jpeg', '.png'}
 ALLOWED_VIDEO_EXT = {'.mp4', '.mov', '.avi'}
-
-BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent
 
 global_model = None
 model_lock = threading.Lock()
@@ -107,7 +107,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                         defects, geo_feats, gen_files, footprints = process_single_image(
                             asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
                             asset['lat'], asset['lon'], asset['heading'], height, 
-                            asset['pitch'], asset['roll'], asset['pitch'], asset['roll'], # Baseline is same as inst for photos
+                            asset['pitch'], asset['roll'], asset['pitch'], asset['roll'], 
                             asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
                         )
                         
