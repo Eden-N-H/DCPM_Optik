@@ -23,9 +23,17 @@ export function checkCanProcess() {
 }
 
 const handleFiles = (files, isMulti, callback, nameElement) => {
-    if (!files.length) return;
-    if (isMulti) { callback(Array.from(files)); nameElement.textContent = `${files.length} items queued`; } 
-    else { callback(files[0]); nameElement.textContent = files[0].name; document.getElementById("status-model").classList.remove("hidden"); state.isModelLoaded = true; }
+    if (!files || !files.length) return;
+    if (isMulti) { 
+        callback(Array.from(files)); 
+        nameElement.textContent = `${files.length} items queued`; 
+    } 
+    else { 
+        callback(files[0]); 
+        nameElement.textContent = files[0].name; 
+        document.getElementById("status-model").classList.remove("hidden"); 
+        state.isModelLoaded = true; 
+    }
     nameElement.classList.remove("hidden");
     checkCanProcess();
 };
@@ -35,11 +43,38 @@ export function setupDz(dzId, inId, nameId, isMulti, callback) {
     const inp = document.getElementById(inId);
     const nm = document.getElementById(nameId);
 
-    dz.onclick = () => inp.click();
-    dz.ondragover = (e) => { e.preventDefault(); dz.classList.add("border-blue-500"); };
-    dz.ondragleave = () => dz.classList.remove("border-blue-500");
-    dz.ondrop = (e) => { e.preventDefault(); dz.classList.remove("border-blue-500"); handleFiles(e.dataTransfer.files, isMulti, callback, nm); };
-    inp.onchange = (e) => handleFiles(e.target.files, isMulti, callback, nm);
+    // Native HTML <input type="file" class="absolute inset-0 opacity-0"> handles clicks natively.
+    // We only need to handle drag/drop visual styling and the change event.
+    
+    dz.addEventListener('dragover', (e) => { 
+        e.preventDefault(); 
+        dz.classList.add("bg-blue-50", "border-blue-500"); 
+    });
+    
+    dz.addEventListener('dragenter', (e) => { 
+        e.preventDefault(); 
+        dz.classList.add("bg-blue-50", "border-blue-500"); 
+    });
+    
+    dz.addEventListener('dragleave', (e) => { 
+        e.preventDefault(); 
+        dz.classList.remove("bg-blue-50", "border-blue-500"); 
+    });
+    
+    dz.addEventListener('drop', (e) => { 
+        e.preventDefault(); 
+        dz.classList.remove("bg-blue-50", "border-blue-500"); 
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            inp.files = e.dataTransfer.files; // Sync underlying form input
+            handleFiles(e.dataTransfer.files, isMulti, callback, nm); 
+        }
+    });
+    
+    inp.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+            handleFiles(e.target.files, isMulti, callback, nm);
+        }
+    });
 }
 
 export function refreshLocationsUI() {
@@ -98,7 +133,6 @@ export function updateCarousel(panMap = true) {
 
     imgRect.onload = () => { autoFitSplitters(true); };
 
-    // Anti-cache string when reloading after rapid BEV recalculation override
     const ts = Date.now();
     
     imgBevFront.src = current.views['front'].bev_url + `?t=${ts}`;
@@ -147,16 +181,49 @@ export function setupCalibrationUI() {
     const btnCancel = document.getElementById("btn-cancel-calibrate");
     const btnApply = document.getElementById("btn-apply-calibrate");
     const modal = document.getElementById("calibrate-modal");
-    const slider = document.getElementById("slider-pitch-offset");
-    const lbl = document.getElementById("lbl-pitch-offset");
+    const previewImg = document.getElementById("img-calibrate-preview");
+    const loader = document.getElementById("calibrate-loader");
     
+    const inputs = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'x_range'];
+    
+    const getCalibrationValues = () => {
+        let calib = {};
+        inputs.forEach(id => {
+            const el = document.getElementById(`calib-${id}`);
+            if (el) calib[id] = parseFloat(el.value);
+        });
+        return calib;
+    };
+
+    const updateLabels = () => {
+        inputs.forEach(id => {
+            const el = document.getElementById(`calib-${id}`);
+            const lbl = document.getElementById(`lbl-${id}`);
+            if (el && lbl) {
+                const unit = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov'].includes(id) ? '°' : 'm';
+                lbl.textContent = `${el.value}${unit}`;
+            }
+        });
+    };
+
     const close = () => modal.classList.add("hidden");
     
     btnOpen.onclick = () => {
         if(state.appResults.length === 0) return;
-        slider.value = 0; lbl.textContent = "0°";
+        
         const current = state.appResults[state.currentIndex];
-        document.getElementById("img-calibrate-preview").src = current.views[state.currentDirection].rect_url;
+        const baseCalib = current.views[state.currentDirection].calibration || {
+            pitch_offset: 0, roll_offset: 0, yaw_offset: 0,
+            fov: 100, cam_height: 1.6, z_near: 1.9, z_far: 10.0, x_range: 4.0
+        };
+
+        inputs.forEach(id => {
+            const el = document.getElementById(`calib-${id}`);
+            if (el && baseCalib[id] !== undefined) el.value = baseCalib[id];
+        });
+        
+        updateLabels();
+        previewImg.src = current.views[state.currentDirection].rect_url;
         modal.classList.remove("hidden");
     };
     
@@ -164,28 +231,32 @@ export function setupCalibrationUI() {
     btnCancel.onclick = close;
 
     let previewTimeout = null;
-    slider.addEventListener("input", (e) => {
-        const val = e.target.value;
-        lbl.textContent = val + "°";
-        
-        clearTimeout(previewTimeout);
-        document.getElementById("calibrate-loader").classList.remove("hidden");
-        
-        previewTimeout = setTimeout(async () => {
-            try {
-                const current = state.appResults[state.currentIndex];
-                const b64 = await fetchGridPreview(current.filename, state.currentDirection, val);
-                document.getElementById("img-calibrate-preview").src = b64;
-            } catch(err) { console.error(err); }
-            finally { document.getElementById("calibrate-loader").classList.add("hidden"); }
-        }, 300);
+    
+    inputs.forEach(id => {
+        const el = document.getElementById(`calib-${id}`);
+        if (el) {
+            el.addEventListener("input", () => {
+                updateLabels();
+                clearTimeout(previewTimeout);
+                loader.classList.remove("hidden");
+                
+                previewTimeout = setTimeout(async () => {
+                    try {
+                        const current = state.appResults[state.currentIndex];
+                        const b64 = await fetchGridPreview(current.filename, state.currentDirection, getCalibrationValues());
+                        previewImg.src = b64;
+                    } catch(err) { console.error(err); }
+                    finally { loader.classList.add("hidden"); }
+                }, 350);
+            });
+        }
     });
 
     btnApply.onclick = async () => {
-        btnApply.disabled = true; btnApply.textContent = "Processing...";
+        btnApply.disabled = true; btnApply.textContent = "Re-running AI Inference...";
         btnCancel.disabled = true;
         try {
-            const newResults = await recalculateProject(slider.value);
+            const newResults = await recalculateProject(getCalibrationValues());
             state.fullResults = newResults;
             refreshLocationsUI(); 
             
@@ -269,7 +340,6 @@ export function toggleMapView() {
     const mediaLayout = document.getElementById("media-layout-container");
     const mediaSplitter = document.getElementById("media-splitter");
     const perspectiveContainer = document.getElementById("perspective-container");
-    const bevLayout = document.getElementById("bev-layout-container");
     const btnToggleMap = document.getElementById("btn-toggle-map");
 
     if (state.isMapVisible) {

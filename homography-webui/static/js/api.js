@@ -24,20 +24,20 @@ export async function cancelJob() {
     } catch(e) { console.error("Cancel request failed", e); }
 }
 
-export async function fetchGridPreview(filename, view, pitchOffset) {
+export async function fetchGridPreview(filename, view, calibrationConfig) {
     const res = await fetch("/preview_grid", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename, view, pitch_offset: pitchOffset })
+        body: JSON.stringify({ filename, view, calibration: calibrationConfig })
     });
     const data = await res.json();
     if(!res.ok || !data.success) throw new Error(data.error || "Failed to preview");
     return data.image;
 }
 
-export async function recalculateProject(pitchOffset) {
+export async function recalculateProject(calibrationConfig) {
     const res = await fetch("/recalculate_bev", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pitch_offset: pitchOffset, results: state.fullResults })
+        body: JSON.stringify({ calibration: calibrationConfig, results: state.fullResults })
     });
     const data = await res.json();
     if(!res.ok || !data.success) throw new Error(data.error || "Failed to recalculate");

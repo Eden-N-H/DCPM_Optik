@@ -88,7 +88,7 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             "fov": asset.get('fov')
                         }
 
-                        defects, geo_feats, gen_files, footprints, view_meta = process_single_image(
+                        defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                             asset['path'], global_model, asset['filename'], upload_folder, 
                             telemetry, worker_options, model_lock, asset['original_name']
                         )
@@ -114,6 +114,7 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                         for view in (['front', 'rear'] if worker_options.get('is_360', True) else ['front']):
                             gf = gen_files[view]
                             result_payload["views"][view] = {
+                                "calibration": calibrations[view],
                                 "raw_filename": gf["raw_rect"], "raw_bev_filename": gf["raw_bev"],
                                 "raw_bev_url": f"/static/uploads/{gf['raw_bev']}", "rect_url": f"/static/uploads/{gf['rect']}",
                                 "bev_url": f"/static/uploads/{gf['bev']}", "defects": defects[view], "footprint": footprints[view]

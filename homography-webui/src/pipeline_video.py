@@ -91,7 +91,8 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                     "FOV": fov_from_meta, "KLNS": klns
                 })
             }
-            with open(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), 'w') as mf: json.dump(frame_meta, mf, indent=2)
+            with open(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), 'w') as mf:
+                json.dump(frame_meta, mf, indent=2)
 
             telemetry = {
                 "lat": current_lat,
@@ -106,7 +107,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             }
 
             try:
-                defects, geo_feats, gen_files, footprints, view_meta = process_single_image(
+                defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                     frame, model, frame_base_name, upload_dir, telemetry, options, model_lock, original_frame_name
                 )
                 
@@ -123,13 +124,29 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                 callback({"error": str(e), "is_video": False, "original_name": original_frame_name})
                 continue
             
-            result_payload = {"original_name": original_frame_name, "filename": frame_base_name, "lat": round(current_lat, 6), "lon": round(current_lon, 6), "pitch": round(current_pitch, 2), "roll": round(current_roll, 2), "location": location_str, "geojson": geo_feats, "views": {}}
+            result_payload = {
+                "original_name": original_frame_name,
+                "filename": frame_base_name,
+                "lat": round(current_lat, 6),
+                "lon": round(current_lon, 6),
+                "pitch": round(current_pitch, 2),
+                "roll": round(current_roll, 2),
+                "location": location_str,
+                "geojson": geo_feats,
+                "views": {}
+            }
+            
             for view in (['front', 'rear'] if options.get('is_360', True) else ['front']):
                 gf = gen_files[view]
                 result_payload["views"][view] = {
-                    "raw_filename": gf["raw_rect"], "raw_bev_filename": gf["raw_bev"], 
-                    "raw_bev_url": f"/static/uploads/{gf['raw_bev']}", "rect_url": f"/static/uploads/{gf['rect']}", 
-                    "bev_url": f"/static/uploads/{gf['bev']}", "defects": defects[view], "footprint": footprints[view]
+                    "calibration": calibrations[view],
+                    "raw_filename": gf["raw_rect"],
+                    "raw_bev_filename": gf["raw_bev"], 
+                    "raw_bev_url": f"/static/uploads/{gf['raw_bev']}",
+                    "rect_url": f"/static/uploads/{gf['rect']}", 
+                    "bev_url": f"/static/uploads/{gf['bev']}",
+                    "defects": defects[view],
+                    "footprint": footprints[view]
                 }
             callback(result_payload)
 
@@ -148,8 +165,10 @@ def get_video_frame_metadata(video_path, interval_m, original_name):
         speed_interp = interpolators.get("speed")
     except Exception: return []
     if not gps_interp or not speed_interp: return []
+    
     frames_meta = []
     dist_accum, last_time = 0.0, 0.0
+    
     for frame_idx in range(total_frames):
         elapsed_sec = frame_idx / fps
         dist_accum += float(speed_interp(elapsed_sec)) * (elapsed_sec - last_time)
@@ -160,4 +179,5 @@ def get_video_frame_metadata(video_path, interval_m, original_name):
                 loc = gps_interp(elapsed_sec)
                 frames_meta.append({"original_name": f"{original_name} (Frame {frame_idx})", "lat": float(loc[0]), "lon": float(loc[1])})
             except Exception: pass
+            
     return frames_meta

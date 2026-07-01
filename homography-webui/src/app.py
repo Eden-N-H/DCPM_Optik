@@ -57,7 +57,8 @@ def process():
         "conf_thresh": safe_float(request.form.get('conf_thresh'), 0.25)
     }
 
-    last_lat, last_lon = safe_float(request.form.get('last_lat'), None), safe_float(request.form.get('last_lon'), None)
+    last_lat = safe_float(request.form.get('last_lat'), None)
+    last_lon = safe_float(request.form.get('last_lon'), None)
     loc_id = int(request.form.get('last_loc_id', 1))
 
     image_data = []
@@ -70,7 +71,8 @@ def process():
         if ext in ALLOWED_IMAGE_EXT:
             lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
             file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
-            with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf: json.dump(full_meta, mf, indent=2)
+            with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf:
+                json.dump(full_meta, mf, indent=2)
         image_data.append(file_meta)
     
     res = start_processing_job(image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], global_model, model_lock)
@@ -80,7 +82,9 @@ def process():
 def stream(task_id):
     def event_stream():
         q = active_tasks.get(task_id)
-        if not q: yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"; return
+        if not q:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"
+            return
         while True:
             msg = q.get()
             yield f"data: {json.dumps(msg)}\n\n"
@@ -102,18 +106,17 @@ def preview_grid():
     data = request.json
     filename = data['filename']
     view_name = data['view']
-    pitch_offset = float(data['pitch_offset'])
+    calib = data['calibration']
     
     meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
     if not os.path.exists(meta_path): return jsonify({"error": "Process metadata not found"}), 404
     
     with open(meta_path, 'r') as f: process_meta = json.load(f)
-    raw_rect_filename = f"raw_rect_{view_name}_{filename}"
-    raw_rect_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_rect_filename)
     
-    if not os.path.exists(raw_rect_path): return jsonify({"error": "Raw view image missing"}), 404
+    source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+    if not os.path.exists(source_path): return jsonify({"error": "Source original image missing. Cannot preview."}), 404
     
-    preview_bgr = generate_grid_preview(raw_rect_path, process_meta, view_name, pitch_offset)
+    preview_bgr = generate_grid_preview(source_path, process_meta, view_name, calib)
     _, buffer = cv2.imencode('.jpg', preview_bgr)
     preview_b64 = base64.b64encode(buffer).decode('utf-8')
     return jsonify({"success": True, "image": f"data:image/jpeg;base64,{preview_b64}"})
@@ -121,7 +124,7 @@ def preview_grid():
 @app.route('/recalculate_bev', methods=['POST'])
 def recalculate_bev():
     data = request.json
-    pitch_offset = float(data['pitch_offset'])
+    calib = data['calibration']
     results = data['results']
     
     new_results = []
@@ -129,19 +132,21 @@ def recalculate_bev():
         filename = r['filename']
         meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
         if not os.path.exists(meta_path): continue
-        
         with open(meta_path, 'r') as f: process_meta = json.load(f)
         
+        source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+        if not os.path.exists(source_path): continue
+
         updated_r = r.copy()
         updated_r['geojson'] = []
         
         for view_name in r['views'].keys():
-            raw_rect_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view_name]['raw_filename'])
             defects, geo_feats, footprints = recalculate_view(
-                raw_rect_path, process_meta['view_meta'][view_name],
-                process_meta['telemetry'], process_meta['options'],
-                view_name, pitch_offset, r['original_name'], app.config['UPLOAD_FOLDER'], filename
+                source_path, process_meta['telemetry'], process_meta['options'],
+                view_name, calib, r['original_name'], app.config['UPLOAD_FOLDER'], filename,
+                global_model, model_lock
             )
+            updated_r['views'][view_name]['calibration'] = calib.copy()
             updated_r['views'][view_name]['defects'] = defects
             updated_r['views'][view_name]['footprint'] = footprints
             updated_r['geojson'].extend(geo_feats)
@@ -165,4 +170,3 @@ def export_flat_zip():
 
 if __name__ == '__main__': 
     app.run(debug=True, port=5000)
-    
