@@ -24,6 +24,26 @@ export async function cancelJob() {
     } catch(e) { console.error("Cancel request failed", e); }
 }
 
+export async function fetchGridPreview(filename, view, pitchOffset) {
+    const res = await fetch("/preview_grid", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, view, pitch_offset: pitchOffset })
+    });
+    const data = await res.json();
+    if(!res.ok || !data.success) throw new Error(data.error || "Failed to preview");
+    return data.image;
+}
+
+export async function recalculateProject(pitchOffset) {
+    const res = await fetch("/recalculate_bev", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pitch_offset: pitchOffset, results: state.fullResults })
+    });
+    const data = await res.json();
+    if(!res.ok || !data.success) throw new Error(data.error || "Failed to recalculate");
+    return data.results;
+}
+
 function startSSE(taskId, totalImages) {
     const source = new EventSource(`/stream/${taskId}`);
     let processedCount = 0; let startTime = Date.now();
@@ -135,10 +155,18 @@ export async function executeJob() {
     const layerTogglePanel = document.getElementById("layer-toggle-panel");
     const containerBevRear = document.getElementById("container-bev-rear");
 
+    // Standard Options
     fd.append("cam_height", document.getElementById("cam-height").value);
     fd.append("is_360", chkIs360.checked ? "true" : "false");
     fd.append("draw_grid", document.getElementById("chk-draw-grid").checked ? "true" : "false");
     fd.append("interval_m", document.getElementById("interval-m").value);
+    
+    // Advanced Options
+    fd.append("comp_roll", document.getElementById("chk-comp-roll").checked ? "true" : "false");
+    fd.append("comp_pitch", document.getElementById("chk-comp-pitch").checked ? "true" : "false");
+    fd.append("undistort", document.getElementById("chk-undistort").checked ? "true" : "false");
+    fd.append("ego_mask", document.getElementById("chk-ego-mask").checked ? "true" : "false");
+    fd.append("conf_thresh", document.getElementById("num-conf").value);
     
     if(state.stateLastLat !== null) fd.append("last_lat", state.stateLastLat);
     if(state.stateLastLon !== null) fd.append("last_lon", state.stateLastLon);
@@ -167,10 +195,7 @@ export async function executeJob() {
     document.getElementById("btn-toggle-map").classList.remove("hidden");
     document.getElementById("progress-container").classList.remove("hidden");
     
-    // Reset Warnings & UI Trackers
     state.warningCount = 0;
-    
-    // Allow the new job to auto-fit to the perfect size automatically
     state.layoutPrefs.mapOn.isManual = false;
     state.layoutPrefs.mapOff.isManual = false;
     
@@ -180,7 +205,6 @@ export async function executeJob() {
     document.getElementById("warnings-list").innerHTML = "";
     document.getElementById("no-warnings-msg").classList.remove("hidden");
     
-    // Reset Cancel Button
     const btnCancel = document.getElementById("btn-cancel-job");
     btnCancel.disabled = false; btnCancel.textContent = "Stop / Cancel";
     

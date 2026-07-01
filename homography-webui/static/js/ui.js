@@ -1,6 +1,7 @@
 import { state } from './state.js';
-import { updateMapSource } from './map.js';
+import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle } from './map.js';
 import { stringToColor } from './utils.js';
+import { fetchGridPreview, recalculateProject } from './api.js';
 
 export function handleMapClick(originalName) {
     const target = state.fullResults.find(r => r.original_name === originalName);
@@ -95,14 +96,14 @@ export function updateCarousel(panMap = true) {
     document.getElementById("carousel-filename").textContent = current.original_name;
     document.getElementById("carousel-telemetry").textContent = `Pitch: ${current.pitch}° | Roll: ${current.roll}°`;
 
-    // Attempt auto layout resizing when the image finishes loading naturally (if not manually overridden)
-    imgRect.onload = () => {
-        autoFitSplitters(true); // Internal check in function prevents override if user adjusted
-    };
+    imgRect.onload = () => { autoFitSplitters(true); };
 
-    imgBevFront.src = current.views['front'].bev_url;
-    if (state.appIs360 && current.views['rear']) imgBevRear.src = current.views['rear'].bev_url;
-    imgRect.src = activeViewData.rect_url;
+    // Anti-cache string when reloading after rapid BEV recalculation override
+    const ts = Date.now();
+    
+    imgBevFront.src = current.views['front'].bev_url + `?t=${ts}`;
+    if (state.appIs360 && current.views['rear']) imgBevRear.src = current.views['rear'].bev_url + `?t=${ts}`;
+    imgRect.src = activeViewData.rect_url + `?t=${ts}`;
 
     document.getElementById("table-defects").innerHTML = activeViewData.defects.map(d => `<tr><td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${d.color || stringToColor(d.class)}; border: 1px solid #ccc;"></span>${d.class}</td><td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td><td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td></tr>`).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No detections</td></tr>`;
 
@@ -140,11 +141,78 @@ export function toggleWarningsModal(show) {
     else modal.classList.add("hidden");
 }
 
+export function setupCalibrationUI() {
+    const btnOpen = document.getElementById("btn-open-calibrate");
+    const btnClose = document.getElementById("btn-close-calibrate");
+    const btnCancel = document.getElementById("btn-cancel-calibrate");
+    const btnApply = document.getElementById("btn-apply-calibrate");
+    const modal = document.getElementById("calibrate-modal");
+    const slider = document.getElementById("slider-pitch-offset");
+    const lbl = document.getElementById("lbl-pitch-offset");
+    
+    const close = () => modal.classList.add("hidden");
+    
+    btnOpen.onclick = () => {
+        if(state.appResults.length === 0) return;
+        slider.value = 0; lbl.textContent = "0°";
+        const current = state.appResults[state.currentIndex];
+        document.getElementById("img-calibrate-preview").src = current.views[state.currentDirection].rect_url;
+        modal.classList.remove("hidden");
+    };
+    
+    btnClose.onclick = close;
+    btnCancel.onclick = close;
+
+    let previewTimeout = null;
+    slider.addEventListener("input", (e) => {
+        const val = e.target.value;
+        lbl.textContent = val + "°";
+        
+        clearTimeout(previewTimeout);
+        document.getElementById("calibrate-loader").classList.remove("hidden");
+        
+        previewTimeout = setTimeout(async () => {
+            try {
+                const current = state.appResults[state.currentIndex];
+                const b64 = await fetchGridPreview(current.filename, state.currentDirection, val);
+                document.getElementById("img-calibrate-preview").src = b64;
+            } catch(err) { console.error(err); }
+            finally { document.getElementById("calibrate-loader").classList.add("hidden"); }
+        }, 300);
+    });
+
+    btnApply.onclick = async () => {
+        btnApply.disabled = true; btnApply.textContent = "Processing...";
+        btnCancel.disabled = true;
+        try {
+            const newResults = await recalculateProject(slider.value);
+            state.fullResults = newResults;
+            refreshLocationsUI(); 
+            
+            state.fullGeojson.features = [];
+            state.fullResults.forEach(r => state.fullGeojson.features.push(...r.geojson));
+            updateMapSource('defects-source', state.fullGeojson);
+            
+            clearOrthomosaics();
+            const chkF = document.getElementById("chk-layer-front").checked;
+            const chkR = document.getElementById("chk-layer-rear").checked;
+            state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
+            
+            updateCarousel(false);
+            close();
+        } catch(err) {
+            alert("Failed to recalculate: " + err.message);
+        } finally {
+            btnApply.disabled = false; btnApply.textContent = "Apply to Project";
+            btnCancel.disabled = false;
+        }
+    };
+}
+
 export function autoFitSplitters(adjustMain = false, force = false) {
     const isMapOn = state.isMapVisible;
     const prefs = isMapOn ? state.layoutPrefs.mapOn : state.layoutPrefs.mapOff;
     
-    // Only proceed if forced (double-click) or user hasn't manually locked this layout mode
     if (!force && prefs.isManual) return; 
 
     const imgRect = document.getElementById("img-rect");
@@ -188,7 +256,7 @@ export function autoFitSplitters(adjustMain = false, force = false) {
         perspectiveContainer.style.flexBasis = prefs.mediaBasis;
     }
 
-    if (force) prefs.isManual = false; // Reset manual lock if forced (via double-click)
+    if (force) prefs.isManual = false; 
 }
 
 export function toggleMapView() {
@@ -215,7 +283,6 @@ export function toggleMapView() {
         btnToggleMap.classList.remove("bg-blue-100", "text-blue-800", "border-blue-300");
         btnToggleMap.classList.add("bg-gray-200", "text-gray-800");
 
-        // Restore Map ON preferences or auto-fit
         if (!state.layoutPrefs.mapOn.isManual) {
             autoFitSplitters(true);
         } else {
@@ -235,7 +302,6 @@ export function toggleMapView() {
         btnToggleMap.classList.add("bg-blue-100", "text-blue-800", "border-blue-300");
         btnToggleMap.classList.remove("bg-gray-200", "text-gray-800");
 
-        // Restore Map OFF preferences or auto-fit
         if (!state.layoutPrefs.mapOff.isManual) {
             autoFitSplitters(false);
         } else {
@@ -255,7 +321,6 @@ export function initResizers() {
     const workspace = document.getElementById("workspace");
     const mapPanel = document.getElementById("map-panel"); 
 
-    // Double-click main splitter to force perfect scale reset
     mainSplitter.addEventListener("dblclick", () => autoFitSplitters(true, true));
 
     let isDraggingMain = false;
@@ -269,7 +334,6 @@ export function initResizers() {
     const perspectiveContainer = document.getElementById("perspective-container");
     const mediaLayout = document.getElementById("media-layout-container");
     
-    // Double-click media splitter to force perfect scale reset
     mediaSplitter.addEventListener("dblclick", () => autoFitSplitters(false, true));
 
     let isDraggingMedia = false;
@@ -300,7 +364,6 @@ export function initResizers() {
         }
     });
 
-    // Save manual layout state on mouseup
     document.addEventListener("mouseup", () => {
         if (isDraggingMain || isDraggingMedia) {
             if (state.isMapVisible) {

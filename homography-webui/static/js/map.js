@@ -145,7 +145,8 @@ export function addOrthomosaicShingle(r, isFrontVisible, isRearVisible) {
     if (!state.mapLoaded || !state.map) return;
     ['front', 'rear'].forEach(view => {
         if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
-            const rawBevUrl = r.views[view].raw_bev_url;
+            const ts = Date.now();
+            const rawBevUrl = r.views[view].raw_bev_url + `?t=${ts}`;
             const corners = r.views[view].footprint.corners;
             const sourceId = 'ortho-' + r.filename + '-' + view;
             

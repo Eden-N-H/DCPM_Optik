@@ -5,6 +5,7 @@ import uuid
 import threading
 import queue
 import zipfile
+import base64
 import cv2  
 from io import BytesIO
 from pathlib import Path
@@ -15,7 +16,7 @@ from ultralytics import YOLO
 from core_math import (
     process_single_image, extract_full_photo_metadata,
     haversine_distance, calculate_bearing, process_video_frames_async,
-    get_video_frame_metadata
+    get_video_frame_metadata, generate_grid_preview, recalculate_view
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,7 +32,7 @@ ALLOWED_VIDEO_EXT = {'.mp4', '.mov', '.avi'}
 global_model = None
 model_lock = threading.Lock()
 active_tasks = {}
-cancel_flags = {} # Track cancellation requests
+cancel_flags = {} 
 
 def safe_float(value, default=None):
     try:
@@ -47,7 +48,7 @@ def handle_model_upload(request_obj):
         model_file.save(model_path)
         global_model = YOLO(model_path)
 
-def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid):
+def start_processing_job(image_data, options, last_lat, last_lon, loc_id):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
     initial_ui_state = []
@@ -69,7 +70,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                 last_lat, last_lon = lat, lon
             initial_ui_state.append(image_data[i])
         elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
-            video_frames = get_video_frame_metadata(image_data[i]['path'], interval_m, image_data[i]['original_name'], gps_snap)
+            video_frames = get_video_frame_metadata(image_data[i]['path'], options.get('interval_m', 2.0), image_data[i]['original_name'])
             for vf in video_frames:
                 initial_ui_state.append(vf)
                 if vf.get('lat') is not None and vf.get('lon') is not None:
@@ -82,7 +83,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
     cancel_flags[task_id] = False
     total_est_frames = len(initial_ui_state)
 
-    def process_worker(assets, t_id, height, snap, _is_360, _interval_m, _draw_grid):
+    def process_worker(assets, t_id, worker_options):
         try:
             def is_cancelled():
                 return cancel_flags.get(t_id, False)
@@ -104,26 +105,50 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
                     
                 if asset['ext'] in ALLOWED_VIDEO_EXT:
                     process_video_frames_async(
-                        asset['path'], global_model, app.config['UPLOAD_FOLDER'], height,
-                        asset['filename'], asset['original_name'], snap, _interval_m, model_lock, _is_360, asset['location'], on_frame_processed, _draw_grid, is_cancelled
+                        asset['path'], global_model, app.config['UPLOAD_FOLDER'], 
+                        asset['filename'], asset['original_name'], asset['location'], 
+                        worker_options, model_lock, on_frame_processed, is_cancelled
                     )
                     if is_cancelled(): break
                 else:
                     try:
-                        defects, geo_feats, gen_files, footprints = process_single_image(
+                        telemetry = {
+                            "lat": asset['lat'],
+                            "lon": asset['lon'],
+                            "heading": asset.get('heading', 0.0),
+                            "pitch": asset.get('pitch', 0.0),
+                            "roll": asset.get('roll', 0.0),
+                            "base_pitch": asset.get('pitch', 0.0),
+                            "base_roll": asset.get('roll', 0.0),
+                            "klns": asset.get('klns'),
+                            "fov": asset.get('fov')
+                        }
+
+                        defects, geo_feats, gen_files, footprints, view_meta = process_single_image(
                             asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                            asset['lat'], asset['lon'], asset['heading'], height, 
-                            asset['pitch'], asset['roll'], asset['pitch'], asset['roll'], 
-                            asset['klns'], asset['fov'], model_lock, _is_360, asset['original_name'], _draw_grid
+                            telemetry, worker_options, model_lock, asset['original_name']
                         )
+                        
+                        # Save process_meta for fast pitch recalculation
+                        process_meta_data = {
+                            "telemetry": telemetry,
+                            "options": worker_options,
+                            "view_meta": view_meta,
+                            "original_name": asset['original_name']
+                        }
+                        with open(os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{asset['filename']}.json"), 'w') as f:
+                            json.dump(process_meta_data, f)
+                        
                         result_payload = {
                             "original_name": asset['original_name'], "filename": asset['filename'],
-                            "lat": round(asset['lat'], 6), "lon": round(asset['lon'], 6),
+                            "lat": round(asset['lat'], 6) if asset['lat'] else None, 
+                            "lon": round(asset['lon'], 6) if asset['lon'] else None,
                             "pitch": round(asset.get('pitch'), 2) if asset.get('pitch') is not None else None,
                             "roll": round(asset.get('roll'), 2) if asset.get('roll') is not None else None,
                             "location": asset['location'], "geojson": geo_feats, "views": {}
                         }
-                        for view in (['front', 'rear'] if _is_360 else ['front']):
+                        
+                        for view in (['front', 'rear'] if worker_options.get('is_360', True) else ['front']):
                             gf = gen_files[view]
                             result_payload["views"][view] = {
                                 "raw_filename": gf["raw_rect"], "raw_bev_filename": gf["raw_bev"],
@@ -139,7 +164,7 @@ def start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, las
         except Exception as e:
             active_tasks[t_id].put({"type": "error", "message": str(e)})
 
-    threading.Thread(target=process_worker, args=(image_data, task_id, cam_height, gps_snap, is_360, interval_m, draw_grid)).start()
+    threading.Thread(target=process_worker, args=(image_data, task_id, options)).start()
 
     initial_geojson = []
     if len(trail_coordinates) > 1:
@@ -166,11 +191,18 @@ def process():
     img_files = request.files.getlist('images')
     if not img_files or img_files[0].filename == '': return jsonify({"error": "No media selected"}), 400
 
-    cam_height = safe_float(request.form.get('cam_height'), 1.6)
-    gps_snap = request.form.get('gps_snap') == 'true'
-    is_360 = request.form.get('is_360') == 'true'
-    draw_grid = request.form.get('draw_grid') == 'true'
-    interval_m = safe_float(request.form.get('interval_m'), 2.0)
+    options = {
+        "cam_height": safe_float(request.form.get('cam_height'), 1.6),
+        "interval_m": safe_float(request.form.get('interval_m'), 2.0),
+        "is_360": request.form.get('is_360') == 'true',
+        "draw_grid": request.form.get('draw_grid') == 'true',
+        "comp_roll": request.form.get('comp_roll') == 'true',
+        "comp_pitch": request.form.get('comp_pitch') == 'true',
+        "undistort": request.form.get('undistort') == 'true',
+        "ego_mask": request.form.get('ego_mask') == 'true',
+        "conf_thresh": safe_float(request.form.get('conf_thresh'), 0.25)
+    }
+
     last_lat, last_lon = safe_float(request.form.get('last_lat'), None), safe_float(request.form.get('last_lon'), None)
     loc_id = int(request.form.get('last_loc_id', 1))
 
@@ -187,7 +219,7 @@ def process():
             with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf: json.dump(full_meta, mf, indent=2)
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, cam_height, gps_snap, is_360, last_lat, last_lon, loc_id, interval_m, draw_grid)
+    return start_processing_job(image_data, options, last_lat, last_lon, loc_id)
 
 @app.route('/stream/<task_id>')
 def stream(task_id):
@@ -209,6 +241,58 @@ def cancel_task(task_id):
         cancel_flags[task_id] = True
         return jsonify({"success": True})
     return jsonify({"error": "Task not found"}), 404
+
+@app.route('/preview_grid', methods=['POST'])
+def preview_grid():
+    data = request.json
+    filename = data['filename']
+    view_name = data['view']
+    pitch_offset = float(data['pitch_offset'])
+    
+    meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+    if not os.path.exists(meta_path): return jsonify({"error": "Process metadata not found"}), 404
+    
+    with open(meta_path, 'r') as f: process_meta = json.load(f)
+    raw_rect_filename = f"raw_rect_{view_name}_{filename}"
+    raw_rect_path = os.path.join(app.config['UPLOAD_FOLDER'], raw_rect_filename)
+    
+    if not os.path.exists(raw_rect_path): return jsonify({"error": "Raw view image missing"}), 404
+    
+    preview_bgr = generate_grid_preview(raw_rect_path, process_meta, view_name, pitch_offset)
+    _, buffer = cv2.imencode('.jpg', preview_bgr)
+    preview_b64 = base64.b64encode(buffer).decode('utf-8')
+    return jsonify({"success": True, "image": f"data:image/jpeg;base64,{preview_b64}"})
+
+@app.route('/recalculate_bev', methods=['POST'])
+def recalculate_bev():
+    data = request.json
+    pitch_offset = float(data['pitch_offset'])
+    results = data['results']
+    
+    new_results = []
+    for r in results:
+        filename = r['filename']
+        meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+        if not os.path.exists(meta_path): continue
+        
+        with open(meta_path, 'r') as f: process_meta = json.load(f)
+        
+        updated_r = r.copy()
+        updated_r['geojson'] = []
+        
+        for view_name in r['views'].keys():
+            raw_rect_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view_name]['raw_filename'])
+            defects, geo_feats, footprints = recalculate_view(
+                raw_rect_path, process_meta['view_meta'][view_name],
+                process_meta['telemetry'], process_meta['options'],
+                view_name, pitch_offset, r['original_name'], app.config['UPLOAD_FOLDER'], filename
+            )
+            updated_r['views'][view_name]['defects'] = defects
+            updated_r['views'][view_name]['footprint'] = footprints
+            updated_r['geojson'].extend(geo_feats)
+            
+        new_results.append(updated_r)
+    return jsonify({"success": True, "results": new_results})
 
 @app.route('/export-zip', methods=['POST'])
 def export_zip():
