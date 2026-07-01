@@ -1,23 +1,20 @@
 import os
 import time
 import json
-import uuid
-import threading
-import queue
-import zipfile
 import base64
-import cv2  
-from io import BytesIO
+import cv2
+import threading
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, Response, send_file
 from werkzeug.utils import secure_filename
 from ultralytics import YOLO
 
-from core_math import (
-    process_single_image, extract_full_photo_metadata,
-    haversine_distance, calculate_bearing, process_video_frames_async,
-    get_video_frame_metadata, generate_grid_preview, recalculate_view
-)
+from constants import ALLOWED_IMAGE_EXT
+from utils import safe_float
+from parser_exif import extract_full_photo_metadata
+from pipeline_image import generate_grid_preview, recalculate_view
+from exports import create_raw_zip, create_flat_zip
+from task_manager import start_processing_job, active_tasks, cancel_flags
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -26,19 +23,8 @@ app = Flask(__name__, static_folder='../static', template_folder='../templates')
 app.config['UPLOAD_FOLDER'] = os.path.join(PROJECT_ROOT, 'static', 'uploads')
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-ALLOWED_IMAGE_EXT = {'.jpg', '.jpeg', '.png'}
-ALLOWED_VIDEO_EXT = {'.mp4', '.mov', '.avi'}
-
 global_model = None
 model_lock = threading.Lock()
-active_tasks = {}
-cancel_flags = {} 
-
-def safe_float(value, default=None):
-    try:
-        if value is None or str(value).strip() == "": return default
-        return float(value)
-    except (TypeError, ValueError): return default
 
 def handle_model_upload(request_obj):
     global global_model
@@ -47,138 +33,6 @@ def handle_model_upload(request_obj):
         model_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(model_file.filename))
         model_file.save(model_path)
         global_model = YOLO(model_path)
-
-def start_processing_job(image_data, options, last_lat, last_lon, loc_id):
-    image_data = sorted(image_data, key=lambda x: x['filename'])
-    trail_coordinates = []
-    initial_ui_state = []
-    has_video = any(a['ext'] in ALLOWED_VIDEO_EXT for a in image_data)
-
-    for i in range(len(image_data)):
-        if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
-            lat, lon = image_data[i]['lat'], image_data[i]['lon']
-            if i < len(image_data) - 1 and image_data[i+1]['lat'] is not None and lat is not None:
-                heading = calculate_bearing(lat, lon, image_data[i+1]['lat'], image_data[i+1]['lon'])
-            else:
-                heading = image_data[i-1].get('heading', 0.0) if i > 0 else 0.0
-            image_data[i]['heading'] = heading
-            if lat is not None and lon is not None:
-                trail_coordinates.append([lon, lat])
-                if last_lat is not None and last_lon is not None:
-                    dist = haversine_distance(last_lat, last_lon, lat, lon)
-                    if dist > 50.0: loc_id += 1
-                last_lat, last_lon = lat, lon
-            initial_ui_state.append(image_data[i])
-        elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
-            video_frames = get_video_frame_metadata(image_data[i]['path'], options.get('interval_m', 2.0), image_data[i]['original_name'])
-            for vf in video_frames:
-                initial_ui_state.append(vf)
-                if vf.get('lat') is not None and vf.get('lon') is not None:
-                    trail_coordinates.append([vf['lon'], vf['lat']])
-                    last_lat, last_lon = vf['lat'], vf['lon']
-        image_data[i]['location'] = f"Location {loc_id}"
-
-    task_id = str(uuid.uuid4())
-    active_tasks[task_id] = queue.Queue()
-    cancel_flags[task_id] = False
-    total_est_frames = len(initial_ui_state)
-
-    def process_worker(assets, t_id, worker_options):
-        try:
-            def is_cancelled():
-                return cancel_flags.get(t_id, False)
-
-            for asset in assets:
-                if is_cancelled():
-                    active_tasks[t_id].put({"type": "cancelled", "message": "Job cancelled by user."})
-                    break
-
-                def on_frame_processed(payload):
-                    if "error" in payload:
-                        active_tasks[t_id].put({"type": "item_error", "original_name": payload.get("original_name", asset['original_name']), "message": payload["error"], "is_video": payload.get("is_video", False)})
-                    elif payload.get("type") == "health_report":
-                        active_tasks[t_id].put({"type": "health_report", "original_name": payload.get("original_name"), "data": payload["data"]})
-                    elif payload.get("type") == "cancelled":
-                        active_tasks[t_id].put({"type": "cancelled", "message": "Job cancelled by user during video processing."})
-                    else:
-                        active_tasks[t_id].put({"type": "update", "data": payload})
-                    
-                if asset['ext'] in ALLOWED_VIDEO_EXT:
-                    process_video_frames_async(
-                        asset['path'], global_model, app.config['UPLOAD_FOLDER'], 
-                        asset['filename'], asset['original_name'], asset['location'], 
-                        worker_options, model_lock, on_frame_processed, is_cancelled
-                    )
-                    if is_cancelled(): break
-                else:
-                    try:
-                        telemetry = {
-                            "lat": asset['lat'],
-                            "lon": asset['lon'],
-                            "heading": asset.get('heading', 0.0),
-                            "pitch": asset.get('pitch', 0.0),
-                            "roll": asset.get('roll', 0.0),
-                            "base_pitch": asset.get('pitch', 0.0),
-                            "base_roll": asset.get('roll', 0.0),
-                            "klns": asset.get('klns'),
-                            "fov": asset.get('fov')
-                        }
-
-                        defects, geo_feats, gen_files, footprints, view_meta = process_single_image(
-                            asset['path'], global_model, asset['filename'], app.config['UPLOAD_FOLDER'], 
-                            telemetry, worker_options, model_lock, asset['original_name']
-                        )
-                        
-                        # Save process_meta for fast pitch recalculation
-                        process_meta_data = {
-                            "telemetry": telemetry,
-                            "options": worker_options,
-                            "view_meta": view_meta,
-                            "original_name": asset['original_name']
-                        }
-                        with open(os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{asset['filename']}.json"), 'w') as f:
-                            json.dump(process_meta_data, f)
-                        
-                        result_payload = {
-                            "original_name": asset['original_name'], "filename": asset['filename'],
-                            "lat": round(asset['lat'], 6) if asset['lat'] else None, 
-                            "lon": round(asset['lon'], 6) if asset['lon'] else None,
-                            "pitch": round(asset.get('pitch'), 2) if asset.get('pitch') is not None else None,
-                            "roll": round(asset.get('roll'), 2) if asset.get('roll') is not None else None,
-                            "location": asset['location'], "geojson": geo_feats, "views": {}
-                        }
-                        
-                        for view in (['front', 'rear'] if worker_options.get('is_360', True) else ['front']):
-                            gf = gen_files[view]
-                            result_payload["views"][view] = {
-                                "raw_filename": gf["raw_rect"], "raw_bev_filename": gf["raw_bev"],
-                                "raw_bev_url": f"/static/uploads/{gf['raw_bev']}", "rect_url": f"/static/uploads/{gf['rect']}",
-                                "bev_url": f"/static/uploads/{gf['bev']}", "defects": defects[view], "footprint": footprints[view]
-                            }
-                        active_tasks[t_id].put({"type": "update", "data": result_payload})
-                    except Exception as e:
-                        active_tasks[t_id].put({"type": "item_error", "original_name": asset['original_name'], "message": str(e), "is_video": False})
-            
-            if not is_cancelled():
-                active_tasks[t_id].put({"type": "complete"})
-        except Exception as e:
-            active_tasks[t_id].put({"type": "error", "message": str(e)})
-
-    threading.Thread(target=process_worker, args=(image_data, task_id, options)).start()
-
-    initial_geojson = []
-    if len(trail_coordinates) > 1:
-        initial_geojson.append({
-            "type": "Feature", "properties": {"type": "trail"},
-            "geometry": {"type": "LineString", "coordinates": trail_coordinates}
-        })
-
-    return jsonify({
-        "success": True, "task_id": task_id, "total_images": total_est_frames,
-        "has_video": has_video, "initial_state": initial_ui_state,
-        "initial_trail": {"type": "FeatureCollection", "features": initial_geojson},
-        "last_lat": last_lat, "last_lon": last_lon, "last_loc_id": loc_id
-    })
 
 @app.route('/')
 def index():
@@ -219,7 +73,8 @@ def process():
             with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf: json.dump(full_meta, mf, indent=2)
         image_data.append(file_meta)
     
-    return start_processing_job(image_data, options, last_lat, last_lon, loc_id)
+    res = start_processing_job(image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], global_model, model_lock)
+    return jsonify(res)
 
 @app.route('/stream/<task_id>')
 def stream(task_id):
@@ -298,38 +153,16 @@ def recalculate_bev():
 def export_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
-    memory_file = BytesIO()
-    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for r in project_data:
-            loc = r.get('location', 'Unknown Location')
-            safe_orig = secure_filename(r['original_name'])
-            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)): safe_orig += ".jpg"
-            base_orig = os.path.splitext(safe_orig)[0]
-            for view in r['views'].keys():
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view]['raw_filename'])
-                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/RAW_{safe_orig}")
-                meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
-                if os.path.exists(meta_path): zf.write(meta_path, f"{loc}/{view}/RAW_{base_orig}.json")
-    memory_file.seek(0)
-    return send_file(memory_file, download_name="DCPM_Export.zip", as_attachment=True)
+    mem_file = create_raw_zip(project_data, app.config['UPLOAD_FOLDER'])
+    return send_file(mem_file, download_name="DCPM_Export.zip", as_attachment=True)
 
 @app.route('/export-flat-zip', methods=['POST'])
 def export_flat_zip():
     project_data = request.json.get('results', [])
     if not project_data: return jsonify({"error": "No data provided"}), 400
-    memory_file = BytesIO()
-    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for r in project_data:
-            loc = r.get('location', 'Unknown Location')
-            safe_orig = secure_filename(r['original_name'])
-            if not safe_orig.lower().endswith(tuple(ALLOWED_IMAGE_EXT)): safe_orig += ".jpg"
-            base_orig = os.path.splitext(safe_orig)[0]
-            for view in r['views'].keys():
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], r['views'][view].get('raw_bev_filename', ''))
-                if os.path.exists(file_path): zf.write(file_path, f"{loc}/{view}/FLAT_{safe_orig}")
-                meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{r['filename']}.json")
-                if os.path.exists(meta_path): zf.write(meta_path, f"{loc}/{view}/FLAT_{base_orig}.json")
-    memory_file.seek(0)
-    return send_file(memory_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
+    mem_file = create_flat_zip(project_data, app.config['UPLOAD_FOLDER'])
+    return send_file(mem_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
-if __name__ == '__main__': app.run(debug=True, port=5000)
+if __name__ == '__main__': 
+    app.run(debug=True, port=5000)
+    
