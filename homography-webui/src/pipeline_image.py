@@ -5,8 +5,8 @@ import numpy as np
 from ultralytics.utils.plotting import colors
 
 from geo_math import local_to_global
-from cv_projections import equirectangular_to_rectilinear, digital_gimbal_warp
-from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
+from cv_projections import equirectangular_to_rectilinear
+from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask, get_camera_rotation_matrix
 
 def process_single_image(img_input, model, base_filename, output_dir, telemetry, options, model_lock, original_filename=""):
     gps_lat = telemetry.get('lat')
@@ -21,10 +21,10 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
     is_360 = options.get('is_360', True)
     draw_grid = options.get('draw_grid', False)
     
-    # Calculate baseline grid extents
     z_near_base = max(1.5, cam_height * 1.2)
     z_far_base = min(12.0, z_near_base + 8.0)
-    x_range_base = 4.0
+    lane_width_base = 8.0 
+    x_range_base = lane_width_base / 2.0
     
     do_pitch = options.get('comp_pitch', True)
     do_roll = options.get('comp_roll', True)
@@ -37,7 +37,6 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
     base_name_no_ext = os.path.splitext(base_filename)[0]
     
-    # Save the original frame for future recalibrations
     source_filename = f"source_{base_filename}"
     if not os.path.exists(os.path.join(output_dir, source_filename)):
         cv2.imwrite(os.path.join(output_dir, source_filename), img_mat)
@@ -57,12 +56,12 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             "cam_height": cam_height,
             "z_near": z_near_base,
             "z_far": z_far_base,
-            "x_range": x_range_base
+            "lane_width": lane_width_base
         }
 
         if is_360:
             rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
-            bev_pitch, bev_roll = 0.0, 0.0
+            bev_pitch, bev_roll, bev_yaw = 0.0, 0.0, 0.0
         else:
             rect_img = img_mat.copy()
             h, w = rect_img.shape[:2]
@@ -77,12 +76,11 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                     K = K_undist
                 except: pass
                 
-            rect_img = digital_gimbal_warp(rect_img, K, pitch - base_pitch, roll - base_roll)
-            bev_pitch, bev_roll = base_pitch, base_roll
+            bev_pitch, bev_roll, bev_yaw = pitch, roll, config['yaw']
 
         view_meta = {"K": K.tolist(), "detections": []}
 
-        H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_height, bev_pitch, bev_roll, z_near_base, z_far_base, x_range_base)
+        H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_height, bev_pitch, bev_roll, bev_yaw, z_near_base, z_far_base, x_range_base)
         
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
@@ -104,10 +102,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         annotated_rect = rect_img.copy()
         annotated_bev_bgr = raw_bev_bgr.copy()
 
-        pitch_rad, roll_rad = math.radians(-bev_pitch), math.radians(bev_roll)
-        Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
-        Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
-        R = Rx @ Rz
+        R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
         
         roi_pts_3d = [[-x_range_base, cam_height, z_near_base], [x_range_base, cam_height, z_near_base], [x_range_base, cam_height, z_far_base], [-x_range_base, cam_height, z_far_base]]
         roi_pts_2d = []
@@ -126,7 +121,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
 
         if draw_grid:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, z_near_base, z_far_base, x_range_base)
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, bev_yaw, z_near_base, z_far_base, x_range_base)
 
         conf_thresh = options.get('conf_thresh', 0.25)
         inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
@@ -185,7 +180,8 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         
     return all_defects, all_geojson_features, generated_files, bev_footprints, view_meta_all, calibrations
 
-def _get_projected_image(source_path, telemetry, options, view_name, calib):
+
+def get_projected_image(source_path, telemetry, options, view_name, calib):
     img_mat = cv2.imread(source_path)
     is_360 = options.get('is_360', True)
     
@@ -200,7 +196,7 @@ def _get_projected_image(source_path, telemetry, options, view_name, calib):
 
     if is_360:
         rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov, pitch_deg=pitch, roll_deg=roll, yaw_deg=yaw)
-        bev_pitch, bev_roll = 0.0, 0.0
+        bev_pitch, bev_roll, bev_yaw = 0.0, 0.0, 0.0
     else:
         rect_img = img_mat.copy()
         h, w = rect_img.shape[:2]
@@ -214,23 +210,21 @@ def _get_projected_image(source_path, telemetry, options, view_name, calib):
                 K = K_undist
             except: pass
             
-        rect_img = digital_gimbal_warp(rect_img, K, pitch - base_pitch, roll - base_roll)
-        bev_pitch, bev_roll = base_pitch, base_roll
+        bev_pitch, bev_roll, bev_yaw = pitch, roll, yaw
         
-    return rect_img, K, bev_pitch, bev_roll
+    return rect_img, K, bev_pitch, bev_roll, bev_yaw
 
 def generate_grid_preview(source_path, process_meta, view_name, calib):
-    rect_img, K, bev_pitch, bev_roll = _get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
     
     cam_h = calib.get('cam_height', 1.6)
     z_n = calib.get('z_near', 1.5)
     z_f = calib.get('z_far', 10.0)
-    x_r = calib.get('x_range', 4.0)
     
-    pitch_rad, roll_rad = math.radians(-bev_pitch), math.radians(bev_roll)
-    Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
-    Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
-    R = Rx @ Rz
+    lane_w = calib.get('lane_width', 8.0)
+    x_r = lane_w / 2.0
+    
+    R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
     
     roi_pts_3d = [[-x_r, cam_h, z_n], [x_r, cam_h, z_n], [x_r, cam_h, z_f], [-x_r, cam_h, z_f]]
     roi_pts_2d = []
@@ -251,12 +245,12 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         cv2.polylines(preview_img, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if process_meta['options'].get('draw_grid', False):
-        preview_img = draw_bev_grid(preview_img, K, cam_h, bev_pitch, bev_roll, z_n, z_f, x_r)
+        preview_img = draw_bev_grid(preview_img, K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
         
     return preview_img
 
 def recalculate_view(source_path, telemetry, options, view_name, calib, original_filename, output_dir, base_filename, model, model_lock):
-    rect_img, K, bev_pitch, bev_roll = _get_projected_image(source_path, telemetry, options, view_name, calib)
+    rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
     
     gps_lat, gps_lon = telemetry.get('lat'), telemetry.get('lon')
     heading = telemetry.get('heading', 0.0)
@@ -264,9 +258,11 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     cam_h = calib.get('cam_height', 1.6)
     z_n = calib.get('z_near', 1.5)
     z_f = calib.get('z_far', 10.0)
-    x_r = calib.get('x_range', 4.0)
+    
+    lane_w = calib.get('lane_width', 8.0)
+    x_r = lane_w / 2.0
 
-    H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, z_n, z_f, x_r)
+    H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
     
     raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
     base_name_no_ext = os.path.splitext(base_filename)[0]
@@ -288,10 +284,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     annotated_rect = rect_img.copy()
     annotated_bev_bgr = raw_bev_bgr.copy()
     
-    pitch_rad, roll_rad = math.radians(-bev_pitch), math.radians(bev_roll)
-    Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
-    Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
-    R = Rx @ Rz
+    R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
     
     roi_pts_3d = [[-x_r, cam_h, z_n], [x_r, cam_h, z_n], [x_r, cam_h, z_f], [-x_r, cam_h, z_f]]
     roi_pts_2d = []
@@ -310,7 +303,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
         cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if options.get('draw_grid', False):
-        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, bev_pitch, bev_roll, z_n, z_f, x_r)
+        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
         
     defects, geojson_features = [], []
     inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()

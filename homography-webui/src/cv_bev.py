@@ -23,15 +23,23 @@ def apply_ego_mask(img, mask_pct=0.15):
     img[h - mask_h:, :] = 0
     return img
 
-def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_range, gsd=0.01):
-    pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
+def get_camera_rotation_matrix(pitch_deg, yaw_deg, roll_deg):
+    p = math.radians(-pitch_deg)  
+    y = math.radians(yaw_deg)
+    r = math.radians(roll_deg)
+    
+    Rx = np.array([[1, 0, 0], [0, math.cos(p), -math.sin(p)], [0, math.sin(p), math.cos(p)]])
+    Ry = np.array([[math.cos(y), 0, math.sin(y)], [0, 1, 0], [-math.sin(y), 0, math.cos(y)]])
+    Rz = np.array([[math.cos(r), -math.sin(r), 0], [math.sin(r), math.cos(r), 0], [0, 0, 1]])
+                   
+    return Ry @ Rx @ Rz
+
+def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, yaw_deg, z_near, z_far, x_range, gsd=0.01):
     road_pts = np.array([[-x_range, z_near], [x_range, z_near], [x_range, z_far], [-x_range, z_far]], dtype=np.float32)
     bev_w, bev_h = int((2 * x_range) / gsd), int((z_far - z_near) / gsd)
     bev_pts = np.array([[0, bev_h], [bev_w, bev_h], [bev_w, 0], [0, 0]], dtype=np.float32)
     
-    Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
-    Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
-    R = Rx @ Rz 
+    R = get_camera_rotation_matrix(pitch_deg, yaw_deg, roll_deg)
     
     rect_pts = []
     for pt in road_pts:
@@ -44,11 +52,8 @@ def get_bev_homography(K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_ra
     H = cv2.getPerspectiveTransform(np.array(rect_pts, dtype=np.float32), bev_pts)
     return H, bev_w, bev_h, gsd
 
-def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, z_near, z_far, x_range):
-    pitch_rad, roll_rad = math.radians(-pitch_deg), math.radians(roll_deg)
-    Rx = np.array([[1, 0, 0], [0, math.cos(pitch_rad), -math.sin(pitch_rad)], [0, math.sin(pitch_rad), math.cos(pitch_rad)]])
-    Rz = np.array([[math.cos(roll_rad), -math.sin(roll_rad), 0], [math.sin(roll_rad), math.cos(roll_rad), 0], [0, 0, 1]])
-    R = Rx @ Rz 
+def draw_bev_grid(img, K, cam_height_m, pitch_deg, roll_deg, yaw_deg, z_near, z_far, x_range):
+    R = get_camera_rotation_matrix(pitch_deg, yaw_deg, roll_deg)
     
     for z in np.arange(math.floor(z_near), math.ceil(z_far) + 1, 1.0):
         pts = []

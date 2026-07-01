@@ -12,7 +12,8 @@ from ultralytics import YOLO
 from constants import ALLOWED_IMAGE_EXT
 from utils import safe_float
 from parser_exif import extract_full_photo_metadata
-from pipeline_image import generate_grid_preview, recalculate_view
+from pipeline_image import generate_grid_preview, recalculate_view, get_projected_image
+from cv_vp import find_vanishing_point_hough, calculate_pitch_yaw_deltas
 from exports import create_raw_zip, create_flat_zip
 from task_manager import start_processing_job, active_tasks, cancel_flags
 
@@ -120,6 +121,60 @@ def preview_grid():
     _, buffer = cv2.imencode('.jpg', preview_bgr)
     preview_b64 = base64.b64encode(buffer).decode('utf-8')
     return jsonify({"success": True, "image": f"data:image/jpeg;base64,{preview_b64}"})
+
+@app.route('/auto_vp', methods=['POST'])
+def auto_vp():
+    """ Runs traditional CV Hough lines to auto-calculate Pitch/Yaw offsets """
+    data = request.json
+    filename = data['filename']
+    view_name = data['view']
+    calib = data['calibration']
+    
+    meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+    with open(meta_path, 'r') as f: process_meta = json.load(f)
+    source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+    is_360 = process_meta['options'].get('is_360', True)
+    
+    rect_img, _, _, _, _ = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    
+    vp = find_vanishing_point_hough(rect_img)
+    if not vp:
+        return jsonify({"success": False, "error": "AI could not detect strong lane lines or road geometry to determine the Vanishing Point."})
+        
+    u, v = vp
+    h, w = rect_img.shape[:2]
+    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, calib.get('fov', 100), is_360)
+    
+    calib['pitch_offset'] = round(calib.get('pitch_offset', 0) + dp, 1)
+    calib['yaw_offset'] = round(calib.get('yaw_offset', 0) + dy, 1)
+    
+    return jsonify({"success": True, "calibration": calib})
+
+@app.route('/click_vp', methods=['POST'])
+def click_vp():
+    """ Converts a user-clicked UI pixel percentage into physical Pitch/Yaw offsets """
+    data = request.json
+    filename = data['filename']
+    view_name = data['view']
+    calib = data['calibration']
+    px = data['px'] # 0.0 to 1.0 (X percentage)
+    py = data['py'] # 0.0 to 1.0 (Y percentage)
+    
+    meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+    with open(meta_path, 'r') as f: process_meta = json.load(f)
+    source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+    is_360 = process_meta['options'].get('is_360', True)
+    
+    rect_img, _, _, _, _ = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    h, w = rect_img.shape[:2]
+    
+    u, v = px * w, py * h
+    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, calib.get('fov', 100), is_360)
+    
+    calib['pitch_offset'] = round(calib.get('pitch_offset', 0) + dp, 1)
+    calib['yaw_offset'] = round(calib.get('yaw_offset', 0) + dy, 1)
+    
+    return jsonify({"success": True, "calibration": calib})
 
 @app.route('/recalculate_bev', methods=['POST'])
 def recalculate_bev():

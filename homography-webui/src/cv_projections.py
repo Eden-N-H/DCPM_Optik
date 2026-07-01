@@ -20,11 +20,3 @@ def equirectangular_to_rectilinear(equi_img, fov_deg, pitch_deg, roll_deg, yaw_d
     u, v = (theta / (2 * math.pi) + 0.5) * w, (phi / math.pi + 0.5) * h
     map_x, map_y = u.reshape((output_height, output_width)).astype(np.float32), v.reshape((output_height, output_width)).astype(np.float32)
     return cv2.remap(equi_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP), K
-
-def digital_gimbal_warp(img, K, delta_pitch, delta_roll):
-    h, w = img.shape[:2]
-    f = K[0,0]
-    dy = f * math.tan(math.radians(delta_pitch))
-    M = cv2.getRotationMatrix2D((K[0,2], K[1,2]), -delta_roll, 1.0)
-    M[1, 2] += dy
-    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)

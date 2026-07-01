@@ -34,6 +34,22 @@ export async function fetchGridPreview(filename, view, calibrationConfig) {
     return data.image;
 }
 
+export async function autoDetectVP(filename, view, calibrationConfig) {
+    const res = await fetch("/auto_vp", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, view, calibration: calibrationConfig })
+    });
+    return await res.json();
+}
+
+export async function clickManualVP(filename, view, calibrationConfig, px, py) {
+    const res = await fetch("/click_vp", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, view, calibration: calibrationConfig, px, py })
+    });
+    return await res.json();
+}
+
 export async function recalculateProject(calibrationConfig) {
     const res = await fetch("/recalculate_bev", {
         method: "POST", headers: { "Content-Type": "application/json" },

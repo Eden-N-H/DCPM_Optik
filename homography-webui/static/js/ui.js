@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle } from './map.js';
 import { stringToColor } from './utils.js';
-import { fetchGridPreview, recalculateProject } from './api.js';
+import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP } from './api.js';
 
 export function handleMapClick(originalName) {
     const target = state.fullResults.find(r => r.original_name === originalName);
@@ -42,30 +42,16 @@ export function setupDz(dzId, inId, nameId, isMulti, callback) {
     const dz = document.getElementById(dzId);
     const inp = document.getElementById(inId);
     const nm = document.getElementById(nameId);
-
-    // Native HTML <input type="file" class="absolute inset-0 opacity-0"> handles clicks natively.
-    // We only need to handle drag/drop visual styling and the change event.
     
-    dz.addEventListener('dragover', (e) => { 
-        e.preventDefault(); 
-        dz.classList.add("bg-blue-50", "border-blue-500"); 
-    });
-    
-    dz.addEventListener('dragenter', (e) => { 
-        e.preventDefault(); 
-        dz.classList.add("bg-blue-50", "border-blue-500"); 
-    });
-    
-    dz.addEventListener('dragleave', (e) => { 
-        e.preventDefault(); 
-        dz.classList.remove("bg-blue-50", "border-blue-500"); 
-    });
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add("bg-blue-50", "border-blue-500"); });
+    dz.addEventListener('dragenter', (e) => { e.preventDefault(); dz.classList.add("bg-blue-50", "border-blue-500"); });
+    dz.addEventListener('dragleave', (e) => { e.preventDefault(); dz.classList.remove("bg-blue-50", "border-blue-500"); });
     
     dz.addEventListener('drop', (e) => { 
         e.preventDefault(); 
         dz.classList.remove("bg-blue-50", "border-blue-500"); 
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            inp.files = e.dataTransfer.files; // Sync underlying form input
+            inp.files = e.dataTransfer.files; 
             handleFiles(e.dataTransfer.files, isMulti, callback, nm); 
         }
     });
@@ -180,11 +166,14 @@ export function setupCalibrationUI() {
     const btnClose = document.getElementById("btn-close-calibrate");
     const btnCancel = document.getElementById("btn-cancel-calibrate");
     const btnApply = document.getElementById("btn-apply-calibrate");
+    const btnAutoVP = document.getElementById("btn-auto-vp");
+    
     const modal = document.getElementById("calibrate-modal");
     const previewImg = document.getElementById("img-calibrate-preview");
     const loader = document.getElementById("calibrate-loader");
     
-    const inputs = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'x_range'];
+    // Swapped x_range for lane_width
+    const inputs = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'lane_width'];
     
     const getCalibrationValues = () => {
         let calib = {};
@@ -206,23 +195,39 @@ export function setupCalibrationUI() {
         });
     };
 
+    const setCalibrationValues = (calib) => {
+        inputs.forEach(id => {
+            const el = document.getElementById(`calib-${id}`);
+            if (el && calib[id] !== undefined) {
+                let val = calib[id];
+                if(el.min) val = Math.max(parseFloat(el.min), val);
+                if(el.max) val = Math.min(parseFloat(el.max), val);
+                el.value = val;
+            }
+        });
+        updateLabels();
+    };
+
+    const triggerPreviewUpdate = async () => {
+        loader.classList.remove("hidden");
+        try {
+            const current = state.appResults[state.currentIndex];
+            const b64 = await fetchGridPreview(current.filename, state.currentDirection, getCalibrationValues());
+            previewImg.src = b64;
+        } catch(err) { console.error(err); }
+        finally { loader.classList.add("hidden"); }
+    };
+
     const close = () => modal.classList.add("hidden");
     
     btnOpen.onclick = () => {
         if(state.appResults.length === 0) return;
-        
         const current = state.appResults[state.currentIndex];
         const baseCalib = current.views[state.currentDirection].calibration || {
             pitch_offset: 0, roll_offset: 0, yaw_offset: 0,
-            fov: 100, cam_height: 1.6, z_near: 1.9, z_far: 10.0, x_range: 4.0
+            fov: 100, cam_height: 1.6, z_near: 1.9, z_far: 10.0, lane_width: 8.0
         };
-
-        inputs.forEach(id => {
-            const el = document.getElementById(`calib-${id}`);
-            if (el && baseCalib[id] !== undefined) el.value = baseCalib[id];
-        });
-        
-        updateLabels();
+        setCalibrationValues(baseCalib);
         previewImg.src = current.views[state.currentDirection].rect_url;
         modal.classList.remove("hidden");
     };
@@ -231,25 +236,67 @@ export function setupCalibrationUI() {
     btnCancel.onclick = close;
 
     let previewTimeout = null;
-    
     inputs.forEach(id => {
         const el = document.getElementById(`calib-${id}`);
         if (el) {
             el.addEventListener("input", () => {
                 updateLabels();
                 clearTimeout(previewTimeout);
-                loader.classList.remove("hidden");
-                
-                previewTimeout = setTimeout(async () => {
-                    try {
-                        const current = state.appResults[state.currentIndex];
-                        const b64 = await fetchGridPreview(current.filename, state.currentDirection, getCalibrationValues());
-                        previewImg.src = b64;
-                    } catch(err) { console.error(err); }
-                    finally { loader.classList.add("hidden"); }
-                }, 350);
+                previewTimeout = setTimeout(triggerPreviewUpdate, 350);
             });
         }
+    });
+
+    btnAutoVP.onclick = async () => {
+        btnAutoVP.disabled = true;
+        btnAutoVP.textContent = "Analyzing...";
+        try {
+            const current = state.appResults[state.currentIndex];
+            const data = await autoDetectVP(current.filename, state.currentDirection, getCalibrationValues());
+            if (data.success) {
+                setCalibrationValues(data.calibration);
+                triggerPreviewUpdate();
+            } else {
+                alert(data.error);
+            }
+        } catch(err) { console.error(err); }
+        finally {
+            btnAutoVP.disabled = false;
+            btnAutoVP.textContent = "🪄 Auto-Detect VP";
+        }
+    };
+
+    previewImg.addEventListener('click', async (e) => {
+        const rect = previewImg.getBoundingClientRect();
+        
+        const nw = previewImg.naturalWidth;
+        const nh = previewImg.naturalHeight;
+        if(!nw || !nh) return;
+        
+        const scale = Math.min(rect.width / nw, rect.height / nh);
+        const wRendered = nw * scale;
+        const hRendered = nh * scale;
+        
+        const xOffset = (rect.width - wRendered) / 2;
+        const yOffset = (rect.height - hRendered) / 2;
+        
+        const clickX = e.clientX - rect.left - xOffset;
+        const clickY = e.clientY - rect.top - yOffset;
+        
+        if (clickX < 0 || clickX > wRendered || clickY < 0 || clickY > hRendered) return; 
+        
+        const px = clickX / wRendered;
+        const py = clickY / hRendered;
+        
+        loader.classList.remove("hidden");
+        try {
+            const current = state.appResults[state.currentIndex];
+            const data = await clickManualVP(current.filename, state.currentDirection, getCalibrationValues(), px, py);
+            if (data.success) {
+                setCalibrationValues(data.calibration);
+                triggerPreviewUpdate();
+            }
+        } catch(err) { console.error(err); }
     });
 
     btnApply.onclick = async () => {
