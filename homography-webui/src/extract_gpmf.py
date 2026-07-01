@@ -285,8 +285,10 @@ def evaluate_telemetry_health(streams):
         }
     }
     
-    if "GPS9" in streams and len(streams["GPS9"]) > 1:
-        gps_data = streams["GPS9"]
+    gps_key = "GPS9" if "GPS9" in streams else ("GPS5" if "GPS5" in streams else None)
+    
+    if gps_key and len(streams[gps_key]) > 1:
+        gps_data = streams[gps_key]
         speed_errors = []
         jerks = []
         bad_dop_count = 0
@@ -303,8 +305,11 @@ def evaluate_telemetry_health(streams):
             lat2, lon2 = curr["data"][0], curr["data"][1]
             doppler_speed_prev = prev["data"][3]
             doppler_speed_curr = curr["data"][3]
-            dop = curr["data"][7]
-            fix = curr["data"][8]
+            
+            dop, fix = 1.0, 3.0 # Safest defaults for older GPS5
+            if gps_key == "GPS9" and len(curr["data"]) >= 9:
+                dop = curr["data"][7]
+                fix = curr["data"][8]
             
             if fix < 3: bad_fix_count += 1
             if dop > 3.0: bad_dop_count += 1
@@ -357,25 +362,32 @@ def evaluate_telemetry_health(streams):
 
 def get_telemetry_interpolators(streams):
     interpolators = {}
+    valid_gps = []
     
     if "GPS9" in streams:
-        valid_gps = []
         for s in streams["GPS9"]:
-            lat, lon, alt, s2d, s3d, days, secs, dop, fix = s["data"]
-            if fix >= 2 and dop <= 5.0:
-                valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
-                
-        if valid_gps:
-            times = np.array([s["time_sec"] for s in valid_gps])
-            data = np.array([[s["lat"], s["lon"], s["speed"]] for s in valid_gps])
-            
-            if len(data) > 11:
-                w = min(31, len(data) if len(data)%2!=0 else len(data)-1)
-                data[:,0] = savgol_filter(data[:,0], w, 3)
-                data[:,1] = savgol_filter(data[:,1], w, 3)
-            
-            interpolators["gps"] = interp1d(times, data[:, :2], axis=0, bounds_error=False, fill_value="extrapolate")
-            interpolators["speed"] = interp1d(times, data[:, 2], bounds_error=False, fill_value="extrapolate")
+            if len(s["data"]) >= 9:
+                lat, lon, alt, s2d, s3d, days, secs, dop, fix = s["data"]
+                if fix >= 2 and dop <= 5.0:
+                    valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
+    elif "GPS5" in streams:
+        for s in streams["GPS5"]:
+            if len(s["data"]) >= 5:
+                lat, lon, alt, s2d, s3d = s["data"]
+                if lat != 0.0 and lon != 0.0:
+                    valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
+                    
+    if valid_gps:
+        times = np.array([s["time_sec"] for s in valid_gps])
+        data = np.array([[s["lat"], s["lon"], s["speed"]] for s in valid_gps])
+        
+        if len(data) > 11:
+            w = min(31, len(data) if len(data)%2!=0 else len(data)-1)
+            data[:,0] = savgol_filter(data[:,0], w, 3)
+            data[:,1] = savgol_filter(data[:,1], w, 3)
+        
+        interpolators["gps"] = interp1d(times, data[:, :2], axis=0, bounds_error=False, fill_value="extrapolate")
+        interpolators["speed"] = interp1d(times, data[:, 2], bounds_error=False, fill_value="extrapolate")
 
     if "GRAV" in streams:
         times = np.array([s["time_sec"] for s in streams["GRAV"]])

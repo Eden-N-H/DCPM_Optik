@@ -70,12 +70,15 @@ def extract_full_photo_metadata(filepath):
                 x, y, z = constants['GRAV']
                 if pitch is None: pitch = -math.degrees(math.atan2(z, y))
                 if roll is None: roll = math.degrees(math.atan2(x, y))
-            fov = constants.get('MFOV', None)
+            
+            # Smart FOV Extraction: Prioritize XFOV, fallback to ZFOV + ARUW math. Ignore MFOV (Enum).
+            fov = constants.get('XFOV', None)
             if fov is None:
                 zfov, aruw = constants.get('ZFOV'), constants.get('ARUW')
                 if zfov is not None and aruw is not None:
                     try: fov = math.degrees(2.0 * math.atan(math.tan(math.radians(float(zfov)) / 2.0) * (float(aruw) / math.sqrt(float(aruw)**2 + 1))))
                     except Exception: pass
+            
             klns = constants.get('KLNS', None)
     except Exception: pass
 
@@ -321,7 +324,9 @@ def process_video_frames_async(video_path, model, upload_dir, cam_height, file_n
         roll_base_interp = interpolators.get("roll_base")
         
         klns = constants.get('KLNS', None)
-        fov_from_meta = constants.get('MFOV', None)
+        
+        # Smart FOV Extraction: Prioritize XFOV, fallback to ZFOV + ARUW math. Ignore MFOV (Enum).
+        fov_from_meta = constants.get('XFOV', None)
         if fov_from_meta is None:
             zfov, aruw = constants.get('ZFOV'), constants.get('ARUW')
             if zfov is not None and aruw is not None:
