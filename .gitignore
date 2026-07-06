@@ -1,3 +1,56 @@
+# ==========================================
+# Python Caches and Build Artifacts
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual environments (if any are created later)
+venv/
+.venv/
+env/
+
+# ==========================================
+# Large Model Weights (YOLO, SAM, etc.)
+# ==========================================
+# These files are typically too large for standard Git repositories
+*.pt
+*.pth
+*.onnx
+*.engine
+# If you want to keep small configuration models but ignore heavy ones:
+# !SegmentationPipeline/models/yolo11n.pt 
+
+# ==========================================
+# Logs and Debug Outputs
+# ==========================================
+*.log
+*output.txt
+SegmentationPipeline/output/
+
+# ==========================================
+# Generated Datasets and Extracted Frames
+# ==========================================
+# Matches frame extractions and intermediate outputs across directories
+**/Extracted_Data/**/frames/
+**/output/frames/
+**/output_images/
+**/Processed_Images/
+
+# Ignore local datasets if they are generated dynamically
+SegmentationPipeline/images/
+SAM3_local/data/dataset/
+SAM3_local/data/raw_images/
+
+# ==========================================
+# OS-specific files
+# ==========================================
+.DS_Store
+Thumbs.db
+
+# MISC
 .idea/
 .DS_Store
 SegmentationPipeline/models/*.pt
