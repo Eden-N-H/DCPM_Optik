@@ -1,14 +1,26 @@
 import { state } from './state.js';
 import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, addOrthomosaicShingle } from './map.js';
-import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI } from './ui.js';
+import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal } from './ui.js';
 import { executeJob, triggerZipExport, cancelJob } from './api.js';
 
 document.addEventListener("DOMContentLoaded", () => {
     
     initResizers();
     setupCalibrationUI();
+    initDrawMode();
+    initFullscreenModal();
 
-    // Media type dropdown auto-toggles 360 and telemetry checkboxes
+    document.getElementById("rect-image-wrapper").addEventListener("click", () => {
+        openFullscreen('rect');
+    });
+
+    fetch("/classes").then(r => r.json()).then(data => {
+        window.modelClasses = data;
+        const optionsHtml = data.map(c => `<option value="${c}">${c}</option>`).join('');
+        if(document.getElementById("draw-class-select")) document.getElementById("draw-class-select").innerHTML = optionsHtml;
+        if(document.getElementById("change-class-select")) document.getElementById("change-class-select").innerHTML = optionsHtml;
+    }).catch(e => console.error("Failed to load classes", e));
+
     document.getElementById("sel-media-type").addEventListener("change", (e) => {
         const val = e.target.value;
         const is360 = val.startsWith("360");
@@ -20,7 +32,6 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDz("dz-model", "in-model", "name-model", false, f => { state.modelFile = f; checkCanProcess(); });
     setupDz("dz-image", "in-image", "name-image", true, f => { state.imageFiles = f; checkCanProcess(); });
 
-    // Model is pre-loaded on server — enable process button when images are selected
     state.isModelLoaded = true;
     document.getElementById("status-model").classList.remove("hidden");
     document.getElementById("name-model").textContent = "RMCC_8_classes.pt (pre-loaded)";

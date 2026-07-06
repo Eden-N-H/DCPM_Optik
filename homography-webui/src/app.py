@@ -4,7 +4,9 @@ import time
 import json
 import base64
 import cv2
+import numpy as np
 import threading
+import traceback
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, Response, send_file
 from werkzeug.utils import secure_filename
@@ -13,7 +15,7 @@ from ultralytics import YOLO
 from constants import ALLOWED_IMAGE_EXT
 from utils import safe_float
 from parser_exif import extract_full_photo_metadata
-from pipeline_image import generate_grid_preview, recalculate_view, get_projected_image
+from pipeline_image import generate_grid_preview, recalculate_view, get_projected_image, render_view_from_detections, _run_sam2_on_points
 from cv_vp import find_vanishing_point_hough, calculate_pitch_yaw_deltas
 from exports import create_raw_zip, create_flat_zip
 from task_manager import start_processing_job, active_tasks, cancel_flags
@@ -58,6 +60,12 @@ def handle_model_upload(request_obj):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/classes', methods=['GET'])
+def get_classes():
+    if global_model:
+        return jsonify(list(global_model.names.values()))
+    return jsonify([])
 
 @app.route('/process', methods=['POST'])
 def process():
@@ -146,7 +154,6 @@ def preview_grid():
 
 @app.route('/auto_vp', methods=['POST'])
 def auto_vp():
-    """ Runs traditional CV Hough lines to auto-calculate Pitch/Yaw offsets """
     data = request.json
     filename = data['filename']
     view_name = data['view']
@@ -165,16 +172,21 @@ def auto_vp():
         
     u, v = vp
     h, w = rect_img.shape[:2]
-    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, calib.get('fov', 100), is_360)
+    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, float(calib.get('fov') or 100.0), is_360)
     
-    calib['pitch_offset'] = round(calib.get('pitch_offset', 0) + dp, 1)
-    calib['yaw_offset'] = round(calib.get('yaw_offset', 0) + dy, 1)
+    if is_360:
+        calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
+        calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
+    else:
+        base_pitch = float(process_meta['telemetry'].get('base_pitch') or 0.0) if process_meta['options'].get('comp_pitch', True) else 0.0
+        base_yaw = 0.0 if view_name == 'front' else 180.0
+        calib['pitch_offset'] = round(dp - base_pitch, 1)
+        calib['yaw_offset'] = round(dy - base_yaw, 1)
     
     return jsonify({"success": True, "calibration": calib})
 
 @app.route('/click_vp', methods=['POST'])
 def click_vp():
-    """ Converts a user-clicked UI pixel percentage into physical Pitch/Yaw offsets """
     data = request.json
     filename = data['filename']
     view_name = data['view']
@@ -191,10 +203,16 @@ def click_vp():
     h, w = rect_img.shape[:2]
     
     u, v = px * w, py * h
-    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, calib.get('fov', 100), is_360)
+    dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, float(calib.get('fov') or 100.0), is_360)
     
-    calib['pitch_offset'] = round(calib.get('pitch_offset', 0) + dp, 1)
-    calib['yaw_offset'] = round(calib.get('yaw_offset', 0) + dy, 1)
+    if is_360:
+        calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
+        calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
+    else:
+        base_pitch = float(process_meta['telemetry'].get('base_pitch') or 0.0) if process_meta['options'].get('comp_pitch', True) else 0.0
+        base_yaw = 0.0 if view_name == 'front' else 180.0
+        calib['pitch_offset'] = round(dp - base_pitch, 1)
+        calib['yaw_offset'] = round(dy - base_yaw, 1)
     
     return jsonify({"success": True, "calibration": calib})
 
@@ -218,18 +236,179 @@ def recalculate_bev():
         updated_r['geojson'] = []
         
         for view_name in r['views'].keys():
-            defects, geo_feats, footprints = recalculate_view(
+            defects, geo_feats, footprints, view_meta_detections = recalculate_view(
                 source_path, process_meta['telemetry'], process_meta['options'],
                 view_name, calib, r['original_name'], app.config['UPLOAD_FOLDER'], filename,
-                global_model, model_lock
+                global_model, model_lock, sam2_predictor=sam2_predictor
             )
             updated_r['views'][view_name]['calibration'] = calib.copy()
             updated_r['views'][view_name]['defects'] = defects
             updated_r['views'][view_name]['footprint'] = footprints
             updated_r['geojson'].extend(geo_feats)
             
+            process_meta['view_meta'][view_name]['detections'] = view_meta_detections
+            
+        with open(meta_path, 'w') as f: json.dump(process_meta, f)
+            
         new_results.append(updated_r)
     return jsonify({"success": True, "results": new_results})
+
+@app.route('/modify_defects', methods=['POST'])
+def modify_defects():
+    try:
+        data = request.json
+        filename = data['filename']
+        view_name = data['view']
+        action = data['action']
+        idx = data.get('index')
+        points = data.get('points')
+        class_name = data.get('class_name')
+        calib = data['calibration']
+        
+        meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+        if not os.path.exists(meta_path): return jsonify({"error": "Process metadata not found"}), 404
+        with open(meta_path, 'r') as f: process_meta = json.load(f)
+        
+        if 'view_meta' not in process_meta:
+            process_meta['view_meta'] = {}
+        if view_name not in process_meta['view_meta']:
+            process_meta['view_meta'][view_name] = {"detections": []}
+            
+        detections = process_meta['view_meta'][view_name].get('detections', [])
+        
+        if action in ['add', 're-outline'] and points:
+            source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+            
+            media_type = process_meta.get('options', {}).get('media_type', '360-video')
+            
+            # True orthographic photos skip perspective/BEV warp entirely.
+            # All others (including Standard Photos) do generate a BEV image.
+            is_simple_frame = (media_type == 'orthographic')
+            
+            if is_simple_frame:
+                rect_img = cv2.imread(source_path)
+                h, w = rect_img.shape[:2]
+                rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
+                
+                predictor = get_predictor()
+                pts = None
+                if predictor:
+                    pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+                    
+                if pts is None or len(pts) < 3:
+                    pts = np.array(rect_points, dtype=np.float32)
+                    
+                polygon_list = pts.tolist()
+            else:
+                # Ensure the same fallback math applies here to prevent homography crashes on standard photos
+                if calib.get('fov') is None: calib['fov'] = 100.0
+                
+                rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+                h, w = rect_img.shape[:2]
+                
+                cam_h = float(calib.get('cam_height') or 1.6)
+                z_n = float(calib.get('z_near') or 1.5)
+                z_f = float(calib.get('z_far') or 10.0)
+                lane_w = float(calib.get('lane_width') or 8.0)
+                x_r = lane_w / 2.0
+
+                from cv_bev import get_bev_homography
+                H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+                
+                try:
+                    H_inv = np.linalg.inv(H_mat)
+                except np.linalg.LinAlgError:
+                    H_inv = np.eye(3)
+                    
+                # 1. Grab the exact points drawn in BEV space
+                bev_points = []
+                for px, py in points:
+                    bev_x = np.clip(px * bev_w, 0, bev_w - 1)
+                    bev_y = np.clip(py * bev_h, 0, bev_h - 1)
+                    bev_points.append([bev_x, bev_y])
+                    
+                # 2. Re-create the BEV image so SAM2 can analyze it directly
+                raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+                
+                # 3. Run SAM2 on the BEV image. The bounding box here will perfectly frame the defect.
+                predictor = get_predictor()
+                bev_pts = None
+                if predictor:
+                    bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+                    
+                if bev_pts is None or len(bev_pts) < 3:
+                    bev_pts = np.array(bev_points, dtype=np.float32)
+                    
+                # 4. Map the perfectly segmented BEV contour back to Rectilinear space to save it
+                rect_contour_points = []
+                for pt in bev_pts:
+                    bev_x, bev_y = pt[0], pt[1]
+                    vec = np.array([bev_x, bev_y, 1.0])
+                    rect_pt = H_inv @ vec
+                    
+                    if rect_pt[2] != 0:
+                        rect_x = rect_pt[0] / rect_pt[2]
+                        rect_y = rect_pt[1] / rect_pt[2]
+                    else:
+                        rect_x, rect_y = rect_pt[0], rect_pt[1]
+                        
+                    rect_x = np.clip(rect_x, 0, w - 1)
+                    rect_y = np.clip(rect_y, 0, h - 1)
+                    rect_contour_points.append([float(rect_x), float(rect_y)])
+                    
+                polygon_list = rect_contour_points
+            
+            if action == 'add':
+                cls_idx = 0
+                if global_model is not None and class_name in global_model.names.values():
+                    cls_idx = list(global_model.names.values()).index(class_name)
+                    
+                from ultralytics.utils.plotting import colors
+                color_bgr = colors(cls_idx, bgr=True)
+                hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
+                
+                detections.append({
+                    "class_name": class_name,
+                    "conf": 1.0, 
+                    "color_bgr": [int(c) for c in color_bgr],
+                    "hex_color": hex_color,
+                    "polygon": polygon_list
+                })
+            elif action == 're-outline':
+                detections[idx]['polygon'] = polygon_list
+                
+        elif action == 'update':
+            cls_idx = 0
+            if global_model is not None and class_name in global_model.names.values():
+                cls_idx = list(global_model.names.values()).index(class_name)
+                
+            from ultralytics.utils.plotting import colors
+            color_bgr = colors(cls_idx, bgr=True)
+            hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
+            
+            detections[idx]['class_name'] = class_name
+            detections[idx]['color_bgr'] = [int(c) for c in color_bgr]
+            detections[idx]['hex_color'] = hex_color
+            
+        elif action == 'delete':
+            if 0 <= idx < len(detections):
+                detections.pop(idx)
+            
+        process_meta['view_meta'][view_name]['detections'] = detections
+        with open(meta_path, 'w') as f: json.dump(process_meta, f)
+        
+        defects, geojson_features = render_view_from_detections(
+            process_meta, view_name, calib, filename, app.config['UPLOAD_FOLDER']
+        )
+        
+        return jsonify({
+            "success": True, 
+            "defects": defects, 
+            "geojson": geojson_features
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/export-zip', methods=['POST'])
 def export_zip():

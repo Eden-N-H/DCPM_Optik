@@ -119,7 +119,9 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                                 "calibration": calibrations[view],
                                 "raw_filename": gf["raw_rect"], "raw_bev_filename": gf["raw_bev"],
                                 "raw_bev_url": f"/static/uploads/{gf['raw_bev']}", "rect_url": f"/static/uploads/{gf['rect']}",
-                                "bev_url": f"/static/uploads/{gf['bev']}", "defects": defects[view], "footprint": footprints[view]
+                                "bev_url": f"/static/uploads/{gf['bev']}",
+                                "edit_bev_url": f"/static/uploads/{gf.get('edit_bev', gf['raw_bev'])}",
+                                "defects": defects[view], "footprint": footprints[view]
                             }
                         active_tasks[t_id].put({"type": "update", "data": result_payload})
                     except Exception as e:

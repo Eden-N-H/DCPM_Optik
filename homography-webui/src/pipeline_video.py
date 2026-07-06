@@ -146,6 +146,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                     "raw_bev_url": f"/static/uploads/{gf['raw_bev']}",
                     "rect_url": f"/static/uploads/{gf['rect']}", 
                     "bev_url": f"/static/uploads/{gf['bev']}",
+                    "edit_bev_url": f"/static/uploads/{gf.get('edit_bev', gf['raw_bev'])}",
                     "defects": defects[view],
                     "footprint": footprints[view]
                 }

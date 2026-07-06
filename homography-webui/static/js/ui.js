@@ -83,6 +83,11 @@ export function refreshLocationsUI() {
 }
 
 export function setView(dir) {
+    if (state.currentDirection === dir) {
+        openFullscreen('bev');
+        return;
+    }
+    
     state.currentDirection = dir;
     const contF = document.getElementById('container-bev-front'), contR = document.getElementById('container-bev-rear');
     const activeLabel = document.getElementById('label-active-view');
@@ -120,12 +125,24 @@ export function updateCarousel(panMap = true) {
     imgRect.onload = () => { autoFitSplitters(true); };
 
     const ts = Date.now();
-    
-    imgBevFront.src = current.views['front'].bev_url + `?t=${ts}`;
-    if (state.appIs360 && current.views['rear']) imgBevRear.src = current.views['rear'].bev_url + `?t=${ts}`;
-    imgRect.src = activeViewData.rect_url + `?t=${ts}`;
+    imgBevFront.src = current.views['front'].bev_url.split('?')[0] + `?t=${ts}`;
+    if (state.appIs360 && current.views['rear']) {
+        imgBevRear.src = current.views['rear'].bev_url.split('?')[0] + `?t=${ts}`;
+    }
+    imgRect.src = activeViewData.rect_url.split('?')[0] + `?t=${ts}`;
 
-    document.getElementById("table-defects").innerHTML = activeViewData.defects.map(d => `<tr><td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${d.color || stringToColor(d.class)}; border: 1px solid #ccc;"></span>${d.class}</td><td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td><td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td></tr>`).join('') || `<tr><td colspan="3" class="p-2 text-center text-gray-500">No detections</td></tr>`;
+    document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d, idx) => `
+        <tr>
+            <td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${d.color || stringToColor(d.class)}; border: 1px solid #ccc;"></span>${d.class}</td>
+            <td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td>
+            <td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td>
+            <td class="p-2 text-right">
+                <button onclick="window.startEditDefect(${idx})" class="text-blue-500 hover:text-blue-700 mx-1" title="Change Class">✏️</button>
+                <button onclick="window.startReoutlineDefect(${idx})" class="text-orange-500 hover:text-orange-700 mx-1" title="Re-outline">📍</button>
+                <button onclick="window.deleteDefect(${idx})" class="text-red-500 hover:text-red-700 mx-1" title="Delete">🗑️</button>
+            </td>
+        </tr>
+    `).join('') || `<tr><td colspan="4" class="p-2 text-center text-gray-500">No detections</td></tr>`;
 
     state.activeMarkerFilename = current.original_name;
     state.nodesGeoJson.features.forEach(f => { f.properties.active = (f.properties.original_name === state.activeMarkerFilename); });
@@ -137,6 +154,28 @@ export function updateCarousel(panMap = true) {
 
     document.getElementById("btn-prev").disabled = (state.currentIndex === 0);
     document.getElementById("btn-next").disabled = (state.currentIndex === state.appResults.length - 1);
+}
+
+// RESTORED FULLSCREEN FUNCTIONS
+export function openFullscreen(type) {
+    if (state.appResults.length === 0) return;
+    const current = state.appResults[state.currentIndex];
+    const viewData = current.views[state.currentDirection] || current.views['front'];
+    
+    const imgFullscreen = document.getElementById("img-fullscreen");
+    if (type === 'rect') {
+        imgFullscreen.src = viewData.rect_url.split('?')[0] + `?t=${Date.now()}`;
+    } else if (type === 'bev') {
+        imgFullscreen.src = viewData.bev_url.split('?')[0] + `?t=${Date.now()}`;
+    }
+    document.getElementById("fullscreen-modal").classList.remove("hidden");
+}
+
+export function initFullscreenModal() {
+    document.getElementById("btn-close-fullscreen").onclick = () => {
+        document.getElementById("fullscreen-modal").classList.add("hidden");
+        document.getElementById("img-fullscreen").src = "";
+    };
 }
 
 export function addWarning(message) {
@@ -172,7 +211,6 @@ export function setupCalibrationUI() {
     const previewImg = document.getElementById("img-calibrate-preview");
     const loader = document.getElementById("calibrate-loader");
     
-    // Swapped x_range for lane_width
     const inputs = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'lane_width'];
     
     const getCalibrationValues = () => {
@@ -499,4 +537,239 @@ export function initResizers() {
             if (state.map) state.map.resize();
         }
     });
+}
+
+export function initDrawMode() {
+    window.drawMode = false;
+    window.drawAction = null;
+    window.drawIndex = -1;
+    window.drawPoints = [];
+
+    const overlay = document.getElementById("draw-overlay");
+    const imgDraw = document.getElementById("img-draw-preview");
+    
+    overlay.addEventListener("click", (e) => {
+        if (!window.drawMode) return;
+        
+        const drawBox = imgDraw.getBoundingClientRect();
+        const nw = imgDraw.naturalWidth;
+        const nh = imgDraw.naturalHeight;
+        if(!nw || !nh) return;
+        
+        const scale = Math.min(drawBox.width / nw, drawBox.height / nh);
+        const wRendered = nw * scale;
+        const hRendered = nh * scale;
+        
+        const xOffset = (drawBox.width - wRendered) / 2;
+        const yOffset = (drawBox.height - hRendered) / 2;
+        
+        const clickX = e.clientX - drawBox.left - xOffset;
+        const clickY = e.clientY - drawBox.top - yOffset;
+        
+        if (clickX < 0 || clickX > wRendered || clickY < 0 || clickY > hRendered) return;
+        
+        const px = clickX / wRendered;
+        const py = clickY / hRendered;
+        
+        window.drawPoints.push([px, py]);
+        renderDrawPoints();
+    });
+
+    window.deleteDefect = async (idx) => {
+        await modifyDefects("delete", idx);
+    };
+
+    let changeClassIndex = -1;
+    window.startEditDefect = (idx) => {
+        changeClassIndex = idx;
+        document.getElementById("change-class-modal").classList.remove("hidden");
+    };
+
+    document.getElementById("btn-change-class-cancel").onclick = () => {
+        document.getElementById("change-class-modal").classList.add("hidden");
+    };
+
+    document.getElementById("btn-change-class-save").onclick = async () => {
+        const newClass = document.getElementById("change-class-select").value;
+        document.getElementById("change-class-modal").classList.add("hidden");
+        const btn = document.getElementById("btn-change-class-save");
+        btn.disabled = true;
+        await modifyDefects("update", changeClassIndex, null, newClass);
+        btn.disabled = false;
+    };
+
+    // NOTE: Both draw entry points below use `edit_bev_url`, NOT `bev_url` or
+    // `raw_bev_url`. Both of those are put through cv_bev.apply_bev_feathering
+    // server-side (alpha fade on the top ~30% and outer ~15% of each side) --
+    // `bev_url` because it carries the defect annotation overlay, and
+    // `raw_bev_url` because it doubles as the source tile for the map
+    // orthomosaic shingles, where that fade is required to blend into the
+    // satellite basemap. Against the modal's black background that same fade
+    // reads as the image being "cropped" -- especially the far-field strip
+    // you most need to see when outlining a distant defect. `edit_bev_url`
+    // is a dedicated, fully unfeathered/unannotated render used only here;
+    // it has identical pixel dimensions to the other BEV variants so the
+    // click-to-polygon coordinate math in modifyDefects() stays correct.
+    window.startReoutlineDefect = (idx) => {
+        const current = state.appResults[state.currentIndex];
+        window.drawMode = true;
+        window.drawAction = "re-outline";
+        window.drawIndex = idx;
+        window.drawPoints = [];
+        
+        const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
+        imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
+        document.getElementById("draw-modal").classList.remove("hidden");
+        document.getElementById("draw-class-container").classList.add("hidden");
+    };
+
+    document.getElementById("btn-add-defect").onclick = () => {
+        const current = state.appResults[state.currentIndex];
+        window.drawMode = true;
+        window.drawAction = "add";
+        window.drawPoints = [];
+        
+        const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
+        imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
+        document.getElementById("draw-modal").classList.remove("hidden");
+        document.getElementById("draw-class-container").classList.remove("hidden");
+    };
+
+    document.getElementById("btn-draw-cancel").onclick = () => {
+        window.drawMode = false;
+        window.drawPoints = [];
+        document.getElementById("draw-overlay").innerHTML = "";
+        document.getElementById("draw-modal").classList.add("hidden");
+    };
+
+    document.getElementById("btn-draw-done").onclick = async () => {
+        if(window.drawPoints.length < 3) {
+            alert("Please draw at least 3 points");
+            return;
+        }
+        
+        const className = document.getElementById("draw-class-select").value;
+        const btn = document.getElementById("btn-draw-done");
+        btn.disabled = true; 
+        btn.textContent = "Applying...";
+        
+        try {
+            await modifyDefects(window.drawAction, window.drawIndex, window.drawPoints, className);
+        } finally {
+            window.drawMode = false;
+            window.drawPoints = [];
+            document.getElementById("draw-overlay").innerHTML = "";
+            document.getElementById("draw-modal").classList.add("hidden");
+            btn.disabled = false; 
+            btn.textContent = "Apply SAM2";
+        }
+    };
+}
+
+function renderDrawPoints() {
+    const overlay = document.getElementById("draw-overlay");
+    overlay.innerHTML = "";
+    
+    const imgDraw = document.getElementById("img-draw-preview");
+    const drawBox = imgDraw.getBoundingClientRect();
+    
+    const nw = imgDraw.naturalWidth;
+    const nh = imgDraw.naturalHeight;
+    const scale = Math.min(drawBox.width / nw, drawBox.height / nh);
+    const wRendered = nw * scale;
+    const hRendered = nh * scale;
+    
+    const xOffset = (drawBox.width - wRendered) / 2;
+    const yOffset = (drawBox.height - hRendered) / 2;
+
+    window.drawPoints.forEach((pt, i) => {
+        const x = pt[0] * wRendered + xOffset;
+        const y = pt[1] * hRendered + yOffset;
+        
+        const dot = document.createElement("div");
+        dot.className = "absolute w-[4px] h-[4px] bg-red-500 rounded-full transform -translate-x-[2px] -translate-y-[2px] pointer-events-none";
+        dot.style.left = x + "px";
+        dot.style.top = y + "px";
+        overlay.appendChild(dot);
+        
+        if (i > 0) {
+            const prevPt = window.drawPoints[i-1];
+            const px = prevPt[0] * wRendered + xOffset;
+            const py = prevPt[1] * hRendered + yOffset;
+            const dist = Math.hypot(x - px, y - py);
+            const angle = Math.atan2(y - py, x - px);
+            
+            const line = document.createElement("div");
+            line.className = "absolute bg-red-500 origin-left pointer-events-none";
+            line.style.height = "1px";
+            line.style.width = dist + "px";
+            line.style.left = px + "px";
+            line.style.top = py + "px";
+            line.style.transform = `rotate(${angle}rad)`;
+            overlay.appendChild(line);
+        }
+    });
+    
+    if (window.drawPoints.length > 2) {
+        const lastPt = window.drawPoints[window.drawPoints.length - 1];
+        const firstPt = window.drawPoints[0];
+        
+        const lx = lastPt[0] * wRendered + xOffset;
+        const ly = lastPt[1] * hRendered + yOffset;
+        const fx = firstPt[0] * wRendered + xOffset;
+        const fy = firstPt[1] * hRendered + yOffset;
+        
+        const dist = Math.hypot(fx - lx, fy - ly);
+        const angle = Math.atan2(fy - ly, fx - lx);
+        
+        const line = document.createElement("div");
+        line.className = "absolute bg-red-500/50 origin-left pointer-events-none";
+        line.style.height = "1px";
+        line.style.width = dist + "px";
+        line.style.left = lx + "px";
+        line.style.top = ly + "px";
+        line.style.transform = `rotate(${angle}rad)`;
+        overlay.appendChild(line);
+    }
+}
+
+async function modifyDefects(action, index, points=null, className=null) {
+    if (state.appResults.length === 0) return;
+    const current = state.appResults[state.currentIndex];
+    const view = state.currentDirection;
+    const calib = current.views[view].calibration || {};
+    
+    try {
+        const res = await fetch("/modify_defects", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                filename: current.filename,
+                view: view,
+                action: action,
+                index: index,
+                points: points,
+                class_name: className,
+                calibration: calib
+            })
+        });
+        const data = await res.json();
+        if(data.success) {
+            current.views[view].defects = data.defects;
+            
+            current.geojson = current.geojson.filter(f => f.properties.view !== view);
+            current.geojson.push(...data.geojson);
+            
+            state.fullGeojson.features = state.fullGeojson.features.filter(f => !(f.properties.filename === current.original_name && f.properties.view === view));
+            state.fullGeojson.features.push(...data.geojson);
+            
+            updateMapSource('defects-source', state.fullGeojson);
+            updateCarousel(false);
+        } else {
+            alert(data.error || "Modification failed");
+        }
+    } catch(e) {
+        console.error(e);
+        alert("Failed to modify defects");
+    }
 }

@@ -6,14 +6,20 @@ def apply_bev_feathering(bev_bgr):
     h, w = bev_bgr.shape[:2]
     rgba = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2BGRA)
     alpha = np.ones((h, w), dtype=np.float32)
-    top_fade = int(h * 0.3)
+    
+    # Cap the fade amounts to fixed pixel lengths (e.g., ~2m or 200px at a GSD of 0.01)
+    # This prevents the image from looking "cropped" when the user
+    # manually increases the orthographic projection length (z_far).
+    top_fade = min(int(h * 0.3), 200)
     for y in range(top_fade):
         alpha[y, :] *= (y / top_fade) ** 2.0
-    side_fade = int(w * 0.15)
+        
+    side_fade = min(int(w * 0.15), 150)
     for x in range(side_fade):
         fade_val = (x / side_fade) ** 1.5
         alpha[:, x] *= fade_val
         alpha[:, w - 1 - x] *= fade_val
+        
     rgba[:, :, 3] = (alpha * 255).astype(np.uint8)
     return rgba
 
