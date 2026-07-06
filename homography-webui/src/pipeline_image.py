@@ -545,7 +545,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                             if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                             
                             all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
-                            geojson_features.append({
+                            all_geojson_features.append({
                                 "type": "Feature",
                                 "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": original_filename, "conf": round(conf, 2)},
                                 "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
