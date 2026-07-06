@@ -137,9 +137,15 @@ export function updateCarousel(panMap = true) {
             <td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td>
             <td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td>
             <td class="p-2 text-right">
-                <button onclick="window.startEditDefect(${idx})" class="text-blue-500 hover:text-blue-700 mx-1" title="Change Class">✏️</button>
-                <button onclick="window.startReoutlineDefect(${idx})" class="text-orange-500 hover:text-orange-700 mx-1" title="Re-outline">📍</button>
-                <button onclick="window.deleteDefect(${idx})" class="text-red-500 hover:text-red-700 mx-1" title="Delete">🗑️</button>
+                <button onclick="window.startEditDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Change Class">
+                    <img src="https://api.iconify.design/heroicons/pencil-square.svg?color=%233b82f6" class="w-4 h-4 inline align-middle">
+                </button>
+                <button onclick="window.startReoutlineDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Re-outline">
+                    <img src="https://api.iconify.design/heroicons/map-pin.svg?color=%23f97316" class="w-4 h-4 inline align-middle">
+                </button>
+                <button onclick="window.deleteDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Delete">
+                    <img src="https://api.iconify.design/heroicons/trash.svg?color=%23ef4444" class="w-4 h-4 inline align-middle">
+                </button>
             </td>
         </tr>
     `).join('') || `<tr><td colspan="4" class="p-2 text-center text-gray-500">No detections</td></tr>`;
@@ -178,14 +184,14 @@ export function initFullscreenModal() {
     };
 }
 
-export function addWarning(message) {
+export function addWarning(messageHTML) {
     const list = document.getElementById("warnings-list");
     const badge = document.getElementById("warnings-badge");
     const btn = document.getElementById("btn-show-warnings");
     document.getElementById("no-warnings-msg").classList.add("hidden");
     
     const li = document.createElement("li");
-    li.textContent = message;
+    li.innerHTML = messageHTML;
     list.appendChild(li);
     
     state.warningCount++;
@@ -287,7 +293,7 @@ export function setupCalibrationUI() {
 
     btnAutoVP.onclick = async () => {
         btnAutoVP.disabled = true;
-        btnAutoVP.textContent = "Analyzing...";
+        btnAutoVP.innerHTML = `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1"> Analyzing...`;
         try {
             const current = state.appResults[state.currentIndex];
             const data = await autoDetectVP(current.filename, state.currentDirection, getCalibrationValues());
@@ -300,7 +306,7 @@ export function setupCalibrationUI() {
         } catch(err) { console.error(err); }
         finally {
             btnAutoVP.disabled = false;
-            btnAutoVP.textContent = "🪄 Auto-Detect VP";
+            btnAutoVP.innerHTML = `<img src="https://api.iconify.design/heroicons/sparkles.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Auto"> Auto-Detect VP`;
         }
     };
 

@@ -2,16 +2,18 @@ import { state } from './state.js';
 import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds } from './map.js';
 import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
 
-export async function triggerZipExport(endpoint, btnId, loadingText, filename) {
+export async function triggerZipExport(endpoint, btnId, loadingHTML, filename) {
     if (state.fullResults.length === 0) return;
-    const btn = document.getElementById(btnId); const originalText = btn.textContent;
-    btn.textContent = loadingText; btn.disabled = true;
+    const btn = document.getElementById(btnId); 
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = loadingHTML; 
+    btn.disabled = true;
     try {
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ results: state.fullResults }) });
         if (!res.ok) throw new Error("Failed to compile ZIP file");
         const blob = await res.blob(); const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
-    } catch (err) { alert(err.message); } finally { btn.textContent = originalText; btn.disabled = false; }
+    } catch (err) { alert(err.message); } finally { btn.innerHTML = originalHTML; btn.disabled = false; }
 }
 
 export async function cancelJob() {
@@ -87,7 +89,7 @@ function startSSE(taskId, totalImages) {
                 document.getElementById("btn-export-flat-zip").classList.add("hidden");
                 document.getElementById("btn-toggle-map").classList.add("hidden");
             } else if (msg.type === "cancelled") {
-                addWarning("⚠️ User Cancelled Process. Partial results have been saved.");
+                addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> User Cancelled Process. Partial results have been saved.`);
             }
             return;
         }
@@ -102,12 +104,14 @@ function startSSE(taskId, totalImages) {
             hudLine.innerHTML = `<span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> GPS: <span class="${gpsColor} font-bold">${hr.gps_score.toFixed(0)}%</span> | IMU: <span class="${imuColor} font-bold">${hr.imu_score.toFixed(0)}%</span> | Drift: <span class="text-gray-300">${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s</span>`;
             telemetryHud.appendChild(hudLine);
             
-            if (hr.warnings.length > 0) hr.warnings.forEach(w => addWarning(`[${msg.original_name} Telemetry] ${w}`));
+            if (hr.warnings.length > 0) {
+                hr.warnings.forEach(w => addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> [${msg.original_name} Telemetry] ${w}`));
+            }
             return;
         }
 
         if (msg.type === "item_error") {
-            addWarning(`Skipped ${msg.original_name}: ${msg.message}`);
+            addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Skipped ${msg.original_name}: ${msg.message}`);
             if (!msg.is_video) {
                 processedCount++;
                 const pct = totalImages > 0 ? (processedCount / totalImages) * 100 : 100;

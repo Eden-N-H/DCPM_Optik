@@ -22,17 +22,19 @@
             
             <div class="flex gap-3 mt-4 md:mt-0 flex-wrap justify-end items-center">
                 <button id="btn-show-warnings" class="hidden bg-orange-100 hover:bg-orange-200 text-orange-800 border border-orange-300 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition relative">
-                    ⚠️ Warnings
+                    <img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Warning"> Warnings
                     <span id="warnings-badge" class="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full hidden">0</span>
                 </button>
                 <button id="btn-toggle-map" class="hidden bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
-                    🗺️ Toggle Map
+                    <img src="https://api.iconify.design/heroicons/map.svg?color=%231f2937" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Map"> Toggle Map
                 </button>
                 <button id="btn-export-flat-zip" class="hidden bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">Export Flattened ZIP</button>
                 <button id="btn-export-zip" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">Export RAW ZIP</button>
-                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">💾 Save State</button>
+                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
+                    <img src="https://api.iconify.design/heroicons/document-arrow-down.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Save"> Save State
+                </button>
                 <label class="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
-                    📂 Load State JSON<input type="file" id="in-load-project" accept=".json" class="hidden">
+                    <img src="https://api.iconify.design/heroicons/folder-open.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Load"> Load State JSON<input type="file" id="in-load-project" accept=".json" class="hidden">
                 </label>
             </div>
         </div>
@@ -138,7 +140,9 @@
                         <div class="flex-none flex justify-between items-end mb-1">
                             <div class="text-xs font-bold text-gray-500 uppercase">Perspective Analysis</div>
                             <div class="flex gap-2">
-                                <button id="btn-open-calibrate" class="bg-orange-100 text-orange-800 hover:bg-orange-200 border border-orange-300 px-2 py-0.5 rounded shadow-sm text-[10px] font-bold uppercase transition">🛠️ Calibrate Engine</button>
+                                <button id="btn-open-calibrate" class="bg-orange-100 text-orange-800 hover:bg-orange-200 border border-orange-300 px-2 py-0.5 rounded shadow-sm text-[10px] font-bold uppercase transition">
+                                    <img src="https://api.iconify.design/heroicons/wrench-screwdriver.svg?color=%239a3412" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Calibrate"> Calibrate Engine
+                                </button>
                                 <div id="label-active-view" class="text-[10px] font-bold text-blue-600 uppercase bg-blue-100 px-2 py-0.5 rounded shadow-sm">Front View Active</div>
                             </div>
                         </div>
@@ -156,11 +160,11 @@
                         </div>
                         <div id="bev-layout-container" class="flex-1 min-h-0 flex gap-2">
                             <div id="container-bev-front" class="flex-1 min-h-0 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group">
-                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬆️ Front</span>
+                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20"><img src="https://api.iconify.design/heroicons/arrow-up.svg" class="w-3 h-3 inline align-middle -mt-0.5 mr-0.5"> Front</span>
                                 <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden pointer-events-none" src="">
                             </div>
                             <div id="container-bev-rear" class="flex-1 min-h-0 relative border-2 border-transparent rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group hidden">
-                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20">⬇️ Rear</span>
+                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20"><img src="https://api.iconify.design/heroicons/arrow-down.svg" class="w-3 h-3 inline align-middle -mt-0.5 mr-0.5"> Rear</span>
                                 <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden pointer-events-none" src="">
                             </div>
                         </div>
@@ -170,7 +174,9 @@
                 <div class="flex-none h-48 flex flex-col relative">
                     <div class="flex justify-between items-center p-2 border-b bg-gray-50">
                         <span class="text-xs font-bold text-gray-500 uppercase">Defects</span>
-                        <button id="btn-add-defect" class="bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded text-xs font-bold shadow-sm">➕ Add Defect</button>
+                        <button id="btn-add-defect" class="bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded text-xs font-bold shadow-sm">
+                            <img src="https://api.iconify.design/heroicons/plus-circle.svg?color=%231d4ed8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Add"> Add Defect
+                        </button>
                     </div>
                     <div class="overflow-y-auto flex-1 bg-white rounded-b border-l border-r border-b">
                         <table class="w-full text-left text-sm">
@@ -202,7 +208,9 @@
     <div id="warnings-modal" class="fixed inset-0 bg-black/50 hidden z-[2000] flex items-center justify-center p-4">
         <div class="bg-white rounded-xl shadow-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
             <div class="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
-                <h2 class="text-lg font-bold text-red-700">⚠️ Processing Logs & Warnings</h2>
+                <h2 class="text-lg font-bold text-red-700">
+                    <img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23b91c1c" class="w-5 h-5 inline align-middle -mt-1 mr-1"> Processing Logs & Warnings
+                </h2>
                 <button id="btn-close-warnings" class="text-gray-500 hover:text-black font-bold text-xl leading-none">&times;</button>
             </div>
             <div class="p-4 overflow-y-auto flex-1">
@@ -218,7 +226,9 @@
             <div class="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
                 <div class="flex items-center gap-4">
                     <h2 class="text-lg font-bold">Adjust Projection Parameters</h2>
-                    <button id="btn-auto-vp" class="text-xs bg-purple-100 text-purple-800 border border-purple-300 font-bold px-2 py-1 rounded shadow-sm hover:bg-purple-200 transition">🪄 Auto-Detect VP</button>
+                    <button id="btn-auto-vp" class="text-xs bg-purple-100 text-purple-800 border border-purple-300 font-bold px-2 py-1 rounded shadow-sm hover:bg-purple-200 transition">
+                        <img src="https://api.iconify.design/heroicons/sparkles.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Auto"> Auto-Detect VP
+                    </button>
                 </div>
                 <button id="btn-close-calibrate" class="text-gray-500 hover:text-black font-bold text-xl leading-none">&times;</button>
             </div>
@@ -227,7 +237,7 @@
                 <!-- Preview Screen -->
                 <div class="flex-1 p-4 relative bg-gray-100 flex items-center justify-center overflow-hidden border-b md:border-b-0 md:border-r">
                     <div class="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded pointer-events-none z-10 flex gap-2 items-center">
-                        <span class="text-sm">💡</span> Click exactly on the horizon (the vanishing point) to manually set Pitch/Yaw.
+                        <img src="https://api.iconify.design/heroicons/light-bulb.svg?color=white" class="w-4 h-4 inline" alt="Tip"> Click exactly on the horizon (the vanishing point) to manually set Pitch/Yaw.
                     </div>
                     <img id="img-calibrate-preview" class="max-h-full max-w-full object-contain cursor-crosshair z-0" src="">
                     <div id="calibrate-loader" class="absolute inset-0 bg-white/60 flex items-center justify-center hidden backdrop-blur-sm z-20">

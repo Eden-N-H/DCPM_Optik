@@ -41,8 +41,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.getElementById("process-btn").onclick = () => executeJob();
     document.getElementById("btn-cancel-job").onclick = () => cancelJob();
-    document.getElementById("btn-export-zip").onclick = () => triggerZipExport("/export-zip", "btn-export-zip", "⏳ Compiling ZIP...", "DCPM_RAW_Export.zip");
-    document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport("/export-flat-zip", "btn-export-flat-zip", "⏳ Compiling Flattened...", "DCPM_FLAT_Export.zip");
+    
+    document.getElementById("btn-export-zip").onclick = () => triggerZipExport(
+        "/export-zip", 
+        "btn-export-zip", 
+        `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Compiling RAW...`, 
+        "DCPM_RAW_Export.zip"
+    );
+    
+    document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport(
+        "/export-flat-zip", 
+        "btn-export-flat-zip", 
+        `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Compiling Flattened...`, 
+        "DCPM_FLAT_Export.zip"
+    );
 
     const chkLayerFront = document.getElementById("chk-layer-front");
     const chkLayerRear = document.getElementById("chk-layer-rear");
