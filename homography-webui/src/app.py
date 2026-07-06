@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import base64
@@ -16,9 +17,11 @@ from pipeline_image import generate_grid_preview, recalculate_view, get_projecte
 from cv_vp import find_vanishing_point_hough, calculate_pitch_yaw_deltas
 from exports import create_raw_zip, create_flat_zip
 from task_manager import start_processing_job, active_tasks, cancel_flags
+from sam2_integration import load_sam2, get_predictor
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+os.chdir(PROJECT_ROOT)
 
 app = Flask(__name__, static_folder='../static', template_folder='../templates')
 app.config['UPLOAD_FOLDER'] = os.path.join(PROJECT_ROOT, 'static', 'uploads')
@@ -26,6 +29,23 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 global_model = None
 model_lock = threading.Lock()
+sam2_predictor = None
+
+# Load default YOLO model at startup
+DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'RMCC_8_classes.pt')
+if os.path.exists(DEFAULT_MODEL_PATH):
+    global_model = YOLO(DEFAULT_MODEL_PATH)
+    print(f"✓ Default YOLO model loaded: RMCC_8_classes.pt")
+else:
+    print("⚠ Default model not found at models/RMCC_8_classes.pt — upload one via the UI")
+
+# Load SAM2 at startup
+try:
+    sam2_predictor = load_sam2()
+    print("✓ SAM2 model loaded")
+except Exception as e:
+    print(f"⚠ SAM2 failed to load: {e}. Running without segmentation.")
+    sam2_predictor = None
 
 def handle_model_upload(request_obj):
     global global_model
@@ -47,6 +67,8 @@ def process():
     if not img_files or img_files[0].filename == '': return jsonify({"error": "No media selected"}), 400
 
     options = {
+        "media_type": request.form.get('media_type', 'standard-photos'),
+        "has_telemetry": request.form.get('has_telemetry') == 'true',
         "cam_height": safe_float(request.form.get('cam_height'), 1.6),
         "interval_m": safe_float(request.form.get('interval_m'), 2.0),
         "is_360": request.form.get('is_360') == 'true',
@@ -69,14 +91,14 @@ def process():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
         file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
-        if ext in ALLOWED_IMAGE_EXT:
+        if ext in ALLOWED_IMAGE_EXT and options.get('has_telemetry', False):
             lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
             file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
             with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf:
                 json.dump(full_meta, mf, indent=2)
         image_data.append(file_meta)
     
-    res = start_processing_job(image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], global_model, model_lock)
+    res = start_processing_job(image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], global_model, model_lock, sam2_predictor=sam2_predictor)
     return jsonify(res)
 
 @app.route('/stream/<task_id>')
@@ -157,8 +179,8 @@ def click_vp():
     filename = data['filename']
     view_name = data['view']
     calib = data['calibration']
-    px = data['px'] # 0.0 to 1.0 (X percentage)
-    py = data['py'] # 0.0 to 1.0 (Y percentage)
+    px = data['px']
+    py = data['py']
     
     meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
     with open(meta_path, 'r') as f: process_meta = json.load(f)
@@ -224,4 +246,4 @@ def export_flat_zip():
     return send_file(mem_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
 if __name__ == '__main__': 
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5001)

@@ -8,8 +8,25 @@ document.addEventListener("DOMContentLoaded", () => {
     initResizers();
     setupCalibrationUI();
 
+    // Media type dropdown auto-toggles 360 and telemetry checkboxes
+    document.getElementById("sel-media-type").addEventListener("change", (e) => {
+        const val = e.target.value;
+        const is360 = val.startsWith("360");
+        const hasTelemetry = val.startsWith("360") || val === "standard-video";
+        document.getElementById("chk-is-360").checked = is360;
+        document.getElementById("chk-has-telemetry").checked = hasTelemetry;
+    });
+
     setupDz("dz-model", "in-model", "name-model", false, f => { state.modelFile = f; checkCanProcess(); });
     setupDz("dz-image", "in-image", "name-image", true, f => { state.imageFiles = f; checkCanProcess(); });
+
+    // Model is pre-loaded on server — enable process button when images are selected
+    state.isModelLoaded = true;
+    document.getElementById("status-model").classList.remove("hidden");
+    document.getElementById("name-model").textContent = "RMCC_8_classes.pt (pre-loaded)";
+    document.getElementById("name-model").classList.remove("hidden");
+    document.getElementById("lbl-model").textContent = "Model ready (drop .pt to swap)";
+    checkCanProcess();
 
     document.getElementById("process-btn").onclick = () => executeJob();
     document.getElementById("btn-cancel-job").onclick = () => cancelJob();

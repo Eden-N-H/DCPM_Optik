@@ -12,7 +12,7 @@ from pipeline_video import process_video_frames_async, get_video_frame_metadata
 active_tasks = {}
 cancel_flags = {}
 
-def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload_folder, global_model, model_lock):
+def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload_folder, global_model, model_lock, sam2_predictor=None):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
     initial_ui_state = []
@@ -71,7 +71,8 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                     process_video_frames_async(
                         asset['path'], global_model, upload_folder, 
                         asset['filename'], asset['original_name'], asset['location'], 
-                        worker_options, model_lock, on_frame_processed, is_cancelled
+                        worker_options, model_lock, on_frame_processed, is_cancelled,
+                        sam2_predictor=sam2_predictor
                     )
                     if is_cancelled(): break
                 else:
@@ -90,7 +91,8 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
 
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                             asset['path'], global_model, asset['filename'], upload_folder, 
-                            telemetry, worker_options, model_lock, asset['original_name']
+                            telemetry, worker_options, model_lock, asset['original_name'],
+                            sam2_predictor=sam2_predictor
                         )
                         
                         process_meta_data = {

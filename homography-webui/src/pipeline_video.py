@@ -8,7 +8,7 @@ from parser_gpmf import extract_streams_with_time
 from telemetry import evaluate_telemetry_health, get_telemetry_interpolators
 from pipeline_image import process_single_image
 
-def process_video_frames_async(video_path, model, upload_dir, file_name, original_name, location_str, options, model_lock, callback, is_cancelled=None):
+def process_video_frames_async(video_path, model, upload_dir, file_name, original_name, location_str, options, model_lock, callback, is_cancelled=None, sam2_predictor=None):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(file_name)[0]
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -108,7 +108,8 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
 
             try:
                 defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
-                    frame, model, frame_base_name, upload_dir, telemetry, options, model_lock, original_frame_name
+                    frame, model, frame_base_name, upload_dir, telemetry, options, model_lock, original_frame_name,
+                    sam2_predictor=sam2_predictor
                 )
                 
                 process_meta_data = {

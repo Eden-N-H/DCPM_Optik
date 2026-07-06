@@ -172,6 +172,8 @@ export async function executeJob() {
     const containerBevRear = document.getElementById("container-bev-rear");
 
     // Standard Options
+    fd.append("media_type", document.getElementById("sel-media-type").value);
+    fd.append("has_telemetry", document.getElementById("chk-has-telemetry").checked ? "true" : "false");
     fd.append("cam_height", document.getElementById("cam-height").value);
     fd.append("is_360", chkIs360.checked ? "true" : "false");
     fd.append("draw_grid", document.getElementById("chk-draw-grid").checked ? "true" : "false");
