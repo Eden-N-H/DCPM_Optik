@@ -77,16 +77,18 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                     if is_cancelled(): break
                 else:
                     try:
+                        # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
                         telemetry = {
                             "lat": asset['lat'],
                             "lon": asset['lon'],
                             "heading": asset.get('heading', 0.0),
-                            "pitch": asset.get('pitch', 0.0),
-                            "roll": asset.get('roll', 0.0),
-                            "base_pitch": asset.get('pitch', 0.0),
-                            "base_roll": asset.get('roll', 0.0),
+                            "grav_vec": asset.get('grav_vec'),
                             "klns": asset.get('klns'),
-                            "fov": asset.get('fov')
+                            "xfov": asset.get('xfov'),
+                            "yfov": asset.get('yfov'),
+                            # --- RESTORED FOR UI DISPLAY ONLY ---
+                            "pitch": asset.get('pitch'),
+                            "roll": asset.get('roll')
                         }
 
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
@@ -108,6 +110,7 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             "original_name": asset['original_name'], "filename": asset['filename'],
                             "lat": round(asset['lat'], 6) if asset['lat'] else None, 
                             "lon": round(asset['lon'], 6) if asset['lon'] else None,
+                            # --- RESTORED FOR UI DISPLAY ONLY ---
                             "pitch": round(asset.get('pitch'), 2) if asset.get('pitch') is not None else None,
                             "roll": round(asset.get('roll'), 2) if asset.get('roll') is not None else None,
                             "location": asset['location'], "geojson": geo_feats, "views": {}

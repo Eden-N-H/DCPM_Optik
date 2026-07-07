@@ -98,10 +98,20 @@ def process():
         filename = f"{int(time.time()*100)}_{secure_filename(f.filename)}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
-        file_meta = {"filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, "lat": None, "lon": None, "pitch": None, "roll": None, "klns": None, "fov": None}
+        
+        # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
+        file_meta = {
+            "filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, 
+            "lat": None, "lon": None, "grav_vec": None, "klns": None, 
+            "xfov": None, "yfov": None, "pitch": None, "roll": None
+        }
         if ext in ALLOWED_IMAGE_EXT and options.get('has_telemetry', False):
-            lat, lon, dynamic_pitch, dynamic_roll, klns, fov_meta, full_meta = extract_full_photo_metadata(filepath)
-            file_meta.update({"lat": lat, "lon": lon, "pitch": dynamic_pitch, "roll": dynamic_roll, "klns": klns, "fov": fov_meta})
+            lat, lon, grav_vec, klns, xfov, yfov, pitch_ui, roll_ui, full_meta = extract_full_photo_metadata(filepath)
+            file_meta.update({
+                "lat": lat, "lon": lon, "grav_vec": grav_vec, 
+                "klns": klns, "xfov": xfov, "yfov": yfov,
+                "pitch": pitch_ui, "roll": roll_ui
+            })
             with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf:
                 json.dump(full_meta, mf, indent=2)
         image_data.append(file_meta)
@@ -164,7 +174,7 @@ def auto_vp():
     source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
     is_360 = process_meta['options'].get('is_360', True)
     
-    rect_img, _, _, _, _ = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
     
     vp = find_vanishing_point_hough(rect_img)
     if not vp:
@@ -174,14 +184,8 @@ def auto_vp():
     h, w = rect_img.shape[:2]
     dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, float(calib.get('fov') or 100.0), is_360)
     
-    if is_360:
-        calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
-        calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
-    else:
-        base_pitch = float(process_meta['telemetry'].get('base_pitch') or 0.0) if process_meta['options'].get('comp_pitch', True) else 0.0
-        base_yaw = 0.0 if view_name == 'front' else 180.0
-        calib['pitch_offset'] = round(dp - base_pitch, 1)
-        calib['yaw_offset'] = round(dy - base_yaw, 1)
+    calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
+    calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
     
     return jsonify({"success": True, "calibration": calib})
 
@@ -199,20 +203,14 @@ def click_vp():
     source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
     is_360 = process_meta['options'].get('is_360', True)
     
-    rect_img, _, _, _, _ = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
     h, w = rect_img.shape[:2]
     
     u, v = px * w, py * h
     dp, dy = calculate_pitch_yaw_deltas(u, v, w, h, float(calib.get('fov') or 100.0), is_360)
     
-    if is_360:
-        calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
-        calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
-    else:
-        base_pitch = float(process_meta['telemetry'].get('base_pitch') or 0.0) if process_meta['options'].get('comp_pitch', True) else 0.0
-        base_yaw = 0.0 if view_name == 'front' else 180.0
-        calib['pitch_offset'] = round(dp - base_pitch, 1)
-        calib['yaw_offset'] = round(dy - base_yaw, 1)
+    calib['pitch_offset'] = round(float(calib.get('pitch_offset') or 0.0) + dp, 1)
+    calib['yaw_offset'] = round(float(calib.get('yaw_offset') or 0.0) + dy, 1)
     
     return jsonify({"success": True, "calibration": calib})
 
@@ -278,11 +276,7 @@ def modify_defects():
         
         if action in ['add', 're-outline'] and points:
             source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
-            
             media_type = process_meta.get('options', {}).get('media_type', '360-video')
-            
-            # True orthographic photos skip perspective/BEV warp entirely.
-            # All others (including Standard Photos) do generate a BEV image.
             is_simple_frame = (media_type == 'orthographic')
             
             if is_simple_frame:
@@ -300,37 +294,33 @@ def modify_defects():
                     
                 polygon_list = pts.tolist()
             else:
-                # Ensure the same fallback math applies here to prevent homography crashes on standard photos
-                if calib.get('fov') is None: calib['fov'] = 100.0
-                
-                rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+                rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
                 h, w = rect_img.shape[:2]
                 
                 cam_h = float(calib.get('cam_height') or 1.6)
-                z_n = float(calib.get('z_near') or 1.5)
-                z_f = float(calib.get('z_far') or 10.0)
-                lane_w = float(calib.get('lane_width') or 8.0)
-                x_r = lane_w / 2.0
+                y_min = float(calib.get('z_near') or 1.5)
+                y_max = float(calib.get('z_far') or 10.0)
+                road_width = float(calib.get('lane_width') or 8.0)
 
+                # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
                 from cv_bev import get_bev_homography
-                H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+                H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(
+                    K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
+                )
                 
                 try:
                     H_inv = np.linalg.inv(H_mat)
                 except np.linalg.LinAlgError:
                     H_inv = np.eye(3)
                     
-                # 1. Grab the exact points drawn in BEV space
                 bev_points = []
                 for px, py in points:
                     bev_x = np.clip(px * bev_w, 0, bev_w - 1)
                     bev_y = np.clip(py * bev_h, 0, bev_h - 1)
                     bev_points.append([bev_x, bev_y])
                     
-                # 2. Re-create the BEV image so SAM2 can analyze it directly
                 raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
                 
-                # 3. Run SAM2 on the BEV image. The bounding box here will perfectly frame the defect.
                 predictor = get_predictor()
                 bev_pts = None
                 if predictor:
@@ -339,7 +329,6 @@ def modify_defects():
                 if bev_pts is None or len(bev_pts) < 3:
                     bev_pts = np.array(bev_points, dtype=np.float32)
                     
-                # 4. Map the perfectly segmented BEV contour back to Rectilinear space to save it
                 rect_contour_points = []
                 for pt in bev_pts:
                     bev_x, bev_y = pt[0], pt[1]

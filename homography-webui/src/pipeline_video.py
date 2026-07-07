@@ -23,27 +23,30 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
         interpolators = get_telemetry_interpolators(streams)
         gps_interp = interpolators.get("gps")
         speed_interp = interpolators.get("speed")
-        pitch_interp = interpolators.get("pitch")
-        roll_interp = interpolators.get("roll")
-        pitch_base_interp = interpolators.get("pitch_base")
-        roll_base_interp = interpolators.get("roll_base")
+        
+        # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
+        grav_x_interp = interpolators.get("grav_x")
+        grav_y_interp = interpolators.get("grav_y")
+        grav_z_interp = interpolators.get("grav_z")
         
         klns = constants.get('KLNS', None)
         
-        fov_from_meta = constants.get('XFOV', None)
-        if fov_from_meta is None:
+        xfov_from_meta = constants.get('XFOV', None)
+        yfov_from_meta = constants.get('YFOV', None)
+        
+        if xfov_from_meta is None:
             zfov, aruw = constants.get('ZFOV'), constants.get('ARUW')
             if zfov is not None and aruw is not None:
-                try: fov_from_meta = math.degrees(2.0 * math.atan(math.tan(math.radians(float(zfov)) / 2.0) * (float(aruw) / math.sqrt(float(aruw)**2 + 1))))
+                try: xfov_from_meta = math.degrees(2.0 * math.atan(math.tan(math.radians(float(zfov)) / 2.0) * (float(aruw) / math.sqrt(float(aruw)**2 + 1))))
                 except Exception: pass
     except Exception as e:
         callback({"error": f"Failed to parse GPMF for video: {str(e)}", "is_video": True, "original_name": original_name})
         cap.release()
         return
 
-    if options.get('is_360', True) and fov_from_meta is None: fov_from_meta = 100.0
+    if options.get('is_360', True) and xfov_from_meta is None: xfov_from_meta = 100.0
 
-    if not all([gps_interp, speed_interp, pitch_interp, roll_interp, fov_from_meta]):
+    if not all([gps_interp, speed_interp, grav_x_interp, grav_y_interp, grav_z_interp, xfov_from_meta]):
         callback({"error": "Missing required GPMF telemetry streams (GPS, Speed, GRAV, or computed FOV).", "is_video": True, "original_name": original_name})
         cap.release()
         return
@@ -66,10 +69,15 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
 
         if dist_accum >= interval_m or frame_idx == 0:
             dist_accum = 0.0 
-            current_pitch = float(pitch_interp(elapsed_sec)) if pitch_interp else 0.0
-            current_roll = float(roll_interp(elapsed_sec)) if roll_interp else 0.0
-            current_base_pitch = float(pitch_base_interp(elapsed_sec)) if pitch_base_interp else current_pitch
-            current_base_roll = float(roll_base_interp(elapsed_sec)) if roll_base_interp else current_roll
+            
+            # Form grav vector directly from stream components
+            current_grav = [float(grav_x_interp(elapsed_sec)), float(grav_y_interp(elapsed_sec)), float(grav_z_interp(elapsed_sec))]
+            
+            # --- RESTORED FOR UI DISPLAY ONLY ---
+            # Derive Euler angles solely for UI display (does not affect vector homography)
+            gx, gy, gz = current_grav
+            current_pitch = -math.degrees(math.atan2(gz, gy))
+            current_roll = math.degrees(math.atan2(gx, gy))
 
             try:
                 c_loc = gps_interp(elapsed_sec)
@@ -84,11 +92,17 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             frame_meta = {
                 "Video_Global_GPMF": sanitize_meta(constants),
                 "Frame_Telemetry": sanitize_meta({
-                    "Timestamp_sec": elapsed_sec, "Latitude": current_lat, "Longitude": current_lon,
-                    "Heading": current_heading, "Pitch_Inst": current_pitch, "Pitch_Base": current_base_pitch,
-                    "Roll_Inst": current_roll, "Roll_Base": current_base_roll,
+                    "Timestamp_sec": elapsed_sec, 
+                    "Latitude": current_lat, 
+                    "Longitude": current_lon,
+                    "Heading": current_heading,
+                    "Grav_Vec": current_grav,
                     "Speed_ms": float(speed_interp(elapsed_sec)) if speed_interp else None,
-                    "FOV": fov_from_meta, "KLNS": klns
+                    "XFOV": xfov_from_meta,
+                    "YFOV": yfov_from_meta,
+                    "KLNS": klns,
+                    "Pitch_UI": current_pitch,
+                    "Roll_UI": current_roll
                 })
             }
             with open(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), 'w') as mf:
@@ -98,12 +112,12 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                 "lat": current_lat,
                 "lon": current_lon,
                 "heading": current_heading,
-                "pitch": current_pitch,
-                "roll": current_roll,
-                "base_pitch": current_base_pitch,
-                "base_roll": current_base_roll,
+                "grav_vec": current_grav,
                 "klns": klns,
-                "fov": fov_from_meta
+                "xfov": xfov_from_meta,
+                "yfov": yfov_from_meta,
+                "pitch": current_pitch,
+                "roll": current_roll
             }
 
             try:
@@ -130,6 +144,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                 "filename": frame_base_name,
                 "lat": round(current_lat, 6),
                 "lon": round(current_lon, 6),
+                # --- RESTORED FOR UI DISPLAY ONLY ---
                 "pitch": round(current_pitch, 2),
                 "roll": round(current_roll, 2),
                 "location": location_str,

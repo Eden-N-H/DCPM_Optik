@@ -121,34 +121,20 @@ def get_telemetry_interpolators(streams):
         interpolators["gps"] = interp1d(times, data[:, :2], axis=0, bounds_error=False, fill_value="extrapolate")
         interpolators["speed"] = interp1d(times, data[:, 2], bounds_error=False, fill_value="extrapolate")
 
+    # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
+    # We now interpolate X, Y, Z directly instead of Pitch and Roll
     if "GRAV" in streams:
         times = np.array([s["time_sec"] for s in streams["GRAV"]])
-        pitches, rolls = [], []
-        for s in streams["GRAV"]:
-            x, y, z = s["data"]
-            pitches.append(-np.degrees(np.arctan2(z, y)))
-            rolls.append(np.degrees(np.arctan2(x, y)))
-            
-        p_arr, r_arr = np.array(pitches), np.array(rolls)
+        gravs = np.array([s["data"] for s in streams["GRAV"]]) # Shape: Nx3
         
-        if len(p_arr) > 11:
-            w = min(31, len(p_arr) if len(p_arr)%2!=0 else len(p_arr)-1)
-            p_inst = savgol_filter(p_arr, w, 3)
-            r_inst = savgol_filter(r_arr, w, 3)
-        else:
-            p_inst, r_inst = p_arr, r_arr
+        if len(gravs) > 11:
+            w = min(31, len(gravs) if len(gravs)%2!=0 else len(gravs)-1)
+            gravs[:,0] = savgol_filter(gravs[:,0], w, 3)
+            gravs[:,1] = savgol_filter(gravs[:,1], w, 3)
+            gravs[:,2] = savgol_filter(gravs[:,2], w, 3)
             
-        interpolators["pitch"] = interp1d(times, p_inst, bounds_error=False, fill_value="extrapolate")
-        interpolators["roll"] = interp1d(times, r_inst, bounds_error=False, fill_value="extrapolate")
-
-        w_heavy = min(151, len(p_arr) if len(p_arr)%2!=0 else len(p_arr)-1)
-        if len(p_arr) > 31:
-            p_base = savgol_filter(p_arr, w_heavy, 1)
-            r_base = savgol_filter(r_arr, w_heavy, 1)
-            interpolators["pitch_base"] = interp1d(times, p_base, bounds_error=False, fill_value="extrapolate")
-            interpolators["roll_base"] = interp1d(times, r_base, bounds_error=False, fill_value="extrapolate")
-        else:
-            interpolators["pitch_base"] = interpolators["pitch"]
-            interpolators["roll_base"] = interpolators["roll"]
+        interpolators["grav_x"] = interp1d(times, gravs[:,0], bounds_error=False, fill_value="extrapolate")
+        interpolators["grav_y"] = interp1d(times, gravs[:,1], bounds_error=False, fill_value="extrapolate")
+        interpolators["grav_z"] = interp1d(times, gravs[:,2], bounds_error=False, fill_value="extrapolate")
 
     return interpolators

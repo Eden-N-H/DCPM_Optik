@@ -6,17 +6,10 @@ from ultralytics.utils.plotting import colors
 
 from geo_math import local_to_global
 from cv_projections import equirectangular_to_rectilinear
-from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask, get_camera_rotation_matrix
+from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
 
 def _run_sam2_on_points(image_bgr, points, predictor):
-    """Refine a user-drawn outline with SAM2.
-
-    We use the bounding box derived from the user's polygon as a tight prompt 
-    for SAM2. We omit the centroid point because for irregular or hollow 
-    defects, the centroid might land on healthy road, causing SAM2 to segment 
-    the road instead. We strictly format the box as a 2D array (1, 4) to 
-    prevent SAM2 from matrix-shape misunderstandings.
-    """
+    """Refine a user-drawn outline with SAM2."""
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     points_np = np.array(points, dtype=np.float32)
     if points_np.ndim != 2 or points_np.shape[0] < 3:
@@ -27,7 +20,6 @@ def _run_sam2_on_points(image_bgr, points, predictor):
     x_min, y_min = points_np.min(axis=0)
     x_max, y_max = points_np.max(axis=0)
 
-    # Add a small margin to the bounding box so SAM2 sees the object's edges clearly
     box_w = max(x_max - x_min, 1.0)
     box_h = max(y_max - y_min, 1.0)
     margin_x = box_w * 0.05
@@ -38,7 +30,6 @@ def _run_sam2_on_points(image_bgr, points, predictor):
     x_max = float(np.clip(x_max + margin_x, 0, w - 1))
     y_max = float(np.clip(y_max + margin_y, 0, h - 1))
 
-    # Formatted strictly as shape (1, 4) for SAM2 predictability
     box = np.array([[x_min, y_min, x_max, y_max]], dtype=np.float32)
 
     predictor.set_image(image_rgb)
@@ -107,12 +98,6 @@ def _render_simple_view_from_detections(process_meta, view_name, calib, filename
     detections = process_meta.get('view_meta', {}).get(view_name, {}).get('detections', [])
     defects = []
     
-    # NOTE: det_idx is tagged on every defect row so the frontend can send
-    # back the *real* position in `detections` for edit/delete/re-outline,
-    # instead of relying on the position of the row in `defects`. Those two
-    # lists are not guaranteed to line up 1:1 elsewhere in this file (see
-    # render_view_from_detections / process_single_image / recalculate_view),
-    # but we tag it here too for consistency across all code paths.
     for det_idx, det in enumerate(detections):
         pts = np.array(det['polygon'], dtype=np.int32)
         class_name = det['class_name']
@@ -149,31 +134,29 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     original_filename = process_meta.get('original_name', '')
     media_type = options.get('media_type', '360-video')
     
-    # Only Orthographic skips homography inherently.
     if media_type == 'orthographic':
         return _render_simple_view_from_detections(process_meta, view_name, calib, filename, output_dir)
         
-    gps_lat = telemetry.get('lat')
-    gps_lon = telemetry.get('lon')
-    fov_val = telemetry.get('fov')
+    gps_lat = telemetry.get('lat') or 0.0
+    gps_lon = telemetry.get('lon') or 0.0
     heading = float(telemetry.get('heading') or 0.0)
     
-    # Fallbacks for Standard Images without Telemetry
-    if fov_val is None: fov_val = 100.0
-    if gps_lat is None: gps_lat = 0.0
-    if gps_lon is None: gps_lon = 0.0
-    
     source_path = os.path.join(output_dir, f"source_{filename}")
-    rect_img_for_proj, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
+    rect_img_for_proj, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
     base_name_no_ext = os.path.splitext(filename)[0]
     
+    # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
     cam_h = float(calib.get('cam_height') or 1.6)
-    z_n = float(calib.get('z_near') or 1.5)
-    z_f = float(calib.get('z_far') or 10.0)
-    lane_w = float(calib.get('lane_width') or 8.0)
-    x_r = lane_w / 2.0
+    y_min = float(calib.get('z_near') or 1.5)
+    y_max = float(calib.get('z_far') or 10.0)
+    road_width = float(calib.get('lane_width') or 8.0)
+    x_r = road_width / 2.0
 
-    H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+    H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+        K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
+    )
+    gsd = 1.0 / PPM
+    
     raw_bev_bgr = cv2.warpPerspective(rect_img_for_proj, H_mat, (bev_w, bev_h))
     
     heading_offset = 180.0 if view_name == 'rear' else 0.0
@@ -182,14 +165,18 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     annotated_rect = rect_img_for_proj.copy()
     annotated_bev_bgr = raw_bev_bgr.copy()
     
-    R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
-    roi_pts_3d = [[-x_r, cam_h, z_n], [x_r, cam_h, z_n], [x_r, cam_h, z_f], [-x_r, cam_h, z_f]]
+    roi_pts_3d = [
+        (-x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_max * v_forward) + (cam_h * v_down),
+        (-x_r * v_right) + (y_max * v_forward) + (cam_h * v_down)
+    ]
     roi_pts_2d = []
     for pt in roi_pts_3d:
-        xyz = R @ np.array(pt)
-        if xyz[2] > 1e-5:
-            u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
-            v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+        p_img = K @ pt
+        if p_img[2] > 1e-5:
+            u = int(p_img[0]/p_img[2])
+            v = int(p_img[1]/p_img[2])
             roi_pts_2d.append([u, v])
             
     if len(roi_pts_2d) == 4:
@@ -200,21 +187,12 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
         cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if options.get('draw_grid', False):
-        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     detections = process_meta.get('view_meta', {}).get(view_name, {}).get('detections', [])
     defects = []
     geojson_features = []
     
-    # NOTE: a single detection can produce zero BEV contours (filtered out
-    # below when area_sqm is <= 1e-5) or multiple disjoint contours after the
-    # perspective warp splits its mask. That means `defects` is NOT 1:1 with
-    # `detections` -- the row position in `defects` cannot be used as an
-    # index back into `detections`. Every appended defect is tagged with
-    # `det_idx`, the *real* index into `detections`, so edit/delete/
-    # re-outline (which operate on `detections` by index in app.py's
-    # /modify_defects) stay correct regardless of how many contours a given
-    # detection's mask splits into.
     for det_idx, det in enumerate(detections):
         pts = np.array(det['polygon'], dtype=np.int32)
         class_name = det['class_name']
@@ -227,11 +205,11 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
         cv2.addWeighted(overlay, 0.4, annotated_rect, 0.6, 0, annotated_rect)
         cv2.polylines(annotated_rect, [pts], isClosed=True, color=color_bgr, thickness=2)
         
-        x_min, y_min = pts.min(axis=0)
+        x_min_pt, y_min_pt = pts.min(axis=0)
         label = f"{class_name} {conf:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(annotated_rect, (x_min, y_min - th - 4), (x_min + tw, y_min), color_bgr, -1)
-        cv2.putText(annotated_rect, label, (x_min, y_min - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.rectangle(annotated_rect, (x_min_pt, y_min_pt - th - 4), (x_min_pt + tw, y_min_pt), color_bgr, -1)
+        cv2.putText(annotated_rect, label, (x_min_pt, y_min_pt - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         mask_canvas = np.zeros(rect_img_for_proj.shape[:2], dtype=np.uint8)
         cv2.fillPoly(mask_canvas, [pts], 255)
@@ -245,9 +223,11 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
             cv2.fillPoly(overlay, [contour], color=color_bgr)
             cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
             
-            if gps_lat is not None and gps_lon is not None:
-                geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[1], 
-                               local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[0]] for pt in contour]
+            if telemetry.get('lat') is not None and telemetry.get('lon') is not None:
+                geo_coords = [[
+                    local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[1], 
+                    local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[0]
+                ] for pt in contour]
                 if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
             else:
                 geo_coords = []
@@ -334,36 +314,23 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
 def process_single_image(img_input, model, base_filename, output_dir, telemetry, options, model_lock, original_filename="", sam2_predictor=None):
     media_type = options.get('media_type', '360-video')
     
-    # Bypass for top-down orthographics only
     if media_type == 'orthographic':
         return _process_simple_frame(img_input, model, base_filename, output_dir, options, model_lock, original_filename, sam2_predictor)
         
-    gps_lat = telemetry.get('lat')
-    gps_lon = telemetry.get('lon')
+    gps_lat = telemetry.get('lat') or 0.0
+    gps_lon = telemetry.get('lon') or 0.0
     heading = telemetry.get('heading', 0.0)
-    fov_val = float(telemetry.get('fov')) if telemetry.get('fov') is not None else None
-    
-    # Setup safe fallbacks for Standard Photos / non-telemetry items
-    if fov_val is None: fov_val = 100.0
-    if gps_lat is None: gps_lat = 0.0
-    if gps_lon is None: gps_lon = 0.0
+    fov_val = float(telemetry.get('xfov') or telemetry.get('fov') or 100.0)
         
     cam_height = options.get('cam_height', 1.6)
     is_360 = options.get('is_360', True)
     draw_grid = options.get('draw_grid', False)
     
-    z_near_base = max(1.5, cam_height * 1.2)
-    z_far_base = min(12.0, z_near_base + 8.0)
-    lane_width_base = 8.0 
-    x_range_base = lane_width_base / 2.0
-    
-    do_pitch = options.get('comp_pitch', True)
-    do_roll = options.get('comp_roll', True)
-    
-    pitch = telemetry.get('pitch', 0.0) if do_pitch and telemetry.get('pitch') is not None else 0.0
-    roll = telemetry.get('roll', 0.0) if do_roll and telemetry.get('roll') is not None else 0.0
-    base_pitch = telemetry.get('base_pitch', 0.0) if do_pitch and telemetry.get('base_pitch') is not None else 0.0
-    base_roll = telemetry.get('base_roll', 0.0) if do_roll and telemetry.get('base_roll') is not None else 0.0
+    # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
+    y_min_base = max(1.5, cam_height * 1.2)
+    y_max_base = min(12.0, y_min_base + 8.0)
+    road_width_base = 8.0 
+    x_range_base = road_width_base / 2.0
 
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
     base_name_no_ext = os.path.splitext(base_filename)[0]
@@ -385,33 +352,20 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             "yaw_offset": 0.0,
             "fov": fov_val,
             "cam_height": cam_height,
-            "z_near": z_near_base,
-            "z_far": z_far_base,
-            "lane_width": lane_width_base
+            "z_near": y_min_base,   
+            "z_far": y_max_base,    
+            "lane_width": road_width_base 
         }
-
-        if is_360:
-            rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov_val, pitch_deg=pitch, roll_deg=roll, yaw_deg=config['yaw'])
-            bev_pitch, bev_roll, bev_yaw = 0.0, 0.0, 0.0
-        else:
-            rect_img = img_mat.copy()
-            h, w = rect_img.shape[:2]
-            f = (w / 2.0) / math.tan(math.radians(fov_val) / 2.0)
-            K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
-            
-            if telemetry.get('klns') and len(telemetry['klns']) >= 5 and options.get('undistort', True):
-                try:
-                    dist_coeffs = np.array(telemetry['klns'][1:6], dtype=np.float32)
-                    K_undist = np.array([[telemetry['klns'][0], 0, w/2], [0, telemetry['klns'][0], h/2], [0, 0, 1]], dtype=np.float32)
-                    rect_img = cv2.undistort(rect_img, K_undist, dist_coeffs)
-                    K = K_undist
-                except: pass
-                
-            bev_pitch, bev_roll, bev_yaw = pitch, roll, config['yaw']
-
+        
+        rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path=os.path.join(output_dir, source_filename), telemetry=telemetry, options=options, view_name=view_name, calib=calibrations[view_name])
+        
         view_meta = {"K": K.tolist(), "detections": []}
 
-        H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_height, bev_pitch, bev_roll, bev_yaw, z_near_base, z_far_base, x_range_base)
+        # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
+        H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+            K, cam_height, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min_base, y_max_base, road_width_base
+        )
+        gsd = 1.0 / PPM
         
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
@@ -419,41 +373,35 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         raw_bev_rgba = apply_bev_feathering(raw_bev_bgr)
         raw_bev_filename = f"raw_bev_{view_name}_{base_name_no_ext}.png" 
         cv2.imwrite(os.path.join(output_dir, raw_bev_filename), raw_bev_rgba)
-
-        # Fully unfeathered, unannotated BEV render used ONLY for the manual
-        # draw/edit modal. `raw_bev` above is deliberately feathered (alpha
-        # fade on top/sides) because it doubles as the source tile for the
-        # map orthomosaic shingles, where fading is required to blend into
-        # the satellite basemap. That makes it unsuitable for the edit modal,
-        # where the fade reads as the image being cropped/cut off. This file
-        # shares identical pixel dimensions (bev_w x bev_h) with raw_bev, so
-        # click coordinates captured against it remain valid for the
-        # inverse-homography mapping in modify_defects.
+        
         edit_bev_filename = f"edit_bev_{view_name}_{base_name_no_ext}.png"
         cv2.imwrite(os.path.join(output_dir, edit_bev_filename), raw_bev_bgr)
 
         view_heading = (heading + config['heading_offset']) % 360
-        bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (z_near_base + z_far_base) / 2.0)
+        bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (y_min_base + y_max_base) / 2.0)
         
         def to_lng_lat(x, z):
             lat_out, lon_out = local_to_global(gps_lat, gps_lon, view_heading, x, z)
             return [lon_out, lat_out]
             
-        maplibre_corners = [to_lng_lat(-x_range_base, z_far_base), to_lng_lat(x_range_base, z_far_base), to_lng_lat(x_range_base, z_near_base), to_lng_lat(-x_range_base, z_near_base)]
-        bev_footprints[view_name] = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_range_base, "height_m": z_far_base - z_near_base, "corners": maplibre_corners}
+        maplibre_corners = [to_lng_lat(-x_range_base, y_max_base), to_lng_lat(x_range_base, y_max_base), to_lng_lat(x_range_base, y_min_base), to_lng_lat(-x_range_base, y_min_base)]
+        bev_footprints[view_name] = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_range_base, "height_m": y_max_base - y_min_base, "corners": maplibre_corners}
 
         annotated_rect = rect_img.copy()
         annotated_bev_bgr = raw_bev_bgr.copy()
 
-        R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
-        
-        roi_pts_3d = [[-x_range_base, cam_height, z_near_base], [x_range_base, cam_height, z_near_base], [x_range_base, cam_height, z_far_base], [-x_range_base, cam_height, z_far_base]]
+        roi_pts_3d = [
+            (-x_range_base * v_right) + (y_min_base * v_forward) + (cam_height * v_down),
+            (x_range_base * v_right) + (y_min_base * v_forward) + (cam_height * v_down),
+            (x_range_base * v_right) + (y_max_base * v_forward) + (cam_height * v_down),
+            (-x_range_base * v_right) + (y_max_base * v_forward) + (cam_height * v_down)
+        ]
         roi_pts_2d = []
         for pt in roi_pts_3d:
-            xyz = R @ np.array(pt)
-            if xyz[2] > 1e-5:
-                u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
-                v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+            p_img = K @ pt
+            if p_img[2] > 1e-5:
+                u = int(p_img[0]/p_img[2])
+                v = int(p_img[1]/p_img[2])
                 roi_pts_2d.append([u, v])
                 
         if len(roi_pts_2d) == 4:
@@ -464,7 +412,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
 
         if draw_grid:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, bev_pitch, bev_roll, bev_yaw, z_near_base, z_far_base, x_range_base)
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base)
 
         conf_thresh = options.get('conf_thresh', 0.25)
         inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
@@ -501,7 +449,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                     cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
                     cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                     
-                    geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, z_far_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, z_far_base-(pt[0][1]*gsd))[0]] for pt in contour]
+                    geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[0]] for pt in contour]
                     if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                     
                     all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
@@ -541,7 +489,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                             cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
                             cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                             
-                            geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, z_far_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, z_far_base-(pt[0][1]*gsd))[0]] for pt in contour]
+                            geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[0]] for pt in contour]
                             if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                             
                             all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
@@ -563,57 +511,85 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         
     return all_defects, all_geojson_features, generated_files, bev_footprints, view_meta_all, calibrations
 
+# --- NEW FISHEYE UNDISTORTION WITH YFOV (From Tester) ---
 def get_projected_image(source_path, telemetry, options, view_name, calib):
     img_mat = cv2.imread(source_path)
     is_360 = options.get('is_360', True)
     
-    base_pitch = float(telemetry.get('base_pitch') or 0.0) if options.get('comp_pitch', True) else 0.0
-    base_roll = float(telemetry.get('base_roll') or 0.0) if options.get('comp_roll', True) else 0.0
-    base_yaw = 0.0 if view_name == 'front' else 180.0
+    use_telemetry_tilt = options.get('comp_pitch', True) and options.get('comp_roll', True)
+    grav_vec = telemetry.get('grav_vec') if use_telemetry_tilt and telemetry.get('grav_vec') else [0.0, 1.0, 0.0]
     
-    pitch = base_pitch + float(calib.get('pitch_offset') or 0.0)
-    roll = base_roll + float(calib.get('roll_offset') or 0.0)
-    yaw = base_yaw + float(calib.get('yaw_offset') or 0.0)
+    pitch_offset = float(calib.get('pitch_offset') or 0.0)
+    roll_offset = float(calib.get('roll_offset') or 0.0)
+    yaw_offset = float(calib.get('yaw_offset') or 0.0)
+    
+    if view_name == 'rear':
+        yaw_offset += 180.0
+        
     fov = float(calib.get('fov') or 100.0)
 
     if is_360:
-        rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov, pitch_deg=pitch, roll_deg=roll, yaw_deg=yaw)
-        bev_pitch, bev_roll, bev_yaw = 0.0, 0.0, 0.0
+        rect_img, K = equirectangular_to_rectilinear(img_mat, fov_deg=fov, pitch_deg=pitch_offset, roll_deg=roll_offset, yaw_deg=yaw_offset)
+        grav_vec = [0.0, 1.0, 0.0]
+        eff_pitch = 0.0
+        eff_roll = 0.0
+        eff_yaw = 0.0
     else:
         rect_img = img_mat.copy()
         h, w = rect_img.shape[:2]
-        f = (w / 2.0) / math.tan(math.radians(fov) / 2.0)
-        K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
         
-        if telemetry.get('klns') and options.get('undistort', True):
-            try:
-                K_undist = np.array([[telemetry['klns'][0], 0, w/2], [0, telemetry['klns'][0], h/2], [0, 0, 1]], dtype=np.float32)
-                rect_img = cv2.undistort(rect_img, K_undist, np.array(telemetry['klns'][1:6], dtype=np.float32))
-                K = K_undist
-            except: pass
+        if options.get('undistort', True):
+            from cv_bev import get_fisheye_maps
+            # --- NEW: Explicitly extract both XFOV and YFOV for Tester fisheye mapping ---
+            x_fov = float(telemetry.get('xfov') or fov)
+            y_fov = float(telemetry.get('yfov') or (x_fov * (h / w))) 
+            map1, map2, K = get_fisheye_maps(w, h, x_fov, y_fov)
+            rect_img = cv2.remap(rect_img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        else:
+            f = (w / 2.0) / math.tan(math.radians(fov) / 2.0)
+            K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float32)
             
-        bev_pitch, bev_roll, bev_yaw = pitch, roll, yaw
+        eff_pitch = pitch_offset
+        eff_roll = roll_offset
+        eff_yaw = yaw_offset
         
-    return rect_img, K, bev_pitch, bev_roll, bev_yaw
+    return rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw
 
 def generate_grid_preview(source_path, process_meta, view_name, calib):
-    rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+    rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
     
     cam_h = float(calib.get('cam_height') or 1.6)
-    z_n = float(calib.get('z_near') or 1.5)
-    z_f = float(calib.get('z_far') or 10.0)
-    lane_w = float(calib.get('lane_width') or 8.0)
-    x_r = lane_w / 2.0
+    y_min = float(calib.get('z_near') or 1.5)
+    y_max = float(calib.get('z_far') or 10.0)
+    road_width = float(calib.get('lane_width') or 8.0)
     
-    R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
-    roi_pts_3d = [[-x_r, cam_h, z_n], [x_r, cam_h, z_n], [x_r, cam_h, z_f], [-x_r, cam_h, z_f]]
+    from cv_bev import apply_ui_offsets_to_vectors
+    g = np.array(grav_vec, dtype=np.float64)
+    if np.linalg.norm(g) > 1e-6: g = g / np.linalg.norm(g)
+    else: g = np.array([0, 1, 0])
+    v_down, z_cam_rot = apply_ui_offsets_to_vectors(g, np.array([0,0,1], dtype=np.float64), eff_pitch, eff_roll, eff_yaw)
+    v_forward = z_cam_rot - (np.dot(z_cam_rot, v_down) * v_down)
+    if np.linalg.norm(v_forward) > 1e-6: v_forward = v_forward / np.linalg.norm(v_forward)
+    else: v_forward = np.array([0, 0, 1])
+    v_right = np.cross(v_down, v_forward)
+    if np.linalg.norm(v_right) > 1e-6: v_right = v_right / np.linalg.norm(v_right)
+    else: v_right = np.array([1, 0, 0])
+
+    x_r = road_width / 2.0
+    
+    roi_pts_3d = [
+        (-x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_max * v_forward) + (cam_h * v_down),
+        (-x_r * v_right) + (y_max * v_forward) + (cam_h * v_down)
+    ]
     roi_pts_2d = []
     
     for pt in roi_pts_3d:
-        xyz = R @ np.array(pt)
-        if xyz[2] > 1e-5:
-            u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
-            v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+        p_img = K @ pt
+        if p_img[2] > 1e-5:
+            u = int(p_img[0]/p_img[2])
+            v = int(p_img[1]/p_img[2])
             roi_pts_2d.append([u, v])
             
     preview_img = rect_img.copy()
@@ -625,23 +601,27 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         cv2.polylines(preview_img, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if process_meta['options'].get('draw_grid', False):
-        preview_img = draw_bev_grid(preview_img, K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+        preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     return preview_img
 
 def recalculate_view(source_path, telemetry, options, view_name, calib, original_filename, output_dir, base_filename, model, model_lock, sam2_predictor=None):
-    rect_img, K, bev_pitch, bev_roll, bev_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
+    rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
     
-    gps_lat, gps_lon = telemetry.get('lat'), telemetry.get('lon')
+    gps_lat, gps_lon = telemetry.get('lat') or 0.0, telemetry.get('lon') or 0.0
     heading = float(telemetry.get('heading') or 0.0)
     
     cam_h = float(calib.get('cam_height') or 1.6)
-    z_n = float(calib.get('z_near') or 1.5)
-    z_f = float(calib.get('z_far') or 10.0)
-    lane_w = float(calib.get('lane_width') or 8.0)
-    x_r = lane_w / 2.0
+    y_min = float(calib.get('z_near') or 1.5)
+    y_max = float(calib.get('z_far') or 10.0)
+    road_width = float(calib.get('lane_width') or 8.0)
+    x_r = road_width / 2.0
 
-    H_mat, bev_w, bev_h, gsd = get_bev_homography(K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+    # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
+    H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+        K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
+    )
+    gsd = 1.0 / PPM
     
     raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
     base_name_no_ext = os.path.splitext(base_filename)[0]
@@ -652,30 +632,31 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     
     heading_offset = 180.0 if view_name == 'rear' else 0.0
     view_heading = (heading + heading_offset) % 360
-    
-    if gps_lat is None: gps_lat = 0.0
-    if gps_lon is None: gps_lon = 0.0
         
-    bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (z_n + z_f) / 2.0)
+    bev_center_lat, bev_center_lon = local_to_global(gps_lat, gps_lon, view_heading, 0, (y_min + y_max) / 2.0)
     
     def to_lng_lat(x, z):
         lat_out, lon_out = local_to_global(gps_lat, gps_lon, view_heading, x, z)
         return [lon_out, lat_out]
         
-    maplibre_corners = [to_lng_lat(-x_r, z_f), to_lng_lat(x_r, z_f), to_lng_lat(x_r, z_n), to_lng_lat(-x_r, z_n)]
-    footprint = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_r, "height_m": z_f - z_n, "corners": maplibre_corners}
+    maplibre_corners = [to_lng_lat(-x_r, y_max), to_lng_lat(x_r, y_max), to_lng_lat(x_r, y_min), to_lng_lat(-x_r, y_min)]
+    footprint = {"lat": bev_center_lat, "lon": bev_center_lon, "heading": view_heading, "width_m": 2 * x_r, "height_m": y_max - y_min, "corners": maplibre_corners}
     
     annotated_rect = rect_img.copy()
     annotated_bev_bgr = raw_bev_bgr.copy()
     
-    R = get_camera_rotation_matrix(bev_pitch, bev_yaw, bev_roll)
-    roi_pts_3d = [[-x_r, cam_h, z_n], [x_r, cam_h, z_n], [x_r, cam_h, z_f], [-x_r, cam_h, z_f]]
+    roi_pts_3d = [
+        (-x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_min * v_forward) + (cam_h * v_down),
+        (x_r * v_right) + (y_max * v_forward) + (cam_h * v_down),
+        (-x_r * v_right) + (y_max * v_forward) + (cam_h * v_down)
+    ]
     roi_pts_2d = []
     for pt in roi_pts_3d:
-        xyz = R @ np.array(pt)
-        if xyz[2] > 1e-5:
-            u = int((K[0,0] * xyz[0] / xyz[2]) + K[0,2])
-            v = int((K[1,1] * xyz[1] / xyz[2]) + K[1,2])
+        p_img = K @ pt
+        if p_img[2] > 1e-5:
+            u = int(p_img[0]/p_img[2])
+            v = int(p_img[1]/p_img[2])
             roi_pts_2d.append([u, v])
             
     if len(roi_pts_2d) == 4:
@@ -686,7 +667,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
         cv2.polylines(annotated_rect, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if options.get('draw_grid', False):
-        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, bev_pitch, bev_roll, bev_yaw, z_n, z_f, x_r)
+        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     defects, geojson_features, view_meta_detections = [], [], []
     inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
@@ -723,7 +704,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                 cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
                 cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                 
-                geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[0]] for pt in contour]
+                geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[0]] for pt in contour]
                 if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                 
                 defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
@@ -763,7 +744,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                         cv2.fillPoly(overlay, [contour], color=mask_color_bgr)
                         cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                         
-                        geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, z_f-(pt[0][1]*gsd))[0]] for pt in contour]
+                        geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[0]] for pt in contour]
                         if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                         
                         defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})

@@ -57,34 +57,49 @@ def extract_full_photo_metadata(filepath):
             exif_dict['Parsed_Longitude'] = lon
     except Exception: pass
 
-    pitch, roll, fov, klns = None, None, None, None
+    grav_vec, xfov, yfov, klns = None, None, None, None
+    pitch_ui, roll_ui = None, None
     xmp_dict, gpmf_dict = {}, {}
     try:
         xmp_raw, gpmf_raw = extract_jpeg_metadata_blocks(filepath)
         if xmp_raw:
             xmp_dict = parse_xmp_gpano(xmp_raw)
-            if 'PosePitchDegrees' in xmp_dict: pitch = float(xmp_dict['PosePitchDegrees'])
-            if 'PoseRollDegrees' in xmp_dict: roll = float(xmp_dict['PoseRollDegrees'])
         if gpmf_raw:
             ast = parse_gpmf(gpmf_raw)
             constants, _ = extract_all_telemetry(ast)
             global_constants = flatten_global_ast(ast)
             constants.update(global_constants)
             gpmf_dict = constants
-            if 'GRAV' in constants:
-                x, y, z = constants['GRAV']
-                if pitch is None: pitch = -math.degrees(math.atan2(z, y))
-                if roll is None: roll = math.degrees(math.atan2(x, y))
             
-            fov = constants.get('XFOV', None)
-            if fov is None:
+            # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
+            if 'GRAV' in constants:
+                grav_vec = list(constants['GRAV'])
+                # --- RESTORED FOR UI DISPLAY ONLY ---
+                # Derive Euler angles solely for UI display (does not affect vector homography)
+                gx, gy, gz = grav_vec
+                pitch_ui = -math.degrees(math.atan2(gz, gy))
+                roll_ui = math.degrees(math.atan2(gx, gy))
+            
+            xfov = constants.get('XFOV', None)
+            yfov = constants.get('YFOV', None)
+            
+            if xfov is None:
                 zfov, aruw = constants.get('ZFOV'), constants.get('ARUW')
                 if zfov is not None and aruw is not None:
-                    try: fov = math.degrees(2.0 * math.atan(math.tan(math.radians(float(zfov)) / 2.0) * (float(aruw) / math.sqrt(float(aruw)**2 + 1))))
+                    try: xfov = math.degrees(2.0 * math.atan(math.tan(math.radians(float(zfov)) / 2.0) * (float(aruw) / math.sqrt(float(aruw)**2 + 1))))
                     except Exception: pass
             
             klns = constants.get('KLNS', None)
     except Exception: pass
 
-    full_meta = {"EXIF": sanitize_meta(exif_dict), "XMP_GPano": sanitize_meta(xmp_dict), "GPMF": sanitize_meta(gpmf_dict), "Computed_Variables": {"Latitude": lat, "Longitude": lon, "Pitch": pitch, "Roll": roll, "FOV": fov, "KLNS": klns}}
-    return lat, lon, pitch, roll, klns, fov, full_meta
+    full_meta = {
+        "EXIF": sanitize_meta(exif_dict), 
+        "XMP_GPano": sanitize_meta(xmp_dict), 
+        "GPMF": sanitize_meta(gpmf_dict), 
+        "Computed_Variables": {
+            "Latitude": lat, "Longitude": lon, 
+            "grav_vec": grav_vec, "XFOV": xfov, "YFOV": yfov, 
+            "KLNS": klns, "Pitch_UI": pitch_ui, "Roll_UI": roll_ui
+        }
+    }
+    return lat, lon, grav_vec, klns, xfov, yfov, pitch_ui, roll_ui, full_meta
