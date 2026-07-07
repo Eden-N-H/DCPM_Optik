@@ -26,7 +26,7 @@ const handleFiles = (files, isMulti, callback, nameElement) => {
     if (!files || !files.length) return;
     if (isMulti) { 
         callback(Array.from(files)); 
-        nameElement.textContent = `${files.length} items queued`; 
+        nameElement.textContent = `${files.length} ITEMS QUEUED`; 
     } 
     else { 
         callback(files[0]); 
@@ -43,13 +43,16 @@ export function setupDz(dzId, inId, nameId, isMulti, callback) {
     const inp = document.getElementById(inId);
     const nm = document.getElementById(nameId);
     
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add("bg-blue-50", "border-blue-500"); });
-    dz.addEventListener('dragenter', (e) => { e.preventDefault(); dz.classList.add("bg-blue-50", "border-blue-500"); });
-    dz.addEventListener('dragleave', (e) => { e.preventDefault(); dz.classList.remove("bg-blue-50", "border-blue-500"); });
+    // Add proxy click listener to open the file selector natively
+    dz.addEventListener('click', () => inp.click());
+    
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add("drag-active"); });
+    dz.addEventListener('dragenter', (e) => { e.preventDefault(); dz.classList.add("drag-active"); });
+    dz.addEventListener('dragleave', (e) => { e.preventDefault(); dz.classList.remove("drag-active"); });
     
     dz.addEventListener('drop', (e) => { 
         e.preventDefault(); 
-        dz.classList.remove("bg-blue-50", "border-blue-500"); 
+        dz.classList.remove("drag-active"); 
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
             inp.files = e.dataTransfer.files; 
             handleFiles(e.dataTransfer.files, isMulti, callback, nm); 
@@ -89,17 +92,18 @@ export function setView(dir) {
     }
     
     state.currentDirection = dir;
-    const contF = document.getElementById('container-bev-front'), contR = document.getElementById('container-bev-rear');
+    const contF = document.getElementById('container-bev-front');
+    const contR = document.getElementById('container-bev-rear');
     const activeLabel = document.getElementById('label-active-view');
     
     if (dir === 'front') {
-        contF.classList.add('border-blue-500', 'ring-2'); contF.classList.remove('border-transparent');
-        contR.classList.remove('border-blue-500', 'ring-2'); contR.classList.add('border-transparent');
-        activeLabel.textContent = 'Front View Active';
+        contF.classList.add('active-view');
+        contR.classList.remove('active-view');
+        activeLabel.textContent = 'FRONT ACTIVE';
     } else {
-        contR.classList.add('border-blue-500', 'ring-2'); contR.classList.remove('border-transparent');
-        contF.classList.remove('border-blue-500', 'ring-2'); contF.classList.add('border-transparent');
-        activeLabel.textContent = 'Rear View Active';
+        contR.classList.add('active-view');
+        contF.classList.remove('active-view');
+        activeLabel.textContent = 'REAR ACTIVE';
     }
     updateCarousel(false);
 }
@@ -118,9 +122,9 @@ export function updateCarousel(panMap = true) {
     if (state.appIs360) imgBevRear.classList.remove("hidden");
 
     const activeViewData = current.views[state.currentDirection] || current.views['front'];
-    document.getElementById("carousel-counter").textContent = `Item ${state.currentIndex + 1} of ${state.appResults.length}`;
+    document.getElementById("carousel-counter").textContent = `ITEM ${state.currentIndex + 1} OF ${state.appResults.length}`;
     document.getElementById("carousel-filename").textContent = current.original_name;
-    document.getElementById("carousel-telemetry").textContent = `Pitch: ${current.pitch}° | Roll: ${current.roll}°`;
+    document.getElementById("carousel-telemetry").textContent = `P: ${current.pitch}° | R: ${current.roll}°`;
 
     imgRect.onload = () => { autoFitSplitters(true); };
 
@@ -133,22 +137,22 @@ export function updateCarousel(panMap = true) {
 
     document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d, idx) => `
         <tr>
-            <td class="p-2"><span class="inline-block w-3 h-3 rounded-full mr-2" style="background-color: ${d.color || stringToColor(d.class)}; border: 1px solid #ccc;"></span>${d.class}</td>
-            <td class="p-2 text-gray-500">${(d.conf*100).toFixed(0)}%</td>
-            <td class="p-2 font-bold text-red-600">${d.area_sqm} m²</td>
-            <td class="p-2 text-right">
-                <button onclick="window.startEditDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Change Class">
-                    <img src="https://api.iconify.design/heroicons/pencil-square.svg?color=%233b82f6" class="w-4 h-4 inline align-middle">
+            <td><span class="color-dot" style="background-color: ${d.color || stringToColor(d.class)};"></span>${d.class}</td>
+            <td>${(d.conf*100).toFixed(0)}%</td>
+            <td><strong>${d.area_sqm} m²</strong></td>
+            <td class="text-right">
+                <button onclick="window.startEditDefect(${idx})" class="action-icon" title="Change Class">
+                    <svg viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
                 </button>
-                <button onclick="window.startReoutlineDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Re-outline">
-                    <img src="https://api.iconify.design/heroicons/map-pin.svg?color=%23f97316" class="w-4 h-4 inline align-middle">
+                <button onclick="window.startReoutlineDefect(${idx})" class="action-icon" title="Re-outline">
+                    <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
-                <button onclick="window.deleteDefect(${idx})" class="mx-1 opacity-70 hover:opacity-100 transition-opacity" title="Delete">
-                    <img src="https://api.iconify.design/heroicons/trash.svg?color=%23ef4444" class="w-4 h-4 inline align-middle">
+                <button onclick="window.deleteDefect(${idx})" class="action-icon" title="Delete">
+                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
             </td>
         </tr>
-    `).join('') || `<tr><td colspan="4" class="p-2 text-center text-gray-500">No detections</td></tr>`;
+    `).join('') || `<tr><td colspan="4" style="text-align:center; padding:10px; color:var(--muted);">NO DETECTIONS FOUND</td></tr>`;
 
     state.activeMarkerFilename = current.original_name;
     state.nodesGeoJson.features.forEach(f => { f.properties.active = (f.properties.original_name === state.activeMarkerFilename); });
@@ -162,7 +166,6 @@ export function updateCarousel(panMap = true) {
     document.getElementById("btn-next").disabled = (state.currentIndex === state.appResults.length - 1);
 }
 
-// RESTORED FULLSCREEN FUNCTIONS
 export function openFullscreen(type) {
     if (state.appResults.length === 0) return;
     const current = state.appResults[state.currentIndex];
@@ -174,12 +177,12 @@ export function openFullscreen(type) {
     } else if (type === 'bev') {
         imgFullscreen.src = viewData.bev_url.split('?')[0] + `?t=${Date.now()}`;
     }
-    document.getElementById("fullscreen-modal").classList.remove("hidden");
+    document.getElementById("fullscreen-modal").showModal();
 }
 
 export function initFullscreenModal() {
     document.getElementById("btn-close-fullscreen").onclick = () => {
-        document.getElementById("fullscreen-modal").classList.add("hidden");
+        document.getElementById("fullscreen-modal").close();
         document.getElementById("img-fullscreen").src = "";
     };
 }
@@ -196,14 +199,13 @@ export function addWarning(messageHTML) {
     
     state.warningCount++;
     badge.textContent = state.warningCount;
-    badge.classList.remove("hidden");
     btn.classList.remove("hidden");
 }
 
 export function toggleWarningsModal(show) {
     const modal = document.getElementById("warnings-modal");
-    if (show) modal.classList.remove("hidden");
-    else modal.classList.add("hidden");
+    if (show) modal.showModal();
+    else modal.close();
 }
 
 export function setupCalibrationUI() {
@@ -262,7 +264,7 @@ export function setupCalibrationUI() {
         finally { loader.classList.add("hidden"); }
     };
 
-    const close = () => modal.classList.add("hidden");
+    const close = () => modal.close();
     
     btnOpen.onclick = () => {
         if(state.appResults.length === 0) return;
@@ -273,7 +275,7 @@ export function setupCalibrationUI() {
         };
         setCalibrationValues(baseCalib);
         previewImg.src = current.views[state.currentDirection].rect_url;
-        modal.classList.remove("hidden");
+        modal.showModal();
     };
     
     btnClose.onclick = close;
@@ -293,7 +295,7 @@ export function setupCalibrationUI() {
 
     btnAutoVP.onclick = async () => {
         btnAutoVP.disabled = true;
-        btnAutoVP.innerHTML = `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1"> Analyzing...`;
+        btnAutoVP.innerHTML = "COMPUTING...";
         try {
             const current = state.appResults[state.currentIndex];
             const data = await autoDetectVP(current.filename, state.currentDirection, getCalibrationValues());
@@ -306,13 +308,12 @@ export function setupCalibrationUI() {
         } catch(err) { console.error(err); }
         finally {
             btnAutoVP.disabled = false;
-            btnAutoVP.innerHTML = `<img src="https://api.iconify.design/heroicons/sparkles.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Auto"> Auto-Detect VP`;
+            btnAutoVP.innerHTML = `<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> AUTO-VP`;
         }
     };
 
     previewImg.addEventListener('click', async (e) => {
         const rect = previewImg.getBoundingClientRect();
-        
         const nw = previewImg.naturalWidth;
         const nh = previewImg.naturalHeight;
         if(!nw || !nh) return;
@@ -344,7 +345,7 @@ export function setupCalibrationUI() {
     });
 
     btnApply.onclick = async () => {
-        btnApply.disabled = true; btnApply.textContent = "Re-running AI Inference...";
+        btnApply.disabled = true; btnApply.innerHTML = "INFERRING AI...";
         btnCancel.disabled = true;
         try {
             const newResults = await recalculateProject(getCalibrationValues());
@@ -365,7 +366,7 @@ export function setupCalibrationUI() {
         } catch(err) {
             alert("Failed to recalculate: " + err.message);
         } finally {
-            btnApply.disabled = false; btnApply.textContent = "Apply to Project";
+            btnApply.disabled = false; btnApply.innerHTML = "COMMIT TO PROJECT";
             btnCancel.disabled = false;
         }
     };
@@ -429,44 +430,34 @@ export function toggleMapView() {
     const imagePanel = document.getElementById("image-panel");
     
     const mediaLayout = document.getElementById("media-layout-container");
-    const mediaSplitter = document.getElementById("media-splitter");
-    const perspectiveContainer = document.getElementById("perspective-container");
     const btnToggleMap = document.getElementById("btn-toggle-map");
 
     if (state.isMapVisible) {
         mapPanel.classList.remove("hidden");
         mainSplitter.classList.remove("hidden");
+        mediaLayout.setAttribute("data-layout", "vertical");
         
-        mediaLayout.classList.remove("flex-row"); mediaLayout.classList.add("flex-col");
-        mediaSplitter.classList.remove("w-2", "h-full", "cursor-col-resize");
-        mediaSplitter.classList.add("h-2", "w-full", "cursor-row-resize");
-        
-        btnToggleMap.classList.remove("bg-blue-100", "text-blue-800", "border-blue-300");
-        btnToggleMap.classList.add("bg-gray-200", "text-gray-800");
+        btnToggleMap.classList.remove("btn-primary");
 
         if (!state.layoutPrefs.mapOn.isManual) {
             autoFitSplitters(true);
         } else {
             imagePanel.style.width = state.layoutPrefs.mapOn.mainW;
-            perspectiveContainer.style.flexBasis = state.layoutPrefs.mapOn.mediaBasis;
+            document.getElementById("perspective-container").style.flexBasis = state.layoutPrefs.mapOn.mediaBasis;
         }
 
     } else {
         mapPanel.classList.add("hidden");
         mainSplitter.classList.add("hidden");
         imagePanel.style.width = "100%";
+        mediaLayout.setAttribute("data-layout", "horizontal");
         
-        mediaLayout.classList.remove("flex-col"); mediaLayout.classList.add("flex-row");
-        mediaSplitter.classList.remove("h-2", "w-full", "cursor-row-resize");
-        mediaSplitter.classList.add("w-2", "h-full", "cursor-col-resize");
-        
-        btnToggleMap.classList.add("bg-blue-100", "text-blue-800", "border-blue-300");
-        btnToggleMap.classList.remove("bg-gray-200", "text-gray-800");
+        btnToggleMap.classList.add("btn-primary");
 
         if (!state.layoutPrefs.mapOff.isManual) {
             autoFitSplitters(false);
         } else {
-            perspectiveContainer.style.flexBasis = state.layoutPrefs.mapOff.mediaBasis;
+            document.getElementById("perspective-container").style.flexBasis = state.layoutPrefs.mapOff.mediaBasis;
         }
     }
 
@@ -588,34 +579,22 @@ export function initDrawMode() {
     let changeClassIndex = -1;
     window.startEditDefect = (idx) => {
         changeClassIndex = idx;
-        document.getElementById("change-class-modal").classList.remove("hidden");
+        document.getElementById("change-class-modal").showModal();
     };
 
     document.getElementById("btn-change-class-cancel").onclick = () => {
-        document.getElementById("change-class-modal").classList.add("hidden");
+        document.getElementById("change-class-modal").close();
     };
 
     document.getElementById("btn-change-class-save").onclick = async () => {
         const newClass = document.getElementById("change-class-select").value;
-        document.getElementById("change-class-modal").classList.add("hidden");
+        document.getElementById("change-class-modal").close();
         const btn = document.getElementById("btn-change-class-save");
         btn.disabled = true;
         await modifyDefects("update", changeClassIndex, null, newClass);
         btn.disabled = false;
     };
 
-    // NOTE: Both draw entry points below use `edit_bev_url`, NOT `bev_url` or
-    // `raw_bev_url`. Both of those are put through cv_bev.apply_bev_feathering
-    // server-side (alpha fade on the top ~30% and outer ~15% of each side) --
-    // `bev_url` because it carries the defect annotation overlay, and
-    // `raw_bev_url` because it doubles as the source tile for the map
-    // orthomosaic shingles, where that fade is required to blend into the
-    // satellite basemap. Against the modal's black background that same fade
-    // reads as the image being "cropped" -- especially the far-field strip
-    // you most need to see when outlining a distant defect. `edit_bev_url`
-    // is a dedicated, fully unfeathered/unannotated render used only here;
-    // it has identical pixel dimensions to the other BEV variants so the
-    // click-to-polygon coordinate math in modifyDefects() stays correct.
     window.startReoutlineDefect = (idx) => {
         const current = state.appResults[state.currentIndex];
         window.drawMode = true;
@@ -625,7 +604,7 @@ export function initDrawMode() {
         
         const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
         imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
-        document.getElementById("draw-modal").classList.remove("hidden");
+        document.getElementById("draw-modal").showModal();
         document.getElementById("draw-class-container").classList.add("hidden");
     };
 
@@ -637,7 +616,7 @@ export function initDrawMode() {
         
         const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
         imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
-        document.getElementById("draw-modal").classList.remove("hidden");
+        document.getElementById("draw-modal").showModal();
         document.getElementById("draw-class-container").classList.remove("hidden");
     };
 
@@ -645,19 +624,19 @@ export function initDrawMode() {
         window.drawMode = false;
         window.drawPoints = [];
         document.getElementById("draw-overlay").innerHTML = "";
-        document.getElementById("draw-modal").classList.add("hidden");
+        document.getElementById("draw-modal").close();
     };
 
     document.getElementById("btn-draw-done").onclick = async () => {
         if(window.drawPoints.length < 3) {
-            alert("Please draw at least 3 points");
+            alert("MINIMUM 3 POINTS REQUIRED.");
             return;
         }
         
         const className = document.getElementById("draw-class-select").value;
         const btn = document.getElementById("btn-draw-done");
         btn.disabled = true; 
-        btn.textContent = "Applying...";
+        btn.innerHTML = "APPLYING...";
         
         try {
             await modifyDefects(window.drawAction, window.drawIndex, window.drawPoints, className);
@@ -665,9 +644,9 @@ export function initDrawMode() {
             window.drawMode = false;
             window.drawPoints = [];
             document.getElementById("draw-overlay").innerHTML = "";
-            document.getElementById("draw-modal").classList.add("hidden");
+            document.getElementById("draw-modal").close();
             btn.disabled = false; 
-            btn.textContent = "Apply SAM2";
+            btn.innerHTML = "EXECUTE SAM2";
         }
     };
 }
@@ -693,7 +672,12 @@ function renderDrawPoints() {
         const y = pt[1] * hRendered + yOffset;
         
         const dot = document.createElement("div");
-        dot.className = "absolute w-[4px] h-[4px] bg-red-500 rounded-full transform -translate-x-[2px] -translate-y-[2px] pointer-events-none";
+        dot.style.position = "absolute";
+        dot.style.width = "4px";
+        dot.style.height = "4px";
+        dot.style.backgroundColor = "red";
+        dot.style.transform = "translate(-2px, -2px)";
+        dot.style.pointerEvents = "none";
         dot.style.left = x + "px";
         dot.style.top = y + "px";
         overlay.appendChild(dot);
@@ -706,7 +690,10 @@ function renderDrawPoints() {
             const angle = Math.atan2(y - py, x - px);
             
             const line = document.createElement("div");
-            line.className = "absolute bg-red-500 origin-left pointer-events-none";
+            line.style.position = "absolute";
+            line.style.backgroundColor = "red";
+            line.style.transformOrigin = "left";
+            line.style.pointerEvents = "none";
             line.style.height = "1px";
             line.style.width = dist + "px";
             line.style.left = px + "px";
@@ -729,7 +716,10 @@ function renderDrawPoints() {
         const angle = Math.atan2(fy - ly, fx - lx);
         
         const line = document.createElement("div");
-        line.className = "absolute bg-red-500/50 origin-left pointer-events-none";
+        line.style.position = "absolute";
+        line.style.backgroundColor = "rgba(255,0,0,0.5)";
+        line.style.transformOrigin = "left";
+        line.style.pointerEvents = "none";
         line.style.height = "1px";
         line.style.width = dist + "px";
         line.style.left = lx + "px";

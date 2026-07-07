@@ -4,356 +4,327 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Unified DCPM Engine</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <style> .progress-bar-fill { transition: width 0.4s ease; } </style>
 </head>
-<body class="bg-gray-100 font-sans min-h-screen p-6 relative">
-    <div class="max-w-screen-2xl mx-auto flex flex-col gap-4">
-        
-        <div class="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm">
-            <div>
-                <h1 class="text-2xl font-bold text-gray-800">Unified DCPM Engine</h1>
-                <p class="text-xs text-gray-500">Supports 360° Media, Video Tracking, & Automated Pipeline Data retrieval</p>
-            </div>
-            
-            <div class="flex gap-3 mt-4 md:mt-0 flex-wrap justify-end items-center">
-                <button id="btn-show-warnings" class="hidden bg-orange-100 hover:bg-orange-200 text-orange-800 border border-orange-300 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition relative">
-                    <img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Warning"> Warnings
-                    <span id="warnings-badge" class="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full hidden">0</span>
-                </button>
-                <button id="btn-toggle-map" class="hidden bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
-                    <img src="https://api.iconify.design/heroicons/map.svg?color=%231f2937" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Map"> Toggle Map
-                </button>
-                <button id="btn-export-flat-zip" class="hidden bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">Export Flattened ZIP</button>
-                <button id="btn-export-zip" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">Export RAW ZIP</button>
-                <button id="btn-save-project" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
-                    <img src="https://api.iconify.design/heroicons/document-arrow-down.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Save"> Save State
-                </button>
-                <label class="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm text-sm transition">
-                    <img src="https://api.iconify.design/heroicons/folder-open.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1" alt="Load"> Load State JSON<input type="file" id="in-load-project" accept=".json" class="hidden">
-                </label>
-            </div>
+<body>
+    <header class="app-header">
+        <div class="header-titles">
+            <h1>Unified DCPM Engine</h1>
+            <p>System V.2.1 // Telemetry + ML Pipeline</p>
         </div>
-        
-        <div id="upload-panel" class="bg-white p-6 rounded-xl shadow-sm transition-all duration-300">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <nav class="toolbar">
+            <button id="btn-show-warnings" class="hidden btn-warning">
+                <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Warnings <span id="warnings-badge" class="badge">0</span>
+            </button>
+            <button id="btn-toggle-map" class="hidden">
+                <svg viewBox="0 0 24 24"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+                Toggle Map
+            </button>
+            <button id="btn-export-flat-zip" class="hidden btn-primary">
+                <svg viewBox="0 0 24 24"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                Export Flat ZIP
+            </button>
+            <button id="btn-export-zip" class="hidden btn-primary">
+                <svg viewBox="0 0 24 24"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                Export RAW ZIP
+            </button>
+            <button id="btn-save-project" class="hidden btn-success">
+                <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save State
+            </button>
+            <label class="btn">
+                <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                Load State <input type="file" id="in-load-project" accept=".json" hidden>
+            </label>
+        </nav>
+    </header>
+
+    <main class="container">
+        <!-- UPLOAD PANEL -->
+        <section id="upload-panel" class="panel">
+            <div class="upload-grid">
                 
-                <div id="dz-model" class="dropzone relative p-4 text-center rounded-lg flex flex-col justify-center min-h-[120px] transition-colors overflow-hidden border-2 border-dashed border-gray-300 hover:border-blue-500 hover:bg-blue-50">
-                    <span class="text-sm font-medium text-gray-600 relative z-10 pointer-events-none" id="lbl-model">Drop YOLO Model (.pt) or Click</span>
-                    <span id="name-model" class="text-xs text-blue-600 mt-1 hidden relative z-10 pointer-events-none"></span>
-                    <span id="status-model" class="absolute top-2 right-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded hidden z-10 pointer-events-none">Loaded</span>
-                    <input type="file" id="in-model" accept=".pt" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" title="">
+                <div id="dz-model" class="dropzone">
+                    <span class="drop-text" id="lbl-model">DROP YOLO MODEL (.PT)</span>
+                    <span id="name-model" class="file-name hidden"></span>
+                    <span id="status-model" class="status-badge hidden">[ LOADED ]</span>
+                    <input type="file" id="in-model" accept=".pt" hidden>
                 </div>
                 
-                <div id="dz-image" class="dropzone relative p-4 text-center rounded-lg flex flex-col justify-center min-h-[120px] transition-colors overflow-hidden border-2 border-dashed border-gray-300 hover:border-blue-500 hover:bg-blue-50">
-                    <span class="text-sm font-medium text-gray-600 relative z-10 pointer-events-none">Drop Images/Video or Click</span>
-                    <span id="name-image" class="text-xs text-blue-600 mt-1 hidden relative z-10 pointer-events-none"></span>
-                    <input type="file" id="in-image" accept="image/*,video/*" multiple class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" title="">
+                <div id="dz-image" class="dropzone">
+                    <span class="drop-text">DROP MEDIA FILES HERE</span>
+                    <span id="name-image" class="file-name hidden"></span>
+                    <input type="file" id="in-image" accept="image/*,video/*" multiple hidden>
                 </div>
 
-                <div class="flex flex-col justify-center gap-2">
-                    <label class="text-xs font-semibold text-gray-500 uppercase">Settings & Execution</label>
-                    <div class="flex items-center gap-2">
-                        <select id="sel-media-type" class="text-sm p-1 border rounded w-full">
-                            <option value="360-video">360° Video (GoPro MAX)</option>
-                            <option value="360-photos">360° Photos</option>
-                            <option value="standard-video">Standard Video</option>
-                            <option value="standard-photos" selected>Standard Photos</option>
-                            <option value="orthographic">Orthographic / Aerial</option>
-                        </select>
+                <div class="settings-form">
+                    <label class="section-title">Settings & Execution</label>
+                    <select id="sel-media-type">
+                        <option value="360-video">360° Video (GoPro MAX)</option>
+                        <option value="360-photos">360° Photos</option>
+                        <option value="standard-video">Standard Video</option>
+                        <option value="standard-photos" selected>Standard Photos</option>
+                        <option value="orthographic">Orthographic / Aerial</option>
+                    </select>
+
+                    <label><input type="checkbox" id="chk-has-telemetry"> USE EMBEDDED TELEMETRY (GPMF/EXIF)</label>
+
+                    <div class="input-row">
+                        <label>CAM HEIGHT (M) <input type="number" id="cam-height" value="1.6" step="0.1"></label>
+                        <label>EXTRACT INTERVAL (M) <input type="number" id="interval-m" value="2.0" min="0.5" step="0.5"></label>
                     </div>
-                    <div class="flex items-center gap-2 mt-1">
-                        <input type="checkbox" id="chk-has-telemetry" class="w-4 h-4 accent-blue-600">
-                        <label for="chk-has-telemetry" class="text-xs font-semibold text-gray-600">GoPro / Has Embedded Telemetry (GPMF/EXIF GPS)</label>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <input type="number" id="cam-height" value="1.6" step="0.1" class="w-16 text-sm p-1 border rounded" title="Camera Height (m)">
-                        <span class="text-xs text-gray-600">Cam Height (m)</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <input type="number" id="interval-m" value="2.0" min="0.5" step="0.5" class="w-16 text-sm p-1 border rounded" title="Extract a frame every N meters">
-                        <span class="text-xs text-gray-600">Extract Interval (m)</span>
-                    </div>
-                    <input type="checkbox" id="chk-is-360" class="hidden">
-                    <div class="flex items-center gap-2">
-                        <input type="checkbox" id="chk-draw-grid" class="w-4 h-4 accent-blue-600" checked>
-                        <label for="chk-draw-grid" class="text-xs font-semibold text-gray-600">Overlay 1m² BEV Calib Grid</label>
-                    </div>
+
+                    <input type="checkbox" id="chk-is-360" hidden>
+                    <label><input type="checkbox" id="chk-draw-grid" checked> OVERLAY 1M² BEV GRID</label>
                     
-                    <details class="mt-2 group border rounded-lg overflow-hidden shadow-sm">
-                        <summary class="cursor-pointer bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-100 flex justify-between items-center select-none">
-                            Advanced Settings
-                            <span class="transform group-open:rotate-180 transition duration-200">▼</span>
-                        </summary>
-                        <div class="p-3 bg-white grid grid-cols-1 md:grid-cols-2 gap-3 border-t">
-                            <label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" id="chk-comp-roll" class="w-3.5 h-3.5 accent-blue-600" checked> Roll Comp</label>
-                            <label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" id="chk-comp-pitch" class="w-3.5 h-3.5 accent-blue-600" checked> Pitch Comp</label>
-                            <label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" id="chk-undistort" class="w-3.5 h-3.5 accent-blue-600" checked> Undistort (KLNS)</label>
-                            <label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" id="chk-ego-mask" class="w-3.5 h-3.5 accent-blue-600" checked> Ego-Mask (15%)</label>
-                            <div class="col-span-1 md:col-span-2 flex items-center gap-2">
-                                <input type="number" id="num-conf" value="0.25" min="0.05" max="0.95" step="0.05" class="w-16 text-xs p-1 border rounded">
-                                <span class="text-xs text-gray-600">AI Confidence Thresh</span>
-                            </div>
+                    <details class="advanced-settings">
+                        <summary>ADVANCED OPTIONS</summary>
+                        <div class="settings-grid">
+                            <label><input type="checkbox" id="chk-comp-roll" checked> ROLL COMP</label>
+                            <label><input type="checkbox" id="chk-comp-pitch" checked> PITCH COMP</label>
+                            <label><input type="checkbox" id="chk-undistort" checked> UNDISTORT (KLNS)</label>
+                            <label><input type="checkbox" id="chk-ego-mask" checked> EGO-MASK (15%)</label>
+                            <label class="full-width">AI CONF THRESHOLD <input type="number" id="num-conf" value="0.25" min="0.05" max="0.95" step="0.05"></label>
                         </div>
                     </details>
 
-                    <div class="flex gap-2 mt-2">
-                        <button id="process-btn" class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm shadow-sm" disabled>Process Uploads</button>
-                    </div>
+                    <button id="process-btn" class="btn-primary full-width mt-2" disabled>PROCESS BATCH</button>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <div id="progress-container" class="hidden bg-white p-4 rounded-xl shadow-sm flex flex-col gap-2">
-            <div class="flex justify-between items-end">
-                <div class="flex flex-col">
-                    <span id="progress-text" class="text-sm font-bold text-gray-700">Initializing...</span>
-                    <span id="eta-text" class="text-xs font-semibold text-blue-600">ETA: Calculating...</span>
+        <!-- PROGRESS PANEL -->
+        <section id="progress-container" class="panel hidden">
+            <div class="progress-header">
+                <div>
+                    <strong id="progress-text">INITIALIZING...</strong>
+                    <div id="eta-text" class="eta">ETA: CALCULATING...</div>
                 </div>
-                <button id="btn-cancel-job" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-bold transition shadow">Stop / Cancel</button>
+                <button id="btn-cancel-job" class="btn-danger">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+                    ABORT
+                </button>
             </div>
-            <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden mt-1">
-                <div id="progress-bar" class="bg-blue-600 h-3 rounded-full progress-bar-fill" style="width: 0%"></div>
-            </div>
-        </div>
+            <progress id="progress-bar" value="0" max="100"></progress>
+        </section>
 
-        <div id="workspace" class="hidden flex flex-row gap-2 h-[75vh] w-full">
+        <!-- WORKSPACE -->
+        <section id="workspace" class="hidden flex-workspace">
             
-            <div id="image-panel" class="bg-white p-4 rounded-xl shadow-sm border flex flex-col h-full overflow-hidden" style="width: 45%;">
+            <div id="image-panel" class="panel flex-col layout-pane">
                 
-                <div id="media-layout-container" class="flex-1 flex flex-col min-h-0 gap-2 mb-4">
-                    <div id="perspective-container" class="flex flex-col min-h-0 relative" style="flex-basis: 55%;">
-                        <div class="flex justify-between items-center mb-2 flex-none">
-                            <button id="btn-prev" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">&larr; Prev</button>
-                            <div class="text-center px-2">
-                                <p id="carousel-counter" class="font-bold text-gray-800 text-sm">Item 0 of 0</p>
-                                <p id="carousel-filename" class="text-xs text-gray-500">Waiting for data...</p>
-                                <p id="carousel-telemetry" class="text-xs text-blue-600"></p>
+                <div id="media-layout-container" data-layout="vertical" class="flex-col media-layout">
+                    
+                    <!-- Added flex-col to force internal elements to stack properly -->
+                    <div id="perspective-container" class="layout-pane flex-col relative">
+                        <div class="toolbar no-padding">
+                            <button id="btn-prev">PREV</button>
+                            <div class="carousel-info" style="text-align:center;">
+                                <strong id="carousel-counter">ITEM 0 OF 0</strong><br>
+                                <span id="carousel-filename" style="font-family: var(--font-mono); font-size:0.8rem;">WAITING FOR DATA...</span><br>
+                                <span id="carousel-telemetry" style="font-family: var(--font-mono); font-size:0.8rem; color:var(--muted);"></span>
                             </div>
-                            <button id="btn-next" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">Next &rarr;</button>
+                            <button id="btn-next">NEXT</button>
                         </div>
                         
-                        <div class="flex-none flex justify-between items-end mb-1">
-                            <div class="text-xs font-bold text-gray-500 uppercase">Perspective Analysis</div>
-                            <div class="flex gap-2">
-                                <button id="btn-open-calibrate" class="bg-orange-100 text-orange-800 hover:bg-orange-200 border border-orange-300 px-2 py-0.5 rounded shadow-sm text-[10px] font-bold uppercase transition">
-                                    <img src="https://api.iconify.design/heroicons/wrench-screwdriver.svg?color=%239a3412" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Calibrate"> Calibrate Engine
+                        <div class="toolbar no-padding mt-2">
+                            <span class="section-title">PERSPECTIVE</span>
+                            <div>
+                                <button id="btn-open-calibrate" class="btn-warning btn-small">
+                                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                    CALIBRATE
                                 </button>
-                                <div id="label-active-view" class="text-[10px] font-bold text-blue-600 uppercase bg-blue-100 px-2 py-0.5 rounded shadow-sm">Front View Active</div>
+                                <span id="label-active-view" class="badge-blue">FRONT ACTIVE</span>
                             </div>
                         </div>
-                        <div id="rect-image-wrapper" class="flex-1 min-h-0 relative border rounded bg-gray-50 flex items-center justify-center overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-300 transition">
-                            <span id="placeholder-rect" class="text-gray-400 text-sm italic absolute">Awaiting Image Process...</span>
-                            <img id="img-rect" class="absolute inset-0 w-full h-full object-contain p-1 z-10 hidden pointer-events-none" src="" alt="Rectilinear View">
+
+                        <!-- Added flex-1 to push the wrapper to fill the container -->
+                        <div id="rect-image-wrapper" class="image-wrapper pointer flex-1" style="margin-top: 5px;">
+                            <span id="placeholder-rect" class="placeholder-text">AWAITING IMAGE DATA...</span>
+                            <img id="img-rect" class="fit-image hidden" src="" alt="Rectilinear View">
                         </div>
                     </div>
                     
-                    <div id="media-splitter" class="h-2 w-full bg-gray-200 hover:bg-blue-400 cursor-row-resize rounded transition-colors flex-none"></div>
+                    <div id="media-splitter" class="splitter splitter-horizontal"></div>
 
-                    <div id="bev-section" class="flex-1 flex flex-col min-h-0">
-                        <div class="flex-none flex justify-between items-end mb-1">
-                            <div class="text-xs font-bold text-gray-500 uppercase">Metric BEV</div>
-                        </div>
-                        <div id="bev-layout-container" class="flex-1 min-h-0 flex gap-2">
-                            <div id="container-bev-front" class="flex-1 min-h-0 relative border-2 border-blue-500 ring-2 ring-blue-100 rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group">
-                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20"><img src="https://api.iconify.design/heroicons/arrow-up.svg" class="w-3 h-3 inline align-middle -mt-0.5 mr-0.5"> Front</span>
-                                <img id="img-bev-front" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden pointer-events-none" src="">
+                    <div id="bev-section" class="layout-pane flex-col relative">
+                        <span class="section-title" style="margin-bottom: 5px;">METRIC BEV</span>
+                        <!-- Added flex-1 to force height rendering -->
+                        <div id="bev-layout-container" class="flex-row gap-1 flex-1 h-full">
+                            <div id="container-bev-front" class="image-wrapper active-view bev-grid-bg pointer flex-1">
+                                <span class="overlay-badge">FRONT</span>
+                                <img id="img-bev-front" class="fit-image hidden" src="">
                             </div>
-                            <div id="container-bev-rear" class="flex-1 min-h-0 relative border-2 border-transparent rounded bev-grid-bg cursor-pointer overflow-hidden transition-all group hidden">
-                                <span class="absolute top-1 left-1 bg-white/90 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm z-20"><img src="https://api.iconify.design/heroicons/arrow-down.svg" class="w-3 h-3 inline align-middle -mt-0.5 mr-0.5"> Rear</span>
-                                <img id="img-bev-rear" class="absolute inset-0 w-full h-full object-contain p-1 group-hover:scale-105 transition-transform z-10 hidden pointer-events-none" src="">
+                            <div id="container-bev-rear" class="image-wrapper bev-grid-bg pointer flex-1 hidden">
+                                <span class="overlay-badge">REAR</span>
+                                <img id="img-bev-rear" class="fit-image hidden" src="">
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="flex-none h-48 flex flex-col relative">
-                    <div class="flex justify-between items-center p-2 border-b bg-gray-50">
-                        <span class="text-xs font-bold text-gray-500 uppercase">Defects</span>
-                        <button id="btn-add-defect" class="bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded text-xs font-bold shadow-sm">
-                            <img src="https://api.iconify.design/heroicons/plus-circle.svg?color=%231d4ed8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Add"> Add Defect
+                <div class="defect-table-container">
+                    <div class="toolbar table-toolbar">
+                        <span class="section-title">DEFECT LOG</span>
+                        <button id="btn-add-defect" class="btn-small btn-primary">
+                            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            MANUAL ENTRY
                         </button>
                     </div>
-                    <div class="overflow-y-auto flex-1 bg-white rounded-b border-l border-r border-b">
-                        <table class="w-full text-left text-sm">
-                            <tbody id="table-defects" class="divide-y"></tbody>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <tbody id="table-defects"></tbody>
                         </table>
                     </div>
                 </div>
             </div>
             
-            <div id="main-splitter" class="w-2 bg-gray-200 hover:bg-blue-400 cursor-col-resize rounded transition-colors flex-none"></div>
+            <div id="main-splitter" class="splitter splitter-vertical"></div>
 
-            <div id="map-panel" class="flex-1 relative h-full">
-                <div id="map" class="w-full h-full rounded-xl border border-gray-200 shadow-sm z-0"></div>
-                <div id="telemetry-hud" class="hidden absolute top-4 left-4 z-[1000] bg-gray-900/85 backdrop-blur text-white px-3 py-2 rounded-lg shadow-lg border border-gray-700 text-[11px] font-mono flex flex-col gap-1 max-w-sm pointer-events-none transition-all"></div>
-                <div class="absolute top-4 right-4 z-[1000] bg-white/95 backdrop-blur px-3 py-2 rounded-lg shadow-lg border border-gray-200 flex items-center gap-2">
-                    <span class="text-xs font-bold text-gray-600 uppercase">Location:</span>
-                    <select id="sel-location" class="text-sm border-gray-300 rounded shadow-sm p-1 font-semibold text-gray-800 focus:ring-blue-500 cursor-pointer outline-none"></select>
-                </div>
-                <div id="layer-toggle-panel" class="hidden absolute bottom-4 right-4 z-[1000] bg-white/95 backdrop-blur px-3 py-2 rounded-lg shadow-lg border border-gray-200 flex-col gap-2">
-                    <span class="text-xs font-bold text-gray-600 uppercase mb-1 block border-b pb-1">Map Layers (360)</span>
-                    <label class="flex items-center gap-2 text-sm cursor-pointer font-semibold text-gray-800"><input type="checkbox" id="chk-layer-front" class="w-4 h-4 accent-blue-600" checked> Front View</label>
-                    <label class="flex items-center gap-2 text-sm cursor-pointer font-semibold text-gray-800"><input type="checkbox" id="chk-layer-rear" class="w-4 h-4 accent-blue-600" checked> Rear View</label>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Warnings Modal -->
-    <div id="warnings-modal" class="fixed inset-0 bg-black/50 hidden z-[2000] flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
-            <div class="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
-                <h2 class="text-lg font-bold text-red-700">
-                    <img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23b91c1c" class="w-5 h-5 inline align-middle -mt-1 mr-1"> Processing Logs & Warnings
-                </h2>
-                <button id="btn-close-warnings" class="text-gray-500 hover:text-black font-bold text-xl leading-none">&times;</button>
-            </div>
-            <div class="p-4 overflow-y-auto flex-1">
-                <ul id="warnings-list" class="text-sm text-red-600 list-disc pl-5 space-y-2 font-mono"></ul>
-                <p id="no-warnings-msg" class="text-gray-500 text-sm italic hidden">No warnings recorded.</p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Calibration Modal -->
-    <div id="calibrate-modal" class="fixed inset-0 bg-black/75 hidden z-[3000] flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-lg w-full max-w-5xl flex flex-col">
-            <div class="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
-                <div class="flex items-center gap-4">
-                    <h2 class="text-lg font-bold">Adjust Projection Parameters</h2>
-                    <button id="btn-auto-vp" class="text-xs bg-purple-100 text-purple-800 border border-purple-300 font-bold px-2 py-1 rounded shadow-sm hover:bg-purple-200 transition">
-                        <img src="https://api.iconify.design/heroicons/sparkles.svg?color=%236b21a8" class="w-3 h-3 inline align-middle -mt-0.5 mr-1" alt="Auto"> Auto-Detect VP
-                    </button>
-                </div>
-                <button id="btn-close-calibrate" class="text-gray-500 hover:text-black font-bold text-xl leading-none">&times;</button>
-            </div>
-            
-            <div class="flex flex-col md:flex-row h-[70vh]">
-                <!-- Preview Screen -->
-                <div class="flex-1 p-4 relative bg-gray-100 flex items-center justify-center overflow-hidden border-b md:border-b-0 md:border-r">
-                    <div class="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded pointer-events-none z-10 flex gap-2 items-center">
-                        <img src="https://api.iconify.design/heroicons/light-bulb.svg?color=white" class="w-4 h-4 inline" alt="Tip"> Click exactly on the horizon (the vanishing point) to manually set Pitch/Yaw.
-                    </div>
-                    <img id="img-calibrate-preview" class="max-h-full max-w-full object-contain cursor-crosshair z-0" src="">
-                    <div id="calibrate-loader" class="absolute inset-0 bg-white/60 flex items-center justify-center hidden backdrop-blur-sm z-20">
-                        <span class="font-bold text-blue-600 px-4 py-2 bg-white rounded shadow border">Calculating...</span>
-                    </div>
+            <div id="map-panel" class="layout-pane relative">
+                <div id="map" class="full-map"></div>
+                <div id="telemetry-hud" class="hud hidden"></div>
+                
+                <div class="map-controls top-right">
+                    <strong>LOCATION:</strong>
+                    <select id="sel-location"></select>
                 </div>
                 
-                <!-- Sliders Panel -->
-                <div class="w-full md:w-80 p-4 bg-white overflow-y-auto flex flex-col gap-5">
-                    
-                    <div>
-                        <h3 class="text-xs font-bold text-gray-500 uppercase border-b pb-1 mb-3">Camera Pose Offsets</h3>
-                        <div class="flex flex-col gap-3">
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Pitch (Y-Axis):</span><span id="lbl-pitch_offset">0°</span></div>
-                                <input type="range" id="calib-pitch_offset" min="-30" max="30" step="0.5" value="0" class="w-full">
-                            </div>
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Roll (Z-Axis):</span><span id="lbl-roll_offset">0°</span></div>
-                                <input type="range" id="calib-roll_offset" min="-30" max="30" step="0.5" value="0" class="w-full">
-                            </div>
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Yaw (Heading):</span><span id="lbl-yaw_offset">0°</span></div>
-                                <input type="range" id="calib-yaw_offset" min="-90" max="90" step="0.5" value="0" class="w-full">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div>
-                        <h3 class="text-xs font-bold text-gray-500 uppercase border-b pb-1 mb-3">Lens & Optics</h3>
-                        <div class="flex flex-col gap-3">
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Lens FOV:</span><span id="lbl-fov">100°</span></div>
-                                <input type="range" id="calib-fov" min="40" max="150" step="1" value="100" class="w-full">
-                            </div>
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Camera Height:</span><span id="lbl-cam_height">1.6m</span></div>
-                                <input type="range" id="calib-cam_height" min="0.5" max="5.0" step="0.1" value="1.6" class="w-full">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div>
-                        <h3 class="text-xs font-bold text-gray-500 uppercase border-b pb-1 mb-3">ROI Grid Bounds</h3>
-                        <div class="flex flex-col gap-3">
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Z-Near (Start dist):</span><span id="lbl-z_near">1.9m</span></div>
-                                <input type="range" id="calib-z_near" min="0.1" max="5.0" step="0.1" value="1.9" class="w-full">
-                            </div>
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1"><span>Z-Far (End dist):</span><span id="lbl-z_far">10.0m</span></div>
-                                <input type="range" id="calib-z_far" min="2.0" max="30.0" step="0.5" value="10.0" class="w-full">
-                            </div>
-                            <div>
-                                <div class="flex justify-between text-xs font-bold text-gray-700 mb-1">
-                                    <span>Lane Width (Grid Angle):</span><span id="lbl-lane_width">8.0m</span>
-                                </div>
-                                <input type="range" id="calib-lane_width" min="2.0" max="20.0" step="0.5" value="8.0" class="w-full">
-                                <p class="text-[9px] text-gray-500 mt-1 leading-tight">Adjust this to align the left/right grid angles with the physical road lines.</p>
-                            </div>
-                        </div>
-                    </div>
-
+                <div id="layer-toggle-panel" class="map-controls bottom-right hidden">
+                    <strong class="border-bottom">LAYERS (360)</strong>
+                    <label><input type="checkbox" id="chk-layer-front" checked> FRONT</label>
+                    <label><input type="checkbox" id="chk-layer-rear" checked> REAR</label>
                 </div>
             </div>
+        </section>
+    </main>
 
-            <div class="p-4 border-t flex justify-end gap-2 bg-gray-50 rounded-b-xl">
-                <button id="btn-cancel-calibrate" class="px-4 py-2 bg-gray-300 rounded font-bold hover:bg-gray-400">Cancel</button>
-                <button id="btn-apply-calibrate" class="px-4 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow shadow-blue-200">Apply to Project</button>
+    <!-- NATIVE DIALOGS -->
+    <dialog id="warnings-modal" class="modal">
+        <div class="modal-header">
+            <h2>SYSTEM WARNINGS</h2>
+            <button id="btn-close-warnings" class="close-btn">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="modal-body">
+            <ul id="warnings-list" class="log-list"></ul>
+            <p id="no-warnings-msg" class="placeholder-text">SYSTEM NOMINAL. NO ERRORS LOGGED.</p>
+        </div>
+    </dialog>
+
+    <dialog id="calibrate-modal" class="modal modal-large">
+        <div class="modal-header">
+            <h2>PROJECTION CALIBRATION</h2>
+            <button id="btn-auto-vp" class="btn-warning btn-small">
+                <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                AUTO-VP
+            </button>
+            <button id="btn-close-calibrate" class="close-btn">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="modal-body flex-row gap-2">
+            
+            <div class="calibration-preview">
+                <img id="img-calibrate-preview" src="">
+                <div id="calibrate-loader" class="loader-overlay hidden">
+                    <span class="loader-text">COMPUTING...</span>
+                </div>
+            </div>
+            
+            <div class="calibration-controls">
+                <fieldset>
+                    <legend>POSE OFFSETS</legend>
+                    <div class="slider-group">
+                        <label>PITCH (Y): <span id="lbl-pitch_offset">0°</span></label>
+                        <input type="range" id="calib-pitch_offset" min="-30" max="30" step="0.5" value="0">
+                    </div>
+                    <div class="slider-group">
+                        <label>ROLL (Z): <span id="lbl-roll_offset">0°</span></label>
+                        <input type="range" id="calib-roll_offset" min="-30" max="30" step="0.5" value="0">
+                    </div>
+                    <div class="slider-group">
+                        <label>YAW (X): <span id="lbl-yaw_offset">0°</span></label>
+                        <input type="range" id="calib-yaw_offset" min="-90" max="90" step="0.5" value="0">
+                    </div>
+                </fieldset>
+
+                <fieldset>
+                    <legend>OPTICS</legend>
+                    <div class="slider-group">
+                        <label>LENS FOV: <span id="lbl-fov">100°</span></label>
+                        <input type="range" id="calib-fov" min="40" max="150" step="1" value="100">
+                    </div>
+                    <div class="slider-group">
+                        <label>CAM HEIGHT: <span id="lbl-cam_height">1.6m</span></label>
+                        <input type="range" id="calib-cam_height" min="0.5" max="5.0" step="0.1" value="1.6">
+                    </div>
+                </fieldset>
+
+                <fieldset>
+                    <legend>ROI GRID</legend>
+                    <div class="slider-group">
+                        <label>Z-NEAR: <span id="lbl-z_near">1.9m</span></label>
+                        <input type="range" id="calib-z_near" min="0.1" max="5.0" step="0.1" value="1.9">
+                    </div>
+                    <div class="slider-group">
+                        <label>Z-FAR: <span id="lbl-z_far">10.0m</span></label>
+                        <input type="range" id="calib-z_far" min="2.0" max="30.0" step="0.5" value="10.0">
+                    </div>
+                    <div class="slider-group">
+                        <label>LANE WIDTH: <span id="lbl-lane_width">8.0m</span></label>
+                        <input type="range" id="calib-lane_width" min="2.0" max="20.0" step="0.5" value="8.0">
+                    </div>
+                </fieldset>
             </div>
         </div>
-    </div>
+        <div class="modal-footer">
+            <button id="btn-cancel-calibrate">DISCARD</button>
+            <button id="btn-apply-calibrate" class="btn-primary">COMMIT TO PROJECT</button>
+        </div>
+    </dialog>
     
-    <!-- Change Class Modal -->
-    <div id="change-class-modal" class="fixed inset-0 bg-black/50 hidden z-[4000] flex items-center justify-center">
-        <div class="bg-white p-4 rounded-xl shadow-lg w-64 flex flex-col gap-3">
-            <h3 class="font-bold text-gray-800">Change Defect Class</h3>
-            <select id="change-class-select" class="w-full border p-2 rounded text-sm"></select>
-            <div class="flex justify-end gap-2 mt-2">
-                <button id="btn-change-class-cancel" class="bg-gray-200 px-3 py-1 rounded text-sm font-bold">Cancel</button>
-                <button id="btn-change-class-save" class="bg-blue-600 text-white px-3 py-1 rounded text-sm font-bold">Save</button>
-            </div>
+    <dialog id="change-class-modal" class="modal modal-small">
+        <div class="modal-body flex-col gap-1">
+            <strong>OVERRIDE DEFECT CLASS</strong>
+            <select id="change-class-select"></select>
         </div>
-    </div>
+        <div class="modal-footer">
+            <button id="btn-change-class-cancel">CANCEL</button>
+            <button id="btn-change-class-save" class="btn-primary">APPLY</button>
+        </div>
+    </dialog>
 
-    <!-- Draw Fullscreen Modal -->
-    <div id="draw-modal" class="fixed inset-0 bg-black/90 hidden z-[5000] flex flex-col p-4">
-        <div class="flex justify-between items-center bg-gray-900 text-white p-4 rounded-t-xl border border-gray-700">
-            <div class="flex items-center gap-4">
-                <h2 class="text-lg font-bold">Draw Defect Outline</h2>
-                <div id="draw-class-container" class="flex items-center gap-2">
-                    <span class="text-sm font-bold text-gray-400 uppercase">Defect Type:</span>
-                    <select id="draw-class-select" class="text-sm text-black font-bold border rounded p-1"></select>
-                </div>
+    <dialog id="draw-modal" class="modal modal-xl">
+        <div class="modal-header">
+            <h2>SAM2 POLYGON DEFINITION</h2>
+            <div id="draw-class-container">
+                <label>CLASS: <select id="draw-class-select"></select></label>
             </div>
-            <div class="flex gap-2">
-                <button id="btn-draw-cancel" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded font-bold transition">Cancel</button>
-                <button id="btn-draw-done" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded font-bold transition shadow shadow-blue-500/50">Apply SAM2</button>
+            <div>
+                <button id="btn-draw-cancel">CANCEL</button>
+                <button id="btn-draw-done" class="btn-primary">EXECUTE SAM2</button>
             </div>
         </div>
-        <div class="flex-1 relative bg-black flex items-center justify-center overflow-hidden rounded-b-xl border-x border-b border-gray-700 shadow-2xl">
-            <!-- Ensure w-full h-full correctly scales to container dimensions for perfect point mapping -->
-            <img id="img-draw-preview" class="w-full h-full object-contain pointer-events-none select-none" src="">
-            <div id="draw-overlay" class="absolute inset-0 z-20 cursor-crosshair"></div>
+        <div class="modal-body draw-canvas-container">
+            <img id="img-draw-preview" src="">
+            <div id="draw-overlay"></div>
         </div>
-    </div>
+    </dialog>
 
-    <!-- View Fullscreen Modal -->
-    <div id="fullscreen-modal" class="fixed inset-0 bg-black/95 hidden z-[6000] flex flex-col">
-        <div class="absolute top-4 right-4 z-10">
-            <button id="btn-close-fullscreen" class="text-white hover:text-red-500 bg-gray-800 hover:bg-gray-700 rounded-full w-10 h-10 flex items-center justify-center font-bold text-2xl transition shadow-lg">&times;</button>
+    <dialog id="fullscreen-modal" class="modal modal-fullscreen">
+        <button id="btn-close-fullscreen" class="close-btn absolute-top-right">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div class="modal-body center-content">
+            <img id="img-fullscreen" src="">
         </div>
-        <div class="flex-1 flex items-center justify-center p-4">
-            <img id="img-fullscreen" class="max-h-full max-w-full object-contain shadow-2xl" src="">
-        </div>
-    </div>
+    </dialog>
 
     <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>

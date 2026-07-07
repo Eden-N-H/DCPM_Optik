@@ -2,25 +2,25 @@ import { state } from './state.js';
 import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds } from './map.js';
 import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
 
-export async function triggerZipExport(endpoint, btnId, loadingHTML, filename) {
+export async function triggerZipExport(endpoint, btnId, filename) {
     if (state.fullResults.length === 0) return;
     const btn = document.getElementById(btnId); 
-    const originalHTML = btn.innerHTML;
-    btn.innerHTML = loadingHTML; 
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> PACKAGING...`; 
     btn.disabled = true;
     try {
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ results: state.fullResults }) });
         if (!res.ok) throw new Error("Failed to compile ZIP file");
         const blob = await res.blob(); const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
-    } catch (err) { alert(err.message); } finally { btn.innerHTML = originalHTML; btn.disabled = false; }
+    } catch (err) { alert(err.message); } finally { btn.innerHTML = originalText; btn.disabled = false; }
 }
 
 export async function cancelJob() {
     if (!state.currentTaskId) return;
-    if (!confirm("Are you sure you want to stop processing? Images completed so far will be saved.")) return;
+    if (!confirm("Confirm hard abort? Completed frames will be retained.")) return;
     const btn = document.getElementById("btn-cancel-job");
-    btn.disabled = true; btn.textContent = "Cancelling...";
+    btn.disabled = true; btn.innerHTML = "ABORTING...";
     try {
         await fetch(`/cancel/${state.currentTaskId}`, { method: 'POST' });
     } catch(e) { console.error("Cancel request failed", e); }
@@ -67,6 +67,8 @@ function startSSE(taskId, totalImages) {
     let processedCount = 0; let startTime = Date.now();
     const telemetryHud = document.getElementById("telemetry-hud");
 
+    document.getElementById("progress-bar").max = totalImages > 0 ? totalImages : 100;
+
     source.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         
@@ -76,12 +78,12 @@ function startSSE(taskId, totalImages) {
             document.getElementById("progress-container").classList.add("hidden");
             checkCanProcess();
             state.imageFiles = [];
-            document.getElementById("name-image").textContent = "Completed.";
+            document.getElementById("name-image").textContent = "EXECUTION COMPLETE.";
             
             if (msg.type === "error") {
-                alert(`Background Task Error: ${msg.message}`);
+                alert(`SYSTEM ERROR: ${msg.message}`);
             } else if (state.fullResults.length === 0) {
-                alert(msg.type === "cancelled" ? "Process cancelled before any frames finished." : "Processing complete, but 0 frames were successfully extracted. Check warnings.");
+                alert(msg.type === "cancelled" ? "Process aborted. No outputs generated." : "Process completed, but 0 frames successfully extracted. Review logs.");
                 document.getElementById("workspace").classList.add("hidden");
                 document.getElementById("upload-panel").classList.remove("hidden");
                 document.getElementById("btn-save-project").classList.add("hidden");
@@ -89,7 +91,7 @@ function startSSE(taskId, totalImages) {
                 document.getElementById("btn-export-flat-zip").classList.add("hidden");
                 document.getElementById("btn-toggle-map").classList.add("hidden");
             } else if (msg.type === "cancelled") {
-                addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> User Cancelled Process. Partial results have been saved.`);
+                addWarning(`[SYSTEM] User aborted process. Partial state saved.`);
             }
             return;
         }
@@ -97,26 +99,25 @@ function startSSE(taskId, totalImages) {
         if (msg.type === "health_report") {
             telemetryHud.classList.remove("hidden");
             const hr = msg.data;
-            let gpsColor = hr.gps_score > 80 ? 'text-green-400' : 'text-orange-400';
-            let imuColor = hr.imu_score > 90 ? 'text-green-400' : 'text-orange-400';
+            let gpsColor = hr.gps_score > 80 ? 'text-green' : 'text-orange';
+            let imuColor = hr.imu_score > 90 ? 'text-green' : 'text-orange';
 
             const hudLine = document.createElement("div");
-            hudLine.innerHTML = `<span class="font-bold text-gray-300 mr-1">[${msg.original_name}]</span> GPS: <span class="${gpsColor} font-bold">${hr.gps_score.toFixed(0)}%</span> | IMU: <span class="${imuColor} font-bold">${hr.imu_score.toFixed(0)}%</span> | Drift: <span class="text-gray-300">${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s</span>`;
+            hudLine.innerHTML = `<strong>[${msg.original_name}]</strong> GPS: <span class="${gpsColor}">${hr.gps_score.toFixed(0)}%</span> | IMU: <span class="${imuColor}">${hr.imu_score.toFixed(0)}%</span> | Drift: ${hr.metrics.avg_gps_speed_error_ms.toFixed(2)}m/s`;
             telemetryHud.appendChild(hudLine);
             
             if (hr.warnings.length > 0) {
-                hr.warnings.forEach(w => addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> [${msg.original_name} Telemetry] ${w}`));
+                hr.warnings.forEach(w => addWarning(`[${msg.original_name} TELEMETRY] ${w}`));
             }
             return;
         }
 
         if (msg.type === "item_error") {
-            addWarning(`<img src="https://api.iconify.design/heroicons/exclamation-triangle-solid.svg?color=%23c2410c" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Skipped ${msg.original_name}: ${msg.message}`);
+            addWarning(`[SKIPPED] ${msg.original_name}: ${msg.message}`);
             if (!msg.is_video) {
                 processedCount++;
-                const pct = totalImages > 0 ? (processedCount / totalImages) * 100 : 100;
-                document.getElementById("progress-bar").style.width = `${pct}%`;
-                document.getElementById("progress-text").textContent = `Segmenting ${processedCount} of ${totalImages}`;
+                document.getElementById("progress-bar").value = processedCount;
+                document.getElementById("progress-text").textContent = `SEGMENTING ${processedCount} / ${totalImages}`;
             }
             return;
         }
@@ -142,13 +143,12 @@ function startSSE(taskId, totalImages) {
             updateMapSource('nodes-source', state.nodesGeoJson);
 
             processedCount++;
-            const pct = totalImages > 0 ? (processedCount / totalImages) * 100 : 100;
-            document.getElementById("progress-bar").style.width = `${pct}%`;
-            document.getElementById("progress-text").textContent = `Segmenting ${processedCount} of ${totalImages}`;
+            document.getElementById("progress-bar").value = processedCount;
+            document.getElementById("progress-text").textContent = `SEGMENTING ${processedCount} / ${totalImages}`;
 
             const elapsedSec = (Date.now() - startTime) / 1000;
             const remainSec = Math.ceil((totalImages - processedCount) * (elapsedSec / processedCount));
-            document.getElementById("eta-text").textContent = `ETA: ${Math.floor(remainSec / 60)}m ${remainSec % 60}s`;
+            document.getElementById("eta-text").textContent = `ETA: ${Math.floor(remainSec / 60)}M ${remainSec % 60}S`;
 
             refreshLocationsUI();
 
@@ -156,7 +156,7 @@ function startSSE(taskId, totalImages) {
             if (selLocation.value === r.location) {
                 state.appResults = state.fullResults.filter(x => x.location === r.location);
                 if (state.appResults.length > 0) {
-                    document.getElementById("carousel-counter").textContent = `Item ${state.currentIndex + 1} of ${state.appResults.length}`;
+                    document.getElementById("carousel-counter").textContent = `ITEM ${state.currentIndex + 1} OF ${state.appResults.length}`;
                     document.getElementById("btn-next").disabled = (state.currentIndex === state.appResults.length - 1);
                 }
             }
@@ -202,11 +202,11 @@ export async function executeJob() {
     
     if (!state.appIs360) { 
         containerBevRear.classList.add("hidden"); 
-        layerTogglePanel.classList.add("hidden"); layerTogglePanel.classList.remove("flex");
+        layerTogglePanel.classList.add("hidden");
         setView('front'); 
     } else { 
         containerBevRear.classList.remove("hidden");
-        layerTogglePanel.classList.remove("hidden"); layerTogglePanel.classList.add("flex");
+        layerTogglePanel.classList.remove("hidden"); 
     }
 
     document.getElementById("upload-panel").classList.add("hidden");
@@ -222,17 +222,17 @@ export async function executeJob() {
     state.layoutPrefs.mapOff.isManual = false;
     
     document.getElementById("warnings-badge").textContent = "0";
-    document.getElementById("warnings-badge").classList.add("hidden");
     document.getElementById("btn-show-warnings").classList.add("hidden");
     document.getElementById("warnings-list").innerHTML = "";
     document.getElementById("no-warnings-msg").classList.remove("hidden");
     
     const btnCancel = document.getElementById("btn-cancel-job");
-    btnCancel.disabled = false; btnCancel.textContent = "Stop / Cancel";
+    btnCancel.disabled = false; btnCancel.innerHTML = `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> ABORT`;
     
     const telemetryHud = document.getElementById("telemetry-hud");
     telemetryHud.innerHTML = ""; telemetryHud.classList.add("hidden");
     document.getElementById("process-btn").disabled = true;
+    document.getElementById("progress-bar").value = 0;
     
     clearOrthomosaics(); 
     state.fullGeojson = { type: "FeatureCollection", features: [] };
