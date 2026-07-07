@@ -165,7 +165,7 @@ details.advanced-settings summary { background: #eee; padding: 4px; font-weight:
 
 /* PROGRESS */
 .progress-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; }
-.eta { font-family: var(--font-mono); font-size: 0.85rem; font-weight: bold; }
+.eta { font-family: var(--font-stack); font-size: 0.85rem; font-weight: bold; }
 progress { width: 100%; height: 16px; border: 1px solid var(--border); appearance: none; }
 progress::-webkit-progress-bar { background-color: var(--bg); }
 progress::-webkit-progress-value { background-color: var(--fg); }

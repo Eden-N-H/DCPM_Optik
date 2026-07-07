@@ -13,7 +13,7 @@
     <header class="app-header">
         <div class="header-titles">
             <h1>Unified DCPM Engine</h1>
-            <p>System V.2.1 // Telemetry + ML Pipeline</p>
+            <p>Telemetry + ML Pipeline</p>
         </div>
         <nav class="toolbar">
             <button id="btn-show-warnings" class="hidden btn-warning">
@@ -132,14 +132,14 @@
                         </div>
                         
                         <div class="toolbar no-padding mt-2">
-                            <span class="section-title">PERSPECTIVE</span>
-                            <div>
+                            <div class="flex-row gap-1" style="align-items: center;">
+                                <span class="section-title">PERSPECTIVE</span>
                                 <button id="btn-open-calibrate" class="btn-warning btn-small">
                                     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                                     CALIBRATE
                                 </button>
-                                <span id="label-active-view" class="badge-blue">FRONT ACTIVE</span>
                             </div>
+                            <span id="label-active-view" class="badge-blue">FRONT ACTIVE</span>
                         </div>
 
                         <!-- Added flex-1 to push the wrapper to fill the container -->
@@ -152,9 +152,11 @@
                     <div id="media-splitter" class="splitter splitter-horizontal"></div>
 
                     <div id="bev-section" class="layout-pane flex-col relative">
-                        <span class="section-title" style="margin-bottom: 5px;">METRIC BEV</span>
-                        <!-- Added flex-1 to force height rendering -->
-                        <div id="bev-layout-container" class="flex-row gap-1 flex-1 h-full">
+                        <div class="toolbar no-padding mt-2" style="margin-bottom: 5px;">
+                            <span class="section-title">METRIC BEV</span>
+                        </div>
+                        <!-- Removed h-full to fix vertical overflow, flex-1 forces it to naturally fill remaining bounds -->
+                        <div id="bev-layout-container" class="flex-row gap-1 flex-1">
                             <div id="container-bev-front" class="image-wrapper active-view bev-grid-bg pointer flex-1">
                                 <span class="overlay-badge">FRONT</span>
                                 <img id="img-bev-front" class="fit-image hidden" src="">
