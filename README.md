@@ -1,25 +1,75 @@
-# DCPM_Optik
+# DCPM Road Defect Measurement System
 
-## Technical Approach & Architecture
+A computer vision and photogrammetry pipeline developed for Disaster Claims & Project Management (DCPM). This system automates the measurement and spatial mapping of road damage (potholes, ruts, scouring) required for government disaster funding claims, using only consumer-grade GoPro hardware. 
 
-### Phase 1: Telemetry Ingestion & Calibration
+It calculates the physical surface area (m²) and spatial coordinates of defects by applying vector-based orthorectification to video/photo frames, utilizing embedded GPMF (GoPro Metadata Format) IMU and GPS telemetry.
 
-- **Source Media:** Processing continuous MP4 video files to extract high-frequency sensor readings via the GoPro Metadata Format (GPMF).
-- **Sensor Calibration:** Implementing an automated height calibration step. The inspector starts recording with the camera resting on the ground, then lifts and places it into the vehicle mount. The software processes the vertical accelerometer and GPS altitude delta during this sequence to automatically calculate the camera’s running height above the road surface.
-- **Telemetry Sync:** Pulling 3-axis rotational IMU data (pitch, roll, yaw) to dynamically adjust camera orientation values as the vehicle drives over uneven terrain.
+## Core Capabilities
 
-### Phase 2: Ortho-rectification (Homography)
+* **GPMF Telemetry Parsing:** Extracts high-frequency GPS, IMU (Gravity Vector), speed, and FOV data directly from standard and 360° GoPro MP4/JPG files.
+* **Vector-Based Orthorectification:** Flattens perspective images into metric Bird's-Eye View (BEV) projections using camera height, dynamic pitch/roll compensation, and fisheye lens undistortion.
+* **Pixel-Precise AI Segmentation:** Uses YOLOv8 for defect classification and SAM2 (Segment Anything 2) for exact boundary polygon extraction.
+* **Geospatial Mapping:** Generates GIS-ready GeoJSON features, mapping physical defect boundaries to real-world coordinates.
+* **Interactive UI:** A Flask/VanillaJS web dashboard featuring a MapLibre orthomosaic map, point-and-click vanishing point calibration, and manual defect drawing/editing.
 
-- **Flattening:** Utilizing the calibrated camera height and real-time GPMF pitch/roll rotation angles to construct a homography matrix.
-- **Lens Correction:** Applying de-warping algorithms to correct the wide-angle fisheye distortion typical of GoPros.
-- **Perspective Correction:** Transforming the perspective-warped road surface into a uniform, orthorectified grid where each pixel represents a consistent physical dimension.
+## Architecture
 
-### Phase 3: ML Segmentation
+1. **Telemetry Ingestion:** `parser_gpmf.py` and `telemetry.py` read the binary GPMF track, interpolating GPS and gravity vectors per frame.
+2. **Flattening:** `cv_bev.py` computes the homography matrix using the telemetry-derived gravity vector and specified camera height to yield a 1px = fixed metric (e.g., 2cm) orthorectified grid.
+3. **ML Segmentation:** `pipeline_image.py` routes the flattened image through YOLO + SAM2, extracting pixel areas.
+4. **Export:** Results are bundled into zip files containing raw images, flattened BEV tiles, and GeoJSON boundaries for GIS software.
 
-- Running a custom segmentation model (e.g., YOLO segmentation or equivalent) on the flattened image to isolate the exact boundaries of the road defect.
-- Classifying anomalies to distinguish real defects from shadows, vegetation, or debris.
+## Project Structure
 
-### Phase 4: Pixel-to-Metric Calculations & GPS-Based Photogrammetry
+```text
+.
+├── models/             # YOLO (.pt) and SAM2 weights (not tracked in git)
+├── src/
+│   ├── app.py              # Main Flask application (Runs on port 5001)
+│   ├── cv_*.py             # Computer Vision: BEV projection, homography, vanishing points
+│   ├── parser_*.py         # Metadata extraction: GPMF binary parsing, EXIF
+│   ├── pipeline_*.py       # Processing pipelines for single images and sequential video
+│   ├── sam2_integration.py # Segment Anything 2 integration logic
+│   └── telemetry.py        # GPS/IMU signal interpolation and health scoring
+├── static/             # JS, CSS, and output image uploads/tiles
+└── templates/          # HTML frontend
+```
 
-- **Area Calculation:** Multiplying the sum of segmented defect pixels by the physical area value represented by a single orthorectified pixel.
-- **GPS-Based Structure from Motion (SfM):** Instead of using a physical stereo-pair of cameras, the system leverages the vehicle's forward motion. By extracting sequential frames at defined intervals, the system tracks the defect’s relative perspective shift. It uses GPS and high-frequency IMU data to calculate the precise "baseline distance" traveled between those frames, allowing 3D depth reconstruction using single-camera sequential photogrammetry.
+## Setup & Installation
+
+**1. Clone and setup environment:**
+```bash
+git clone https://github.com/Eden-N-H/DCPM_Optik.git
+cd DCPM_Optik/homography-webui
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**2. Install SAM2 (Segment Anything 2):**
+SAM2 must be installed in your environment. Follow the official Meta instructions to install `sam2` and its dependencies (requires PyTorch).
+
+**3. Download Models:**
+Place the following model weights in the `/models` directory:
+* `RMCC_8_classes.pt` (Custom YOLO model)
+* `sam2.1_hiera_large.pt` (SAM2 checkpoint)
+
+*Note: The system will still run bounding boxes if SAM2 is unavailable, but polygon segmentation requires it.*
+
+## Usage
+
+1. **Start the server:**
+   ```bash
+   python src/app.py
+   ```
+2. **Access the UI:**
+   Open `http://localhost:5001` in your browser.
+3. **Process Media:**
+   * Drop `.jpg` or `.mp4` (Standard or 360 GoPro files) into the upload zone.
+   * Toggle **"Has Embedded Telemetry"** if using native GoPro files.
+   * Input the **Camera Height (m)** (distance from the road surface to the lens).
+   * Click **Process Uploads**.
+4. **QA & Export:**
+   * Review detected boundaries in the dual rectilinear/BEV viewers.
+   * Adjust projection calibration manually via the UI if the IMU telemetry drifted.
+   * Click **Export RAW ZIP** or **Export Flattened ZIP** to download the geospatial bundle.
