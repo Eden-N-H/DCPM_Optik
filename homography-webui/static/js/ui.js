@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle } from './map.js';
 import { stringToColor } from './utils.js';
-import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP } from './api.js';
+import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP, fetchSam2Preview } from './api.js';
 
 export function handleMapClick(originalName) {
     const target = state.fullResults.find(r => r.original_name === originalName);
@@ -531,14 +531,12 @@ export function initResizers() {
         }
     });
     
-    // NEW: Auto-reflow the BEV shingle layout based on container proportions
     const bevSection = document.getElementById("bev-section");
     const bevLayoutContainer = document.getElementById("bev-layout-container");
     if (bevSection && bevLayoutContainer) {
         const ro = new ResizeObserver(entries => {
             for (let entry of entries) {
                 const rect = entry.contentRect;
-                // If the container is wider than it is tall, side-by-side flex-row is optimal.
                 if (rect.width >= rect.height * 0.9) {
                     bevLayoutContainer.classList.remove("flex-col");
                     bevLayoutContainer.classList.add("flex-row");
@@ -643,6 +641,38 @@ export function initDrawMode() {
         document.getElementById("draw-modal").close();
     };
 
+    const btnSam2 = document.getElementById("btn-draw-sam2");
+    if(btnSam2) {
+        btnSam2.onclick = async () => {
+            if(window.drawPoints.length < 3) {
+                alert("MINIMUM 3 POINTS REQUIRED FOR SAM2 PROMPT.");
+                return;
+            }
+            
+            const current = state.appResults[state.currentIndex];
+            const view = state.currentDirection;
+            const calib = current.views[view].calibration || {};
+            
+            const btnDone = document.getElementById("btn-draw-done");
+            
+            btnSam2.disabled = true;
+            btnDone.disabled = true;
+            btnSam2.innerHTML = "COMPUTING...";
+            
+            try {
+                const newPoints = await fetchSam2Preview(current.filename, view, calib, window.drawPoints);
+                window.drawPoints = newPoints;
+                renderDrawPoints();
+            } catch(err) {
+                alert("SAM2 Error: " + err.message);
+            } finally {
+                btnSam2.disabled = false;
+                btnDone.disabled = false;
+                btnSam2.innerHTML = "APPLY SAM2";
+            }
+        };
+    }
+
     document.getElementById("btn-draw-done").onclick = async () => {
         if(window.drawPoints.length < 3) {
             alert("MINIMUM 3 POINTS REQUIRED.");
@@ -651,8 +681,10 @@ export function initDrawMode() {
         
         const className = document.getElementById("draw-class-select").value;
         const btn = document.getElementById("btn-draw-done");
+        
         btn.disabled = true; 
-        btn.innerHTML = "APPLYING...";
+        if(btnSam2) btnSam2.disabled = true;
+        btn.innerHTML = "SAVING...";
         
         try {
             await modifyDefects(window.drawAction, window.drawIndex, window.drawPoints, className);
@@ -662,7 +694,8 @@ export function initDrawMode() {
             document.getElementById("draw-overlay").innerHTML = "";
             document.getElementById("draw-modal").close();
             btn.disabled = false; 
-            btn.innerHTML = "EXECUTE SAM2";
+            if(btnSam2) btnSam2.disabled = false;
+            btn.innerHTML = "SAVE MASK";
         }
     };
 }
@@ -763,6 +796,7 @@ async function modifyDefects(action, index, points=null, className=null) {
                 points: points,
                 class_name: className,
                 calibration: calib
+                // Note: use_sam2 is not sent so backend defaults to False (saves points exactly as requested)
             })
         });
         const data = await res.json();

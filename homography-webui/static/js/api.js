@@ -62,6 +62,17 @@ export async function recalculateProject(calibrationConfig) {
     return data.results;
 }
 
+// NEW: Generates a SAM2 polygon preview dynamically
+export async function fetchSam2Preview(filename, view, calibrationConfig, points) {
+    const res = await fetch("/preview_sam2", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, view, calibration: calibrationConfig, points })
+    });
+    const data = await res.json();
+    if(!res.ok || !data.success) throw new Error(data.error || "Failed to generate SAM2 mask.");
+    return data.points;
+}
+
 function startSSE(taskId, totalImages) {
     const source = new EventSource(`/stream/${taskId}`);
     let processedCount = 0; let startTime = Date.now();

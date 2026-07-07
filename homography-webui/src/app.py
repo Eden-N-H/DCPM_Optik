@@ -214,6 +214,72 @@ def click_vp():
     
     return jsonify({"success": True, "calibration": calib})
 
+@app.route('/preview_sam2', methods=['POST'])
+def preview_sam2():
+    try:
+        data = request.json
+        filename = data['filename']
+        view_name = data['view']
+        points = data.get('points')
+        calib = data['calibration']
+        
+        meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+        if not os.path.exists(meta_path): return jsonify({"error": "Process metadata not found"}), 404
+        with open(meta_path, 'r') as f: process_meta = json.load(f)
+        
+        source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+        media_type = process_meta.get('options', {}).get('media_type', '360-video')
+        is_simple_frame = (media_type == 'orthographic')
+        
+        predictor = get_predictor()
+        if not predictor:
+            return jsonify({"error": "SAM2 not loaded"}), 400
+
+        normalized_pts = []
+        if is_simple_frame:
+            rect_img = cv2.imread(source_path)
+            h, w = rect_img.shape[:2]
+            rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
+            
+            pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+            if pts is None or len(pts) < 3:
+                return jsonify({"error": "SAM2 could not generate a valid mask."}), 400
+                
+            for pt in pts:
+                normalized_pts.append([float(pt[0]/w), float(pt[1]/h)])
+        else:
+            rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+            
+            cam_h = float(calib.get('cam_height') or 1.6)
+            y_min = float(calib.get('z_near') or 1.5)
+            y_max = float(calib.get('z_far') or 10.0)
+            road_width = float(calib.get('lane_width') or 8.0)
+
+            from cv_bev import get_bev_homography
+            H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(
+                K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
+            )
+            
+            bev_points = []
+            for px, py in points:
+                bev_x = np.clip(px * bev_w, 0, bev_w - 1)
+                bev_y = np.clip(py * bev_h, 0, bev_h - 1)
+                bev_points.append([bev_x, bev_y])
+                
+            raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+            bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+            
+            if bev_pts is None or len(bev_pts) < 3:
+                return jsonify({"error": "SAM2 could not generate a valid mask."}), 400
+                
+            for pt in bev_pts:
+                normalized_pts.append([float(pt[0]/bev_w), float(pt[1]/bev_h)])
+                
+        return jsonify({"success": True, "points": normalized_pts})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/recalculate_bev', methods=['POST'])
 def recalculate_bev():
     data = request.json
@@ -262,6 +328,7 @@ def modify_defects():
         points = data.get('points')
         class_name = data.get('class_name')
         calib = data['calibration']
+        use_sam2 = data.get('use_sam2', False)
         
         meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
         if not os.path.exists(meta_path): return jsonify({"error": "Process metadata not found"}), 404
@@ -284,11 +351,12 @@ def modify_defects():
                 h, w = rect_img.shape[:2]
                 rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
                 
-                predictor = get_predictor()
                 pts = None
-                if predictor:
-                    pts = _run_sam2_on_points(rect_img, rect_points, predictor)
-                    
+                if use_sam2:
+                    predictor = get_predictor()
+                    if predictor:
+                        pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+                        
                 if pts is None or len(pts) < 3:
                     pts = np.array(rect_points, dtype=np.float32)
                     
@@ -319,13 +387,13 @@ def modify_defects():
                     bev_y = np.clip(py * bev_h, 0, bev_h - 1)
                     bev_points.append([bev_x, bev_y])
                     
-                raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-                
-                predictor = get_predictor()
                 bev_pts = None
-                if predictor:
-                    bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
-                    
+                if use_sam2:
+                    raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+                    predictor = get_predictor()
+                    if predictor:
+                        bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+                        
                 if bev_pts is None or len(bev_pts) < 3:
                     bev_pts = np.array(bev_points, dtype=np.float32)
                     
