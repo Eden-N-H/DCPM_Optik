@@ -428,7 +428,6 @@ export function toggleMapView() {
     const mapPanel = document.getElementById("map-panel");
     const mainSplitter = document.getElementById("main-splitter");
     const imagePanel = document.getElementById("image-panel");
-    
     const mediaLayout = document.getElementById("media-layout-container");
     const btnToggleMap = document.getElementById("btn-toggle-map");
 
@@ -436,7 +435,6 @@ export function toggleMapView() {
         mapPanel.classList.remove("hidden");
         mainSplitter.classList.remove("hidden");
         mediaLayout.setAttribute("data-layout", "vertical");
-        
         btnToggleMap.classList.remove("btn-primary");
 
         if (!state.layoutPrefs.mapOn.isManual) {
@@ -445,13 +443,11 @@ export function toggleMapView() {
             imagePanel.style.width = state.layoutPrefs.mapOn.mainW;
             document.getElementById("perspective-container").style.flexBasis = state.layoutPrefs.mapOn.mediaBasis;
         }
-
     } else {
         mapPanel.classList.add("hidden");
         mainSplitter.classList.add("hidden");
         imagePanel.style.width = "100%";
         mediaLayout.setAttribute("data-layout", "horizontal");
-        
         btnToggleMap.classList.add("btn-primary");
 
         if (!state.layoutPrefs.mapOff.isManual) {
@@ -534,6 +530,26 @@ export function initResizers() {
             if (state.map) state.map.resize();
         }
     });
+    
+    // NEW: Auto-reflow the BEV shingle layout based on container proportions
+    const bevSection = document.getElementById("bev-section");
+    const bevLayoutContainer = document.getElementById("bev-layout-container");
+    if (bevSection && bevLayoutContainer) {
+        const ro = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                const rect = entry.contentRect;
+                // If the container is wider than it is tall, side-by-side flex-row is optimal.
+                if (rect.width >= rect.height * 0.9) {
+                    bevLayoutContainer.classList.remove("flex-col");
+                    bevLayoutContainer.classList.add("flex-row");
+                } else {
+                    bevLayoutContainer.classList.remove("flex-row");
+                    bevLayoutContainer.classList.add("flex-col");
+                }
+            }
+        });
+        ro.observe(bevSection);
+    }
 }
 
 export function initDrawMode() {

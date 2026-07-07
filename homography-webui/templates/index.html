@@ -117,21 +117,22 @@
             
             <div id="image-panel" class="panel flex-col layout-pane">
                 
+                <!-- MOVED: Global Carousel Toolbar -->
+                <div class="toolbar no-padding" style="border-bottom: 2px solid var(--border); padding-bottom: 10px; margin-bottom: 10px;">
+                    <button id="btn-prev">PREV</button>
+                    <div class="carousel-info" style="text-align:center;">
+                        <strong id="carousel-counter">ITEM 0 OF 0</strong><br>
+                        <span id="carousel-filename" style="font-family: var(--font-mono); font-size:0.8rem;">WAITING FOR DATA...</span><br>
+                        <span id="carousel-telemetry" style="font-family: var(--font-mono); font-size:0.8rem; color:var(--muted);"></span>
+                    </div>
+                    <button id="btn-next">NEXT</button>
+                </div>
+
                 <div id="media-layout-container" data-layout="vertical" class="flex-col media-layout">
                     
-                    <!-- Added flex-col to force internal elements to stack properly -->
                     <div id="perspective-container" class="layout-pane flex-col relative">
-                        <div class="toolbar no-padding">
-                            <button id="btn-prev">PREV</button>
-                            <div class="carousel-info" style="text-align:center;">
-                                <strong id="carousel-counter">ITEM 0 OF 0</strong><br>
-                                <span id="carousel-filename" style="font-family: var(--font-mono); font-size:0.8rem;">WAITING FOR DATA...</span><br>
-                                <span id="carousel-telemetry" style="font-family: var(--font-mono); font-size:0.8rem; color:var(--muted);"></span>
-                            </div>
-                            <button id="btn-next">NEXT</button>
-                        </div>
                         
-                        <div class="toolbar no-padding mt-2">
+                        <div class="toolbar no-padding" style="margin-bottom: 5px;">
                             <div class="flex-row gap-1" style="align-items: center;">
                                 <span class="section-title">PERSPECTIVE</span>
                                 <button id="btn-open-calibrate" class="btn-warning btn-small">
@@ -142,8 +143,7 @@
                             <span id="label-active-view" class="badge-blue">FRONT ACTIVE</span>
                         </div>
 
-                        <!-- Added flex-1 to push the wrapper to fill the container -->
-                        <div id="rect-image-wrapper" class="image-wrapper pointer flex-1" style="margin-top: 5px;">
+                        <div id="rect-image-wrapper" class="image-wrapper pointer flex-1">
                             <span id="placeholder-rect" class="placeholder-text">AWAITING IMAGE DATA...</span>
                             <img id="img-rect" class="fit-image hidden" src="" alt="Rectilinear View">
                         </div>
@@ -152,10 +152,10 @@
                     <div id="media-splitter" class="splitter splitter-horizontal"></div>
 
                     <div id="bev-section" class="layout-pane flex-col relative">
-                        <div class="toolbar no-padding mt-2" style="margin-bottom: 5px;">
+                        <div class="toolbar no-padding" style="margin-bottom: 5px;">
                             <span class="section-title">METRIC BEV</span>
                         </div>
-                        <!-- Removed h-full to fix vertical overflow, flex-1 forces it to naturally fill remaining bounds -->
+                        
                         <div id="bev-layout-container" class="flex-row gap-1 flex-1">
                             <div id="container-bev-front" class="image-wrapper active-view bev-grid-bg pointer flex-1">
                                 <span class="overlay-badge">FRONT</span>
