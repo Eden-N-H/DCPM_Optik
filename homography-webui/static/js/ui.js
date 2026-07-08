@@ -18,8 +18,11 @@ export function handleMapClick(originalName) {
 
 export function checkCanProcess() {
     const btnProcess = document.getElementById("process-btn");
+    const chkSkipAi = document.getElementById("chk-skip-ai");
+    const skipAi = chkSkipAi ? chkSkipAi.checked : false;
     const hasModel = (state.isModelLoaded || state.modelFile !== null);
-    btnProcess.disabled = !(hasModel && state.imageFiles.length > 0);
+    
+    btnProcess.disabled = !((hasModel || skipAi) && state.imageFiles.length > 0);
 }
 
 const handleFiles = (files, isMulti, callback, nameElement) => {
@@ -135,19 +138,20 @@ export function updateCarousel(panMap = true) {
     }
     imgRect.src = activeViewData.rect_url.split('?')[0] + `?t=${ts}`;
 
-    document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d, idx) => `
+    // Pass the exact backend detection index (d.det_idx) instead of visual array loop idx
+    document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d) => `
         <tr>
             <td><span class="color-dot" style="background-color: ${d.color || stringToColor(d.class)};"></span>${d.class}</td>
             <td>${(d.conf*100).toFixed(0)}%</td>
             <td><strong>${d.area_sqm} m²</strong></td>
             <td class="text-right">
-                <button onclick="window.startEditDefect(${idx})" class="action-icon" title="Change Class">
+                <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" title="Change Class">
                     <svg viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
                 </button>
-                <button onclick="window.startReoutlineDefect(${idx})" class="action-icon" title="Re-outline">
+                <button onclick="window.startReoutlineDefect(${d.det_idx})" class="action-icon" title="Re-outline">
                     <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
-                <button onclick="window.deleteDefect(${idx})" class="action-icon" title="Delete">
+                <button onclick="window.deleteDefect(${d.det_idx})" class="action-icon" title="Delete">
                     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
             </td>

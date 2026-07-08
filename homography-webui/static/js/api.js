@@ -199,6 +199,7 @@ export async function executeJob() {
     fd.append("comp_pitch", document.getElementById("chk-comp-pitch").checked ? "true" : "false");
     fd.append("undistort", document.getElementById("chk-undistort").checked ? "true" : "false");
     fd.append("ego_mask", document.getElementById("chk-ego-mask").checked ? "true" : "false");
+    fd.append("skip_ai", document.getElementById("chk-skip-ai").checked ? "true" : "false"); // NEW CHECKBOX
     fd.append("conf_thresh", document.getElementById("num-conf").value);
     
     if(state.stateLastLat !== null) fd.append("last_lat", state.stateLastLat);

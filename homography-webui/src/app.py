@@ -33,6 +33,8 @@ global_model = None
 model_lock = threading.Lock()
 sam2_predictor = None
 
+FALLBACK_CLASSES = ["Defect", "Pothole", "Cracking", "Rutting", "Patching", "Edge Break", "Line Marking", "Other"]
+
 # Load default YOLO model at startup
 DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'RMCC_8_classes.pt')
 if os.path.exists(DEFAULT_MODEL_PATH):
@@ -65,12 +67,18 @@ def index():
 def get_classes():
     if global_model:
         return jsonify(list(global_model.names.values()))
-    return jsonify([])
+    # Fallback classes if the user bypassed AI without a model but still wants to do manual QC
+    return jsonify(FALLBACK_CLASSES)
 
 @app.route('/process', methods=['POST'])
 def process():
     handle_model_upload(request)
-    if global_model is None: return jsonify({"error": "No ML model loaded into memory"}), 400
+    
+    skip_ai = request.form.get('skip_ai') == 'true'
+    
+    if not skip_ai and global_model is None: 
+        return jsonify({"error": "No ML model loaded into memory. Upload a model or check 'Bypass AI'."}), 400
+        
     img_files = request.files.getlist('images')
     if not img_files or img_files[0].filename == '': return jsonify({"error": "No media selected"}), 400
 
@@ -85,6 +93,7 @@ def process():
         "comp_pitch": request.form.get('comp_pitch') == 'true',
         "undistort": request.form.get('undistort') == 'true',
         "ego_mask": request.form.get('ego_mask') == 'true',
+        "skip_ai": skip_ai,
         "conf_thresh": safe_float(request.form.get('conf_thresh'), 0.25)
     }
 
@@ -99,7 +108,6 @@ def process():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
         
-        # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
         file_meta = {
             "filename": filename, "original_name": f.filename, "path": filepath, "ext": ext, 
             "lat": None, "lon": None, "grav_vec": None, "klns": None, 
@@ -370,7 +378,6 @@ def modify_defects():
                 y_max = float(calib.get('z_far') or 10.0)
                 road_width = float(calib.get('lane_width') or 8.0)
 
-                # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
                 from cv_bev import get_bev_homography
                 H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(
                     K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
@@ -419,6 +426,8 @@ def modify_defects():
                 cls_idx = 0
                 if global_model is not None and class_name in global_model.names.values():
                     cls_idx = list(global_model.names.values()).index(class_name)
+                elif class_name in FALLBACK_CLASSES:
+                    cls_idx = FALLBACK_CLASSES.index(class_name)
                     
                 from ultralytics.utils.plotting import colors
                 color_bgr = colors(cls_idx, bgr=True)
@@ -438,6 +447,8 @@ def modify_defects():
             cls_idx = 0
             if global_model is not None and class_name in global_model.names.values():
                 cls_idx = list(global_model.names.values()).index(class_name)
+            elif class_name in FALLBACK_CLASSES:
+                cls_idx = FALLBACK_CLASSES.index(class_name)
                 
             from ultralytics.utils.plotting import colors
             color_bgr = colors(cls_idx, bgr=True)

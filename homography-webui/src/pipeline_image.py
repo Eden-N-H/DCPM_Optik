@@ -145,7 +145,6 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     rect_img_for_proj, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
     base_name_no_ext = os.path.splitext(filename)[0]
     
-    # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
     cam_h = float(calib.get('cam_height') or 1.6)
     y_min = float(calib.get('z_near') or 1.5)
     y_max = float(calib.get('z_far') or 10.0)
@@ -255,14 +254,19 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
         cv2.imwrite(os.path.join(output_dir, source_filename), img_mat)
     
     conf_thresh = options.get('conf_thresh', 0.25)
-    with model_lock:
-        results = model.predict(source=img_mat, conf=conf_thresh, save=False, verbose=False)
+    skip_ai = options.get('skip_ai', False)
+    
+    results = []
+    if not skip_ai and model is not None:
+        with model_lock:
+            results = model.predict(source=img_mat, conf=conf_thresh, save=False, verbose=False)
     
     annotated = img_mat.copy()
     all_defects = []
     view_meta = {"front": {"K": [[1,0,0],[0,1,0],[0,0,1]], "detections": []}}
     
-    sam2_results = _run_sam2_masks(img_mat, results, sam2_predictor)
+    sam2_results = _run_sam2_masks(img_mat, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
+
     if sam2_results:
         _annotate_with_sam2(annotated, sam2_results, model.names)
         for pts, cls_id, conf, class_name, color in sam2_results:
@@ -326,7 +330,6 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
     is_360 = options.get('is_360', True)
     draw_grid = options.get('draw_grid', False)
     
-    # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
     y_min_base = max(1.5, cam_height * 1.2)
     y_max_base = min(12.0, y_min_base + 8.0)
     road_width_base = 8.0 
@@ -361,7 +364,6 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         
         view_meta = {"K": K.tolist(), "detections": []}
 
-        # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
         H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
             K, cam_height, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min_base, y_max_base, road_width_base
         )
@@ -415,12 +417,15 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base)
 
         conf_thresh = options.get('conf_thresh', 0.25)
-        inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
+        skip_ai = options.get('skip_ai', False)
         
-        with model_lock:
-            results = model.predict(source=inference_img, conf=conf_thresh, save=False, verbose=False)
+        results = []
+        if not skip_ai and model is not None:
+            inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
+            with model_lock:
+                results = model.predict(source=inference_img, conf=conf_thresh, save=False, verbose=False)
 
-        sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if sam2_predictor else None
+        sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
 
         if sam2_results:
             annotated_rect = _annotate_with_sam2(annotated_rect, sam2_results, model.names)
@@ -511,7 +516,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         
     return all_defects, all_geojson_features, generated_files, bev_footprints, view_meta_all, calibrations
 
-# --- NEW FISHEYE UNDISTORTION WITH YFOV (From Tester) ---
+
 def get_projected_image(source_path, telemetry, options, view_name, calib):
     img_mat = cv2.imread(source_path)
     is_360 = options.get('is_360', True)
@@ -540,7 +545,6 @@ def get_projected_image(source_path, telemetry, options, view_name, calib):
         
         if options.get('undistort', True):
             from cv_bev import get_fisheye_maps
-            # --- NEW: Explicitly extract both XFOV and YFOV for Tester fisheye mapping ---
             x_fov = float(telemetry.get('xfov') or fov)
             y_fov = float(telemetry.get('yfov') or (x_fov * (h / w))) 
             map1, map2, K = get_fisheye_maps(w, h, x_fov, y_fov)
@@ -617,7 +621,6 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     road_width = float(calib.get('lane_width') or 8.0)
     x_r = road_width / 2.0
 
-    # --- NEW VECTOR-BASED HOMOGRAPHY (From Tester) ---
     H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
         K, cam_h, grav_vec, eff_pitch, eff_roll, eff_yaw, y_min, y_max, road_width
     )
@@ -670,12 +673,16 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
         annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     defects, geojson_features, view_meta_detections = [], [], []
-    inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
     
-    with model_lock:
-        results = model.predict(source=inference_img, conf=options.get('conf_thresh', 0.25), save=False, verbose=False)
+    skip_ai = options.get('skip_ai', False)
+    results = []
+    
+    if not skip_ai and model is not None:
+        inference_img = apply_ego_mask(rect_img.copy(), mask_pct=0.15) if options.get('ego_mask', True) else rect_img.copy()
+        with model_lock:
+            results = model.predict(source=inference_img, conf=options.get('conf_thresh', 0.25), save=False, verbose=False)
         
-    sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if sam2_predictor else None
+    sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
     
     if sam2_results:
         annotated_rect = _annotate_with_sam2(annotated_rect, sam2_results, model.names)

@@ -29,6 +29,8 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("chk-has-telemetry").checked = hasTelemetry;
     });
 
+    document.getElementById("chk-skip-ai").addEventListener("change", checkCanProcess);
+
     setupDz("dz-model", "in-model", "name-model", false, f => { state.modelFile = f; checkCanProcess(); });
     setupDz("dz-image", "in-image", "name-image", true, f => { state.imageFiles = f; checkCanProcess(); });
 
