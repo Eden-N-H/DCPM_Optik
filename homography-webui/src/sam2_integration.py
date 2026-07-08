@@ -5,7 +5,7 @@ import torch
 
 _sam2_predictor = None
 
-def load_sam2(checkpoint_path="models/sam2.1_hiera_large.pt", config="configs/sam2.1/sam2.1_hiera_l.yaml"):
+def load_sam2(checkpoint_path="models/sam2.1_hiera_large.pt", config="sam2.1_hiera_l.yaml"):
     """Load SAM2 model at startup. Returns the predictor."""
     global _sam2_predictor
     from sam2.build_sam import build_sam2
