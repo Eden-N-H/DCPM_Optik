@@ -275,7 +275,7 @@ export function setupCalibrationUI() {
         const current = state.appResults[state.currentIndex];
         const baseCalib = current.views[state.currentDirection].calibration || {
             pitch_offset: 0, roll_offset: 0, yaw_offset: 0,
-            fov: 100, cam_height: 1.6, z_near: 1.9, z_far: 10.0, lane_width: 8.0
+            fov: 100, cam_height: 1.6, z_near: 1.2, z_far: 8.0, lane_width: 6.0
         };
         setCalibrationValues(baseCalib);
         previewImg.src = current.views[state.currentDirection].rect_url;

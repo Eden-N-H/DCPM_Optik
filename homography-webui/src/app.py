@@ -94,7 +94,12 @@ def process():
         "undistort": request.form.get('undistort') == 'true',
         "ego_mask": request.form.get('ego_mask') == 'true',
         "skip_ai": skip_ai,
-        "conf_thresh": safe_float(request.form.get('conf_thresh'), 0.25)
+        "conf_thresh": safe_float(request.form.get('conf_thresh'), 0.25),
+        # NEW: user-configurable BEV/ROI grid size, applied as the initial
+        # calibration for every image/frame in this batch.
+        "z_near": safe_float(request.form.get('z_near'), 1.2),
+        "z_far": safe_float(request.form.get('z_far'), 8.0),
+        "lane_width": safe_float(request.form.get('lane_width'), 6.0)
     }
 
     last_lat = safe_float(request.form.get('last_lat'), None)
@@ -259,9 +264,9 @@ def preview_sam2():
             rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
             
             cam_h = float(calib.get('cam_height') or 1.6)
-            y_min = float(calib.get('z_near') or 1.5)
-            y_max = float(calib.get('z_far') or 10.0)
-            road_width = float(calib.get('lane_width') or 8.0)
+            y_min = float(calib.get('z_near') or 1.2)
+            y_max = float(calib.get('z_far') or 8.0)
+            road_width = float(calib.get('lane_width') or 6.0)
 
             from cv_bev import get_bev_homography
             H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(
@@ -374,9 +379,9 @@ def modify_defects():
                 h, w = rect_img.shape[:2]
                 
                 cam_h = float(calib.get('cam_height') or 1.6)
-                y_min = float(calib.get('z_near') or 1.5)
-                y_max = float(calib.get('z_far') or 10.0)
-                road_width = float(calib.get('lane_width') or 8.0)
+                y_min = float(calib.get('z_near') or 1.2)
+                y_max = float(calib.get('z_far') or 8.0)
+                road_width = float(calib.get('lane_width') or 6.0)
 
                 from cv_bev import get_bev_homography
                 H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(

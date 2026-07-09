@@ -201,6 +201,11 @@ export async function executeJob() {
     fd.append("ego_mask", document.getElementById("chk-ego-mask").checked ? "true" : "false");
     fd.append("skip_ai", document.getElementById("chk-skip-ai").checked ? "true" : "false"); // NEW CHECKBOX
     fd.append("conf_thresh", document.getElementById("num-conf").value);
+
+    // Grid Size Options (NEW)
+    fd.append("z_near", document.getElementById("grid-z-near").value);
+    fd.append("z_far", document.getElementById("grid-z-far").value);
+    fd.append("lane_width", document.getElementById("grid-lane-width").value);
     
     if(state.stateLastLat !== null) fd.append("last_lat", state.stateLastLat);
     if(state.stateLastLon !== null) fd.append("last_lon", state.stateLastLon);

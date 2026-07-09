@@ -146,9 +146,9 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     base_name_no_ext = os.path.splitext(filename)[0]
     
     cam_h = float(calib.get('cam_height') or 1.6)
-    y_min = float(calib.get('z_near') or 1.5)
-    y_max = float(calib.get('z_far') or 10.0)
-    road_width = float(calib.get('lane_width') or 8.0)
+    y_min = float(calib.get('z_near') or 1.2)
+    y_max = float(calib.get('z_far') or 8.0)
+    road_width = float(calib.get('lane_width') or 6.0)
     x_r = road_width / 2.0
 
     H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
@@ -310,8 +310,8 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
     cv2.imwrite(os.path.join(output_dir, rect_filename), annotated)
     
     generated_files = {"front": {"raw_rect": source_filename, "raw_bev": rect_filename, "edit_bev": source_filename, "rect": rect_filename, "bev": rect_filename}}
-    calibrations = {"front": {"pitch_offset": 0, "roll_offset": 0, "yaw_offset": 0, "fov": 100, "cam_height": 1.6, "z_near": 1.5, "z_far": 10, "lane_width": 8}}
-    bev_footprints = {"front": {"lat": 0, "lon": 0, "heading": 0, "width_m": 8, "height_m": 8, "corners": [[0,0],[0,0],[0,0],[0,0]]}}
+    calibrations = {"front": {"pitch_offset": 0, "roll_offset": 0, "yaw_offset": 0, "fov": 100, "cam_height": 1.6, "z_near": 1.2, "z_far": 8.0, "lane_width": 6.0}}
+    bev_footprints = {"front": {"lat": 0, "lon": 0, "heading": 0, "width_m": 6.0, "height_m": 6.8, "corners": [[0,0],[0,0],[0,0],[0,0]]}}
     
     return {"front": all_defects}, [], generated_files, bev_footprints, view_meta, calibrations
 
@@ -330,9 +330,11 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
     is_360 = options.get('is_360', True)
     draw_grid = options.get('draw_grid', False)
     
-    y_min_base = max(1.5, cam_height * 1.2)
-    y_max_base = min(12.0, y_min_base + 8.0)
-    road_width_base = 8.0 
+    # NEW: grid/ROI size is now user-configurable (Advanced Options at upload time),
+    # falling back to the previous fixed defaults if not supplied.
+    y_min_base = float(options.get('z_near') or 1.2)
+    y_max_base = float(options.get('z_far') or 8.0)
+    road_width_base = float(options.get('lane_width') or 6.0)
     x_range_base = road_width_base / 2.0
 
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
@@ -563,9 +565,9 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
     rect_img, K, grav_vec, eff_pitch, eff_roll, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
     
     cam_h = float(calib.get('cam_height') or 1.6)
-    y_min = float(calib.get('z_near') or 1.5)
-    y_max = float(calib.get('z_far') or 10.0)
-    road_width = float(calib.get('lane_width') or 8.0)
+    y_min = float(calib.get('z_near') or 1.2)
+    y_max = float(calib.get('z_far') or 8.0)
+    road_width = float(calib.get('lane_width') or 6.0)
     
     from cv_bev import apply_ui_offsets_to_vectors
     g = np.array(grav_vec, dtype=np.float64)
@@ -616,9 +618,9 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     heading = float(telemetry.get('heading') or 0.0)
     
     cam_h = float(calib.get('cam_height') or 1.6)
-    y_min = float(calib.get('z_near') or 1.5)
-    y_max = float(calib.get('z_far') or 10.0)
-    road_width = float(calib.get('lane_width') or 8.0)
+    y_min = float(calib.get('z_near') or 1.2)
+    y_max = float(calib.get('z_far') or 8.0)
+    road_width = float(calib.get('lane_width') or 6.0)
     x_r = road_width / 2.0
 
     H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(

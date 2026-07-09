@@ -90,6 +90,9 @@
                             <label><input type="checkbox" id="chk-ego-mask" checked> EGO-MASK (15%)</label>
                             <label><input type="checkbox" id="chk-skip-ai"> BYPASS AI (NO YOLO)</label>
                             <label class="full-width">AI CONF THRESHOLD <input type="number" id="num-conf" value="0.25" min="0.05" max="0.95" step="0.05"></label>
+                            <label>GRID Z-NEAR (M) <input type="number" id="grid-z-near" value="1.2" min="0.1" max="5.0" step="0.1"></label>
+                            <label>GRID Z-FAR (M) <input type="number" id="grid-z-far" value="8.0" min="2.0" max="30.0" step="0.5"></label>
+                            <label class="full-width">GRID LANE WIDTH (M) <input type="number" id="grid-lane-width" value="6.0" min="2.0" max="20.0" step="0.5"></label>
                         </div>
                     </details>
 
@@ -272,16 +275,16 @@
                 <fieldset>
                     <legend>ROI GRID</legend>
                     <div class="slider-group">
-                        <label>Z-NEAR: <span id="lbl-z_near">1.9m</span></label>
-                        <input type="range" id="calib-z_near" min="0.1" max="5.0" step="0.1" value="1.9">
+                        <label>Z-NEAR: <span id="lbl-z_near">1.2m</span></label>
+                        <input type="range" id="calib-z_near" min="0.1" max="5.0" step="0.1" value="1.2">
                     </div>
                     <div class="slider-group">
-                        <label>Z-FAR: <span id="lbl-z_far">10.0m</span></label>
-                        <input type="range" id="calib-z_far" min="2.0" max="30.0" step="0.5" value="10.0">
+                        <label>Z-FAR: <span id="lbl-z_far">8.0m</span></label>
+                        <input type="range" id="calib-z_far" min="2.0" max="30.0" step="0.5" value="8.0">
                     </div>
                     <div class="slider-group">
-                        <label>LANE WIDTH: <span id="lbl-lane_width">8.0m</span></label>
-                        <input type="range" id="calib-lane_width" min="2.0" max="20.0" step="0.5" value="8.0">
+                        <label>LANE WIDTH: <span id="lbl-lane_width">6.0m</span></label>
+                        <input type="range" id="calib-lane_width" min="2.0" max="20.0" step="0.5" value="6.0">
                     </div>
                 </fieldset>
             </div>
