@@ -124,12 +124,12 @@ export function updateCarousel(panMap = true) {
     imgBevFront.classList.remove("hidden");
     if (state.appIs360) imgBevRear.classList.remove("hidden");
 
+    imgRect.onload = () => { autoFitSplitters(true); };
+
     const activeViewData = current.views[state.currentDirection] || current.views['front'];
     document.getElementById("carousel-counter").textContent = `ITEM ${state.currentIndex + 1} OF ${state.appResults.length}`;
     document.getElementById("carousel-filename").textContent = current.original_name;
     document.getElementById("carousel-telemetry").textContent = `P: ${current.pitch}° | R: ${current.roll}°`;
-
-    imgRect.onload = () => { autoFitSplitters(true); };
 
     const ts = Date.now();
     imgBevFront.src = current.views['front'].bev_url.split('?')[0] + `?t=${ts}`;
@@ -644,6 +644,28 @@ export function initDrawMode() {
         document.getElementById("draw-overlay").innerHTML = "";
         document.getElementById("draw-modal").close();
     };
+
+    document.getElementById("btn-draw-undo").onclick = () => {
+        if (window.drawPoints.length > 0) {
+            window.drawPoints.pop();
+            renderDrawPoints();
+        }
+    };
+
+    document.getElementById("btn-draw-clear").onclick = () => {
+        window.drawPoints = [];
+        renderDrawPoints();
+    };
+
+    document.addEventListener("keydown", (e) => {
+        if (window.drawMode && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            if (window.drawPoints.length > 0) {
+                window.drawPoints.pop();
+                renderDrawPoints();
+            }
+        }
+    });
 
     const btnSam2 = document.getElementById("btn-draw-sam2");
     if(btnSam2) {
