@@ -1,0 +1,132 @@
+data:
+  root: "./data/road_quality"
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+
+scene_generation:
+  road:
+    lanes: [1, 4]
+    lane_width: [3.0, 3.75]
+    road_length: [50, 200]
+  defects:
+    count: [1, 10]
+    types: ["crack", "pothole", "puddle", "patch", "manhole"]
+    overlap_threshold: 0.25
+  camera:
+    dashcam:
+      height: [1.2, 1.5]
+      pitch: [-15, -5]
+    drone:
+      height: [8, 15]
+      pitch: [-90, -60]
+  domain_randomization:
+    hdri_count: 20
+    vehicles: [0, 5]
+    weather: ["clear", "overcast", "rain"]
+  dataset_size: 16036
+  render_size: 512
+
+cyclegan:
+  input_size: 256
+  input_nc: 4
+  output_nc: 3
+  ngf: 64
+  ndf: 64
+  n_blocks: 9
+  training:
+    epochs: 200
+    lr: 0.0002
+    beta1: 0.5
+    beta2: 0.999
+    decay_start_epoch: 100
+    pool_size: 50
+    lambda_cycle: 10.0
+    lambda_identity: 0.5
+    lambda_defect: 5.0
+
+model:
+  encoder:
+    backbone: "resnet50"
+    pretrained: true
+    dsc_stages: [3, 4]
+  view_embedding:
+    num_views: 2
+    embed_dim: 32
+  easpp:
+    dilations: [3, 6, 12, 18]
+    out_channels: 256
+  soa:
+    reduction: 16
+    alpha: 0.3
+    gaussian_kernel: 7
+    gaussian_sigma: 1.0
+  decoder:
+    channels: [256, 128, 64]
+  heads:
+    segmentation:
+      num_classes: 3
+      hidden_channels: 128
+    severity:
+      hidden_channels: 128
+    depth:
+      hidden_channels: 128
+    camera:
+      hidden_dim: [512, 256]
+      intrinsic_params: 4
+      extrinsic_params: 6
+
+training:
+  epochs: 200
+  batch_size: 8
+  optimizer:
+    type: "adam"
+    lr: 0.0001
+    beta1: 0.9
+    beta2: 0.999
+    weight_decay: 0.00001
+  scheduler:
+    type: "reduce_on_plateau"
+    patience: 10
+    factor: 0.5
+  early_stopping_patience: 30
+  loss_weights:
+    segmentation: 1.5
+    depth: 1.0
+    camera: 0.3
+    adversarial: 0.1
+    view: 0.1
+  amp: true
+  grad_clip_norm: 1.0
+
+domain_adaptation:
+  lambda_adv: 0.1
+  feature_disc:
+    channels: [256, 128, 1]
+    kernel_size: 3
+    stride: 2
+  logit_disc:
+    channels: [256, 128, 1]
+    kernel_size: 3
+    stride: 2
+
+reconstruction:
+  depth_confidence_threshold: 0.5
+  height_range: [-0.5, 0.5]
+  bev_resolution: 0.02
+
+evaluation:
+  segmentation: ["miou", "per_class_iou", "pixel_accuracy", "mean_class_accuracy"]
+  depth: ["rmse", "abs_rel", "delta_1", "delta_2", "delta_3"]
+  camera: ["intrinsic_mae", "rotation_geodesic", "translation_error"]
+  severity: ["mae", "pearson_correlation"]
+
+logging:
+  tb_log_interval: 100
+  console_log_interval: 10
+  checkpoint_interval: 5
+
+seed: 42

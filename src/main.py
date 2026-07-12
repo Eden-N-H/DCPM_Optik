@@ -1,0 +1,304 @@
+"""Road Quality Pipeline - Main Entry Point.
+
+Usage:
+    python -m src.main train --config configs/default.yaml [--training.lr=1e-3] [--resume checkpoint.pt]
+    python -m src.main evaluate --config configs/default.yaml --checkpoint best_model.pt
+    python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
+"""
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader
+
+from src.utils.config import ConfigLoader
+from src.utils.logging import ExperimentLogger
+from src.model import MultiTaskModel
+from src.training import (
+    RoadQualityDataset,
+    MultiTaskTrainer,
+    MetricsComputer,
+    set_seed,
+)
+from src.reconstruction import ReconstructionPipeline
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger(__name__)
+
+
+def train(args, config):
+    """Run training."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Training on device: {device}")
+
+    # Set seed
+    seed = config.get('seed', 42)
+    set_seed(seed)
+    logger.info(f"Random seed: {seed}")
+
+    # Create datasets
+    data_root = config.get('data.root', './data/road_quality')
+    batch_size = config.get('training.batch_size', 8)
+    num_workers = config.get('data.num_workers', 4)
+
+    train_dataset = RoadQualityDataset(data_root, split='train', crop_size=480)
+    val_dataset = RoadQualityDataset(data_root, split='val', crop_size=512)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=config.get('data.pin_memory', True),
+        prefetch_factor=config.get('data.prefetch_factor', 2),
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=config.get('data.pin_memory', True),
+        prefetch_factor=config.get('data.prefetch_factor', 2),
+    )
+
+    logger.info(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
+
+    # Create model
+    model = MultiTaskModel(
+        pretrained=config.get('model.encoder.pretrained', True),
+        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+        lambda_adv=config.get('domain_adaptation.lambda_adv', 0.1),
+    )
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params / 1e6:.2f}M")
+
+    # Create trainer
+    trainer = MultiTaskTrainer(
+        config=config.config,
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        output_dir=args.output_dir,
+    )
+
+    # Train
+    metrics = trainer.train(resume_from=args.resume)
+    logger.info(f"Training complete. Final metrics: {metrics}")
+
+
+def evaluate(args, config):
+    """Run evaluation."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Evaluating on device: {device}")
+
+    # Create model and load checkpoint
+    model = MultiTaskModel(
+        pretrained=False,
+        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+    )
+
+    checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.exists():
+        logger.error(f"Checkpoint not found: {checkpoint_path}")
+        sys.exit(1)
+
+    checkpoint_data = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint_data['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+
+    # Create test dataset
+    data_root = config.get('data.root', './data/road_quality')
+    test_dataset = RoadQualityDataset(data_root, split='test', crop_size=512)
+    test_loader = DataLoader(
+        test_dataset, batch_size=config.get('training.batch_size', 8),
+        shuffle=False, num_workers=config.get('data.num_workers', 4),
+    )
+
+    # Evaluate
+    metrics_computer = MetricsComputer(
+        num_classes=config.get('model.heads.segmentation.num_classes', 3)
+    )
+
+    with torch.no_grad():
+        for batch in test_loader:
+            images = batch['image'].to(device)
+            view_labels = batch['view_label'].to(device)
+
+            predictions = model(images, view_labels)
+
+            targets = {
+                'segmentation': batch['segmentation'].to(device),
+                'depth': batch['depth'].to(device),
+                'severity': batch['severity'].to(device),
+                'camera_intrinsics': batch['camera_intrinsics'].to(device),
+                'camera_extrinsics': batch['camera_extrinsics'].to(device),
+            }
+
+            detached_preds = {k: v.detach() for k, v in predictions.items()
+                           if isinstance(v, torch.Tensor)}
+            metrics_computer.update(detached_preds, targets)
+
+    metrics = metrics_computer.compute()
+    logger.info("Evaluation Results:")
+    for key, value in sorted(metrics.items()):
+        logger.info(f"  {key}: {value:.4f}")
+
+
+def reconstruct(args, config):
+    """Run 3D reconstruction from video/images."""
+    import cv2
+    import numpy as np
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Reconstructing on device: {device}")
+
+    # Load model
+    model = MultiTaskModel(
+        pretrained=False,
+        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+    )
+    checkpoint_data = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint_data['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+
+    # Create reconstruction pipeline
+    recon_config = config.get('reconstruction', {})
+    pipeline = ReconstructionPipeline(recon_config)
+
+    # Process input (video or directory of images)
+    input_path = Path(args.input)
+
+    if input_path.suffix in ('.mp4', '.avi', '.mov'):
+        # Video input
+        cap = cv2.VideoCapture(str(input_path))
+        frame_count = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _process_frame(model, pipeline, frame_rgb, device, view_label=0)
+            frame_count += 1
+            if frame_count % 10 == 0:
+                logger.info(f"Processed {frame_count} frames")
+        cap.release()
+    else:
+        # Directory of images
+        image_paths = sorted(input_path.glob('*.png')) + sorted(input_path.glob('*.jpg'))
+        for i, img_path in enumerate(image_paths):
+            frame = cv2.imread(str(img_path))
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _process_frame(model, pipeline, frame_rgb, device, view_label=0)
+            if (i + 1) % 10 == 0:
+                logger.info(f"Processed {i + 1}/{len(image_paths)} images")
+
+    # Finalize and export
+    output_path = Path(args.output)
+    result = pipeline.finalize(output_path)
+    if result:
+        logger.info(f"BEV map saved to: {result}")
+        logger.info(f"PLY file saved to: {output_path / 'reconstruction.ply'}")
+    else:
+        logger.warning("No valid points after filtering. No output generated.")
+
+
+def _process_frame(model, pipeline, frame_rgb, device, view_label=0):
+    """Process a single frame through the model and add to reconstruction."""
+    import cv2
+    import numpy as np
+    from src.training.dataset import IMAGENET_MEAN, IMAGENET_STD
+
+    # Preprocess
+    frame_resized = cv2.resize(frame_rgb, (512, 512))
+    img = frame_resized.astype(np.float32) / 255.0
+    mean = np.array(IMAGENET_MEAN).reshape(1, 1, 3)
+    std = np.array(IMAGENET_STD).reshape(1, 1, 3)
+    img = (img - mean) / std
+
+    # To tensor
+    img_tensor = torch.from_numpy(img.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
+    view_tensor = torch.tensor([view_label], dtype=torch.long, device=device)
+
+    # Inference
+    with torch.no_grad():
+        outputs = model(img_tensor, view_tensor)
+
+    # Extract predictions
+    seg_pred = outputs['segmentation'][0].argmax(dim=0).cpu().numpy()  # [512, 512]
+    depth_pred = outputs['depth'][0, 0].cpu().numpy()  # [512, 512]
+    severity_pred = outputs['severity'][0, 0].cpu().numpy()  # [512, 512]
+    intrinsics_pred = outputs['intrinsics'][0].cpu().numpy()  # [4]
+    extrinsics_pred = outputs['extrinsics'][0].cpu().numpy()  # [6]
+
+    # Add to reconstruction pipeline
+    predictions = {
+        'depth': depth_pred,
+        'segmentation': seg_pred,
+        'severity': severity_pred,
+        'intrinsics': intrinsics_pred,
+        'extrinsics': extrinsics_pred,
+    }
+    pipeline.process_frame(predictions, rgb=frame_resized)
+
+
+def main():
+    """Main entry point for the road quality analysis pipeline."""
+    parser = argparse.ArgumentParser(description='Road Quality Analysis Pipeline')
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Train command
+    train_parser = subparsers.add_parser('train', help='Train the model')
+    train_parser.add_argument('--config', type=str, default='configs/default.yaml',
+                             help='Path to config YAML file')
+    train_parser.add_argument('--resume', type=str, default=None,
+                             help='Path to checkpoint to resume from')
+    train_parser.add_argument('--output-dir', type=str, default='./checkpoints',
+                             help='Output directory for checkpoints')
+
+    # Evaluate command
+    eval_parser = subparsers.add_parser('evaluate', help='Evaluate the model')
+    eval_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    eval_parser.add_argument('--checkpoint', type=str, required=True,
+                            help='Path to model checkpoint')
+
+    # Reconstruct command
+    recon_parser = subparsers.add_parser('reconstruct', help='Run 3D reconstruction')
+    recon_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    recon_parser.add_argument('--checkpoint', type=str, required=True,
+                             help='Path to model checkpoint')
+    recon_parser.add_argument('--input', type=str, required=True,
+                             help='Input video file or directory of images')
+    recon_parser.add_argument('--output', type=str, default='./reconstruction',
+                             help='Output directory')
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    # Collect remaining args as overrides (e.g., --training.lr=1e-3)
+    overrides = [a for a in sys.argv[1:] if '=' in a and a.startswith('--')]
+
+    # Load config
+    config = ConfigLoader(config_path=Path(args.config), overrides=overrides if overrides else None)
+
+    # Dispatch
+    if args.command == 'train':
+        train(args, config)
+    elif args.command == 'evaluate':
+        evaluate(args, config)
+    elif args.command == 'reconstruct':
+        reconstruct(args, config)
+
+
+if __name__ == "__main__":
+    main()

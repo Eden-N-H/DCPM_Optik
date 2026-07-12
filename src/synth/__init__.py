@@ -1,0 +1,71 @@
+"""Synthetic data generation package for road quality pipeline."""
+
+from src.synth.scene_generator import (
+    SceneGenerator,
+    SceneConfig,
+    MockMeshBackend,
+    compute_defect_area,
+    compute_defect_bounding_box,
+    compute_overlap_fraction,
+    has_excessive_overlap,
+    is_within_road_bounds,
+    generate_intrinsics,
+    generate_extrinsics,
+    DEFECT_DIMENSIONS,
+    CAMERA_CONFIGS,
+    OVERLAP_THRESHOLD,
+)
+
+from src.synth.renderer import (
+    SceneRenderer,
+    DomainRandomizationConfig,
+    DomainRandomizationState,
+    RenderConfig,
+    MockRenderBackend,
+    save_camera_params_json,
+    load_camera_params_json,
+    HDRI_LIBRARY,
+    WEATHER_TYPES,
+    VEHICLE_COUNT_RANGE,
+)
+
+from src.synth.dataset_builder import (
+    DatasetBuilder,
+    DatasetConfig,
+    compute_split_counts,
+    compute_view_counts,
+    DEFAULT_DATASET_SIZE,
+    DEFAULT_SPLIT_RATIOS,
+)
+
+__all__ = [
+    "SceneGenerator",
+    "SceneConfig",
+    "MockMeshBackend",
+    "compute_defect_area",
+    "compute_defect_bounding_box",
+    "compute_overlap_fraction",
+    "has_excessive_overlap",
+    "is_within_road_bounds",
+    "generate_intrinsics",
+    "generate_extrinsics",
+    "DEFECT_DIMENSIONS",
+    "CAMERA_CONFIGS",
+    "OVERLAP_THRESHOLD",
+    "SceneRenderer",
+    "DomainRandomizationConfig",
+    "DomainRandomizationState",
+    "RenderConfig",
+    "MockRenderBackend",
+    "save_camera_params_json",
+    "load_camera_params_json",
+    "HDRI_LIBRARY",
+    "WEATHER_TYPES",
+    "VEHICLE_COUNT_RANGE",
+    "DatasetBuilder",
+    "DatasetConfig",
+    "compute_split_counts",
+    "compute_view_counts",
+    "DEFAULT_DATASET_SIZE",
+    "DEFAULT_SPLIT_RATIOS",
+]
