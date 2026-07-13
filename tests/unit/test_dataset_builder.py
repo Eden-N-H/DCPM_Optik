@@ -2,7 +2,7 @@
 
 Tests cover:
 - Split count computation (largest-remainder method)
-- View count balancing (50% ±2% dashcam/drone)
+- View count balancing (100% dashcam)
 - DatasetBuilder end-to-end generation (small scale)
 - Manifest writing and structure
 - Validation of split/viewpoint balance
@@ -34,7 +34,7 @@ class TestComputeSplitCounts:
     """Tests for the split count computation helper."""
 
     def test_default_split_target_size(self):
-        """Test 80/10/10 split for the default target of 16,036."""
+        """Test 80/10/10 split for the default target of 16036."""
         counts = compute_split_counts(16036, DEFAULT_SPLIT_RATIOS)
 
         assert sum(counts.values()) == 16036
@@ -87,17 +87,6 @@ class TestComputeSplitCounts:
         with pytest.raises(ValueError, match="must sum to 1.0"):
             compute_split_counts(100, {"train": 0.5, "val": 0.2, "test": 0.1})
 
-    def test_all_counts_within_tolerance_of_16036(self):
-        """Test the exact target produces values within ±1% of expected ratios."""
-        counts = compute_split_counts(16036, DEFAULT_SPLIT_RATIOS)
-
-        # Train should be ~12829 (80%)
-        assert 12749 <= counts["train"] <= 12909
-        # Val should be ~1604 (10%)
-        assert 1563 <= counts["val"] <= 1644
-        # Test should be ~1604 (10%)
-        assert 1563 <= counts["test"] <= 1644
-
 
 # ---------------------------------------------------------------------------
 # Tests for compute_view_counts
@@ -107,35 +96,17 @@ class TestComputeSplitCounts:
 class TestComputeViewCounts:
     """Tests for the viewpoint balance computation."""
 
-    def test_even_split(self):
-        """Test that an even number splits evenly."""
+    def test_dashcam_is_100_percent(self):
+        """Test that dashcam receives 100% of the view count."""
         counts = compute_view_counts(100)
-        assert counts["dashcam"] == 50
-        assert counts["drone"] == 50
-
-    def test_odd_split(self):
-        """Test that an odd number gives one view one extra sample."""
-        counts = compute_view_counts(101)
-        assert counts["dashcam"] + counts["drone"] == 101
-        assert counts["dashcam"] == 50
-        assert counts["drone"] == 51
+        assert counts["dashcam"] == 100
+        assert "drone" not in counts
 
     def test_total_preserved(self):
         """Test that view counts always sum to the input."""
         for n in [1, 2, 5, 10, 100, 1000, 12829, 1604]:
             counts = compute_view_counts(n)
-            assert counts["dashcam"] + counts["drone"] == n
-
-    def test_balance_within_two_percent(self):
-        """Test that each viewpoint is within 50% ±2% for various sizes."""
-        for n in [100, 1000, 12829, 1604, 16036]:
-            counts = compute_view_counts(n)
-            for view_type, count in counts.items():
-                proportion = count / n
-                assert 0.48 <= proportion <= 0.52, (
-                    f"{view_type} proportion {proportion:.4f} outside 50%±2% "
-                    f"for n={n}"
-                )
+            assert counts["dashcam"] == n
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +140,7 @@ class TestDatasetBuilder:
             assert "defect_types_present" in sample
             assert "camera_config" in sample
             assert "paths" in sample
-            assert sample["view_type"] in ("dashcam", "drone")
+            assert sample["view_type"] == "dashcam"
             assert sample["split"] in ("train", "val", "test")
 
     def test_directory_structure(self, tmp_path):
@@ -209,15 +180,9 @@ class TestDatasetBuilder:
         dashcam_count = sum(
             1 for s in manifest.samples if s["view_type"] == "dashcam"
         )
-        drone_count = sum(
-            1 for s in manifest.samples if s["view_type"] == "drone"
-        )
 
         total = manifest.total_samples
-        assert dashcam_count + drone_count == total
-        # 50% ±2%
-        assert 0.48 <= dashcam_count / total <= 0.52
-        assert 0.48 <= drone_count / total <= 0.52
+        assert dashcam_count == total
 
     def test_validate_split_balance_passes(self, tmp_path):
         """Test that validation passes for a correctly generated dataset."""
@@ -259,8 +224,7 @@ class TestDatasetBuilder:
             root=tmp_path,
             total_samples=10000,
             splits={"train": 8000, "val": 1000, "test": 1000},
-            samples=[{"view_type": "dashcam", "split": "train"}] * 5000
-            + [{"view_type": "drone", "split": "train"}] * 5000,
+            samples=[{"view_type": "dashcam", "split": "train"}] * 10000
         )
 
         result = builder.validate_split_balance(manifest)
@@ -301,4 +265,3 @@ class TestDatasetBuilder:
             assert s1["view_type"] == s2["view_type"]
             assert s1["num_defects"] == s2["num_defects"]
             assert s1["defect_types_present"] == s2["defect_types_present"]
-

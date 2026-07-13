@@ -109,7 +109,6 @@ def valid_override_pairs(draw):
         ("training.grad_clip_norm", st.floats(min_value=0.01, max_value=100.0)),
         ("seed", st.integers(min_value=0, max_value=99999)),
         ("model.encoder.backbone", st.just("resnet50")),
-        ("model.view_embedding.embed_dim", st.integers(min_value=1, max_value=128)),
     ]
     path, value_strategy = draw(st.sampled_from(valid_paths_with_values))
     value = draw(value_strategy)

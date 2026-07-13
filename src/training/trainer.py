@@ -58,7 +58,6 @@ class MultiTaskTrainer:
             depth_weight=loss_weights.get('depth', 1.0),
             camera_weight=loss_weights.get('camera', 0.3),
             adv_weight=loss_weights.get('adversarial', 0.1),
-            view_weight=loss_weights.get('view', 0.1),
         ).to(device)
 
         # Optimizer
@@ -200,7 +199,6 @@ class MultiTaskTrainer:
         """
         # Move data to device
         images = batch['image'].to(self.device)
-        view_labels = batch['view_label'].to(self.device)
 
         targets = {
             'segmentation': batch['segmentation'].to(self.device),
@@ -208,7 +206,6 @@ class MultiTaskTrainer:
             'severity': batch['severity'].to(self.device),
             'camera_intrinsics': batch['camera_intrinsics'].to(self.device),
             'camera_extrinsics': batch['camera_extrinsics'].to(self.device),
-            'view_label': view_labels,
         }
 
         self.optimizer.zero_grad()
@@ -216,7 +213,7 @@ class MultiTaskTrainer:
         # Forward pass with AMP
         with autocast(enabled=self.use_amp):
             predictions = self.model(
-                images, view_labels, use_domain_adapter=self.use_domain_adapter
+                images, use_domain_adapter=self.use_domain_adapter
             )
             losses = self.criterion(predictions, targets)
             loss = losses['total']
@@ -248,7 +245,6 @@ class MultiTaskTrainer:
 
         for batch in self.val_loader:
             images = batch['image'].to(self.device)
-            view_labels = batch['view_label'].to(self.device)
 
             targets = {
                 'segmentation': batch['segmentation'].to(self.device),
@@ -256,11 +252,10 @@ class MultiTaskTrainer:
                 'severity': batch['severity'].to(self.device),
                 'camera_intrinsics': batch['camera_intrinsics'].to(self.device),
                 'camera_extrinsics': batch['camera_extrinsics'].to(self.device),
-                'view_label': view_labels,
             }
 
             with autocast(enabled=self.use_amp):
-                predictions = self.model(images, view_labels, use_domain_adapter=False)
+                predictions = self.model(images, use_domain_adapter=False)
                 losses = self.criterion(predictions, targets)
 
             total_loss += losses['total'].item()

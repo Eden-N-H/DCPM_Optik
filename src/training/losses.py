@@ -146,9 +146,8 @@ class MultiTaskLoss(nn.Module):
         - Depth: L1 + SSIM
         - Camera: L1 for intrinsics + geodesic for rotation
         - Domain adaptation: BCE for discriminator outputs
-        - View classification: Cross-entropy for view prediction
 
-    Total = w_seg * L_seg + w_depth * L_depth + w_cam * L_cam + w_adv * L_adv + w_view * L_view
+    Total = w_seg * L_seg + w_depth * L_depth + w_cam * L_cam + w_adv * L_adv
     """
 
     def __init__(self,
@@ -156,14 +155,12 @@ class MultiTaskLoss(nn.Module):
                  depth_weight: float = 1.0,
                  camera_weight: float = 0.3,
                  adv_weight: float = 0.1,
-                 view_weight: float = 0.1,
                  class_weights: Optional[torch.Tensor] = None):
         super().__init__()
         self.seg_weight = seg_weight
         self.depth_weight = depth_weight
         self.camera_weight = camera_weight
         self.adv_weight = adv_weight
-        self.view_weight = view_weight
 
         # Segmentation loss
         self.seg_loss = nn.CrossEntropyLoss(weight=class_weights)
@@ -179,9 +176,6 @@ class MultiTaskLoss(nn.Module):
 
         # Domain adaptation loss
         self.domain_bce = nn.BCEWithLogitsLoss()
-
-        # View classification loss
-        self.view_ce = nn.CrossEntropyLoss()
 
     def forward(self, predictions: Dict[str, torch.Tensor],
                 targets: Dict[str, torch.Tensor],
@@ -200,7 +194,6 @@ class MultiTaskLoss(nn.Module):
                 'depth': [B, 1, H, W] ground truth depth
                 'camera_intrinsics': [B, 4] GT intrinsics
                 'camera_extrinsics': [B, 6] GT extrinsics
-                'view_label': [B] view label (0 or 1)
             domain_labels: Optional [B] binary domain labels (0=synthetic, 1=real)
 
         Returns:
@@ -248,21 +241,12 @@ class MultiTaskLoss(nn.Module):
             logit_loss = self.domain_bce(domain_pred['logit_pred'], domain_target)
             losses['adv'] = (feat_loss + logit_loss) / 2.0
 
-        # View consistency loss (using extrinsics prediction as view proxy)
-        losses['view'] = torch.tensor(0.0, device=pred_depth.device)
-        if 'view_label' in targets:
-            # Use a simple proxy: encourage view-specific behavior
-            # The view embedding handles this implicitly during forward pass
-            # We add a regularization term on extrinsics variance within same view
-            losses['view'] = torch.tensor(0.0, device=pred_depth.device)
-
         # Total weighted loss
         losses['total'] = (
             self.seg_weight * losses['seg'] +
             self.depth_weight * losses['depth'] +
             self.camera_weight * losses['camera'] +
-            self.adv_weight * losses['adv'] +
-            self.view_weight * losses['view']
+            self.adv_weight * losses['adv']
         )
 
         return losses

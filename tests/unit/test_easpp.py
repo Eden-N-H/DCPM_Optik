@@ -11,15 +11,15 @@ class TestEASPP:
     @pytest.fixture
     def model(self):
         """Create an EASPP module instance."""
-        return EASPP(in_channels=2080, out_channels=256)
+        return EASPP(in_channels=2048, out_channels=256)
 
     @pytest.fixture
     def input_tensor(self):
-        """Create a typical input tensor [B, 2080, 16, 16]."""
-        return torch.randn(2, 2080, 16, 16)
+        """Create a typical input tensor [B, 2048, 16, 16]."""
+        return torch.randn(2, 2048, 16, 16)
 
     def test_output_shape(self, model, input_tensor):
-        """E-ASPP output shape should be [B, 256, 16, 16] for [B, 2080, 16, 16] input."""
+        """E-ASPP output shape should be [B, 256, 16, 16] for [B, 2048, 16, 16] input."""
         model.eval()
         with torch.no_grad():
             output = model(input_tensor)
@@ -28,7 +28,7 @@ class TestEASPP:
     def test_output_shape_batch_size_1(self, model):
         """E-ASPP should work with batch size 1."""
         model.eval()
-        x = torch.randn(1, 2080, 16, 16)
+        x = torch.randn(1, 2048, 16, 16)
         with torch.no_grad():
             output = model(x)
         assert output.shape == (1, 256, 16, 16)
@@ -36,7 +36,7 @@ class TestEASPP:
     def test_spatial_dimensions_preserved(self, model):
         """Spatial dimensions should be preserved from input to output."""
         model.eval()
-        x = torch.randn(1, 2080, 16, 16)
+        x = torch.randn(1, 2048, 16, 16)
         with torch.no_grad():
             output = model(x)
         assert output.shape[2:] == x.shape[2:]
@@ -59,7 +59,7 @@ class TestEASPP:
     def test_dsc_branches_output_256_channels(self, model):
         """Each DSC branch should output 256 channels."""
         model.eval()
-        x = torch.randn(1, 2080, 16, 16)
+        x = torch.randn(1, 2048, 16, 16)
         with torch.no_grad():
             for branch in model.dsc_branches:
                 out = branch(x)
@@ -68,10 +68,10 @@ class TestEASPP:
     def test_global_pool_branch_output(self, model):
         """Global pooling branch should output 256 channels at the input spatial size."""
         model.eval()
-        x = torch.randn(1, 2080, 16, 16)
+        x = torch.randn(1, 2048, 16, 16)
         with torch.no_grad():
             global_feat = model.global_pool(x)
-            assert global_feat.shape == (1, 2080, 1, 1)
+            assert global_feat.shape == (1, 2048, 1, 1)
             global_feat = model.global_conv(global_feat)
             assert global_feat.shape == (1, 256, 1, 1)
             global_feat = model.global_bn(global_feat)
@@ -84,7 +84,7 @@ class TestEASPP:
     def test_concatenation_produces_1280_channels(self, model):
         """Concatenation of 5 branches should produce 1280 channels."""
         model.eval()
-        x = torch.randn(1, 2080, 16, 16)
+        x = torch.randn(1, 2048, 16, 16)
         with torch.no_grad():
             branch_outputs = [branch(x) for branch in model.dsc_branches]
             global_feat = model.global_pool(x)

@@ -5,6 +5,9 @@ defect placement with overlap detection, and camera configurations.
 
 Designed with an abstraction layer so that it can be tested without
 the Blender Python API (bpy).
+
+Note: This pipeline has been specialized exclusively for Dashcam footage. 
+Aerial/Drone support has been removed.
 """
 
 from __future__ import annotations
@@ -34,7 +37,6 @@ DEFECT_DIMENSIONS: Dict[str, Dict[str, Tuple[float, float]]] = {
 # Camera configuration constraints (Requirements 1.6)
 CAMERA_CONFIGS: Dict[str, Dict[str, Tuple[float, float]]] = {
     "dashcam": {"height": (1.2, 1.5), "pitch": (-15.0, -5.0)},
-    "drone": {"height": (8.0, 15.0), "pitch": (-90.0, -60.0)},
 }
 
 # Overlap constraint threshold (Requirements 1.8)
@@ -452,7 +454,7 @@ class SceneGenerator:
 
     def setup_camera(
         self,
-        view_type: Literal["dashcam", "drone"],
+        view_type: Literal["dashcam"] = "dashcam",
         road_length: float = 100.0,
         height: Optional[float] = None,
         pitch: Optional[float] = None,
@@ -460,7 +462,7 @@ class SceneGenerator:
         """Set up camera with specified view type configuration.
 
         Args:
-            view_type: Either "dashcam" or "drone".
+            view_type: Must be "dashcam".
             road_length: Road length for camera positioning.
             height: Camera height in meters. Random within type range if None.
             pitch: Camera pitch in degrees. Random within type range if None.
@@ -472,7 +474,7 @@ class SceneGenerator:
             ValueError: If view_type is invalid or parameters are out of range.
         """
         if view_type not in CAMERA_CONFIGS:
-            raise ValueError(f"view_type must be 'dashcam' or 'drone', got '{view_type}'")
+            raise ValueError(f"view_type must be 'dashcam', got '{view_type}'")
 
         cam_range = CAMERA_CONFIGS[view_type]
 
@@ -494,13 +496,9 @@ class SceneGenerator:
                 f"pitch for {view_type} must be {p_min}° to {p_max}°, got {pitch}"
             )
 
-        # Compute focal length based on view type
-        # Dashcam has narrower FOV (~60°), drone has wider FOV (~90°)
+        # Compute focal length based on view type (dashcam FOV = 60°)
         image_size = self.config.render_size
-        if view_type == "dashcam":
-            fov_deg = 60.0
-        else:
-            fov_deg = 90.0
+        fov_deg = 60.0
         focal_length = (image_size / 2.0) / math.tan(math.radians(fov_deg / 2.0))
 
         intrinsics = generate_intrinsics(focal_length, image_size)

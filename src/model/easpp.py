@@ -15,11 +15,11 @@ class EASPP(nn.Module):
         - 1 global context branch (GAP + 1x1 conv + upsample)
         - Concatenation of all 5 branches → SOA → 1x1 projection
 
-    Input: [B, 2080, 16, 16] (encoder stage4 2048 + view embedding 32 = 2080)
+    Input: [B, 2048, 16, 16] (encoder stage4 2048)
     Output: [B, 256, 16, 16]
     """
 
-    def __init__(self, in_channels=2080, out_channels=256):
+    def __init__(self, in_channels=2048, out_channels=256):
         super().__init__()
 
         branch_channels = 256
@@ -62,7 +62,7 @@ class EASPP(nn.Module):
         """Apply EASPP.
 
         Args:
-            x: [B, 2080, 16, 16] input features (encoder output + view embedding)
+            x: [B, 2048, 16, 16] input features (encoder output)
 
         Returns:
             [B, 256, 16, 16] refined features

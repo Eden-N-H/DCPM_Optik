@@ -44,13 +44,13 @@ class CameraConfig:
     """Camera configuration for scene rendering.
 
     Attributes:
-        view_type: Either "dashcam" (vehicle-mounted) or "drone" (aerial).
+        view_type: Strictly "dashcam" (vehicle-mounted).
         height: Camera height above ground in meters.
         pitch: Camera pitch angle in degrees (negative = looking down).
         intrinsics: 3x3 camera intrinsic matrix.
         extrinsics: 3x4 camera extrinsic matrix [R|t].
     """
-    view_type: Literal["dashcam", "drone"]
+    view_type: Literal["dashcam"]
     height: float
     pitch: float
     intrinsics: np.ndarray

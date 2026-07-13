@@ -32,33 +32,32 @@ class TestTorchScriptExport:
 
     @pytest.fixture
     def sample_input(self):
-        """Create a sample 512x512 input image and view label."""
+        """Create a sample 512x512 input image."""
         image = torch.randn(1, 3, 512, 512)
-        view_label = torch.zeros(1, dtype=torch.long)
-        return image, view_label
+        return image
 
     def test_torchscript_trace_export(self, model, sample_input):
         """Test that the model can be exported via torch.jit.trace."""
-        image, view_label = sample_input
+        image = sample_input
 
         # Trace the model (strict=False needed because model returns a dict)
         with torch.no_grad():
-            traced_model = torch.jit.trace(model, (image, view_label), strict=False)
+            traced_model = torch.jit.trace(model, (image,), strict=False)
 
         assert traced_model is not None
 
     def test_torchscript_inference_equivalence(self, model, sample_input):
         """Test that TorchScript model produces same outputs as eager model."""
-        image, view_label = sample_input
+        image = sample_input
 
         # Get eager mode output
         with torch.no_grad():
-            eager_output = model(image, view_label)
+            eager_output = model(image)
 
         # Trace and get scripted output (strict=False for dict output)
         with torch.no_grad():
-            traced_model = torch.jit.trace(model, (image, view_label), strict=False)
-            traced_output = traced_model(image, view_label)
+            traced_model = torch.jit.trace(model, (image,), strict=False)
+            traced_output = traced_model(image)
 
         # Compare outputs
         for key in ['segmentation', 'severity', 'depth', 'intrinsics', 'extrinsics']:
@@ -71,12 +70,12 @@ class TestTorchScriptExport:
 
     def test_torchscript_save_and_load(self, model, sample_input, tmp_path):
         """Test that TorchScript model can be saved and loaded from disk."""
-        image, view_label = sample_input
+        image = sample_input
         model_path = tmp_path / "model_scripted.pt"
 
         # Trace and save (strict=False for dict output)
         with torch.no_grad():
-            traced_model = torch.jit.trace(model, (image, view_label), strict=False)
+            traced_model = torch.jit.trace(model, (image,), strict=False)
             torch.jit.save(traced_model, str(model_path))
 
         assert model_path.exists()
@@ -84,11 +83,11 @@ class TestTorchScriptExport:
         # Load and run inference
         loaded_model = torch.jit.load(str(model_path))
         with torch.no_grad():
-            loaded_output = loaded_model(image, view_label)
+            loaded_output = loaded_model(image)
 
         # Verify outputs match
         with torch.no_grad():
-            original_output = model(image, view_label)
+            original_output = model(image)
 
         for key in ['segmentation', 'severity', 'depth', 'intrinsics', 'extrinsics']:
             torch.testing.assert_close(
@@ -99,17 +98,16 @@ class TestTorchScriptExport:
 
     def test_torchscript_different_batch_sizes(self, model, sample_input):
         """Test that traced model works with different batch sizes."""
-        image, view_label = sample_input
+        image = sample_input
 
         with torch.no_grad():
-            traced_model = torch.jit.trace(model, (image, view_label), strict=False)
+            traced_model = torch.jit.trace(model, (image,), strict=False)
 
         # Test batch size 2
         image_b2 = torch.randn(2, 3, 512, 512)
-        view_label_b2 = torch.zeros(2, dtype=torch.long)
 
         with torch.no_grad():
-            output_b2 = traced_model(image_b2, view_label_b2)
+            output_b2 = traced_model(image_b2)
 
         assert output_b2['segmentation'].shape == (2, 3, 512, 512)
         assert output_b2['depth'].shape == (2, 1, 512, 512)
@@ -144,7 +142,6 @@ class TestEndToEndTrainingStep:
                 [[256.0, 256.0, 256.0, 256.0]] * batch_size
             ),
             'camera_extrinsics': torch.randn(batch_size, 6),
-            'view_label': torch.randint(0, 2, (batch_size,)),
         }
 
     def test_single_training_step(self, model, synthetic_batch):
@@ -155,14 +152,13 @@ class TestEndToEndTrainingStep:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         criterion = MultiTaskLoss(
             seg_weight=1.5, depth_weight=1.0,
-            camera_weight=0.3, adv_weight=0.1, view_weight=0.1
+            camera_weight=0.3, adv_weight=0.1
         )
 
         images = synthetic_batch['image']
-        view_labels = synthetic_batch['view_label']
 
         # Forward pass
-        predictions = model(images, view_labels)
+        predictions = model(images)
 
         # Verify all outputs present (Requirement 15.2)
         assert 'segmentation' in predictions
@@ -185,7 +181,6 @@ class TestEndToEndTrainingStep:
             'severity': synthetic_batch['severity'],
             'camera_intrinsics': synthetic_batch['camera_intrinsics'],
             'camera_extrinsics': synthetic_batch['camera_extrinsics'],
-            'view_label': view_labels,
         }
         losses = criterion(predictions, targets)
 
@@ -219,20 +214,18 @@ class TestEndToEndTrainingStep:
         scaler = GradScaler('cpu', enabled=False)  # disabled for CPU testing
 
         images = synthetic_batch['image']
-        view_labels = synthetic_batch['view_label']
 
         optimizer.zero_grad()
 
         # Forward pass with AMP context
         with autocast('cpu', enabled=False):  # disabled for CPU
-            predictions = model(images, view_labels)
+            predictions = model(images)
             targets = {
                 'segmentation': synthetic_batch['segmentation'],
                 'depth': synthetic_batch['depth'],
                 'severity': synthetic_batch['severity'],
                 'camera_intrinsics': synthetic_batch['camera_intrinsics'],
                 'camera_extrinsics': synthetic_batch['camera_extrinsics'],
-                'view_label': view_labels,
             }
             losses = criterion(predictions, targets)
 
@@ -250,10 +243,9 @@ class TestEndToEndTrainingStep:
         """Explicitly test Requirement 15.2: single 512x512 image produces all outputs."""
         model.eval()
         image = torch.randn(1, 3, 512, 512)
-        view_label = torch.zeros(1, dtype=torch.long)
 
         with torch.no_grad():
-            outputs = model(image, view_label)
+            outputs = model(image)
 
         # All four outputs must be present
         assert 'segmentation' in outputs, "Missing segmentation output"
@@ -363,10 +355,9 @@ class TestReconstructionPipeline:
         model.eval()
 
         image = torch.randn(1, 3, 512, 512)
-        view_label = torch.zeros(1, dtype=torch.long)
 
         with torch.no_grad():
-            outputs = model(image, view_label)
+            outputs = model(image)
 
         # Convert to numpy for reconstruction pipeline
         seg_pred = outputs['segmentation'][0].argmax(dim=0).cpu().numpy()

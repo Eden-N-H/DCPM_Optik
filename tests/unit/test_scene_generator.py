@@ -81,20 +81,11 @@ class TestComputeDefectBoundingBox:
     def test_crack_90_degree_rotation(self):
         """Crack at 90° swaps length and width extents."""
         bbox = compute_defect_bounding_box("crack", (2.0, 0.04), (5.0, 10.0), 90.0)
-        # At 90°, half_x = length/2 * |cos90| + width/2 * |sin90| = 0 + 0.02 = 0.02
-        # half_y = length/2 * |sin90| + width/2 * |cos90| = 1.0 + 0 = 1.0
         assert bbox == pytest.approx((4.98, 9.0, 5.02, 11.0), abs=1e-6)
 
     def test_pothole_is_circular(self):
         """Pothole AABB is a square centered on position."""
         bbox = compute_defect_bounding_box("pothole", (0.5, 0.1), (3.0, 7.0), 45.0)
-        # radius = 0.25, rotation doesn't change circular AABB
-        # half_x = 0.25*cos45 + 0.25*sin45 = 0.25*(sqrt2) ≈ 0.354
-        # For circular defects it depends on our formulation
-        # Actually for pothole, half_length = half_width = radius = 0.25
-        # half_x = 0.25 * |cos45| + 0.25 * |sin45| = 0.25*0.707 + 0.25*0.707 = 0.354
-        # This is expected since a circle's AABB doesn't change with rotation
-        # but we model it as a square before rotation
         x_min, y_min, x_max, y_max = bbox
         assert (x_max - x_min) == pytest.approx(y_max - y_min, abs=1e-6)
 
@@ -102,8 +93,6 @@ class TestComputeDefectBoundingBox:
         """Manhole AABB is symmetric regardless of orientation."""
         bbox0 = compute_defect_bounding_box("manhole", (0.6,), (2.0, 5.0), 0.0)
         bbox45 = compute_defect_bounding_box("manhole", (0.6,), (2.0, 5.0), 45.0)
-        # For a circle modeled as square, 45° rotation gives larger bbox
-        # but the center should remain the same
         center_0 = ((bbox0[0] + bbox0[2]) / 2, (bbox0[1] + bbox0[3]) / 2)
         center_45 = ((bbox45[0] + bbox45[2]) / 2, (bbox45[1] + bbox45[3]) / 2)
         assert center_0 == pytest.approx(center_45, abs=1e-10)
@@ -138,10 +127,6 @@ class TestComputeOverlapFraction:
 
     def test_partial_overlap(self):
         """50% overlap of smaller box."""
-        # Box A: (0, 0, 2, 2), area 4
-        # Box B: (1, 0, 3, 1), area 2 (smaller)
-        # Intersection: (1, 0, 2, 1), area 1
-        # Overlap fraction = 1 / 2 = 0.5
         fraction = compute_overlap_fraction(
             (0, 0, 2, 2), 4.0, (1, 0, 3, 1), 2.0
         )
@@ -149,10 +134,6 @@ class TestComputeOverlapFraction:
 
     def test_small_inside_large(self):
         """Small box fully inside large box gives 1.0."""
-        # Large: (0, 0, 10, 10), area 100
-        # Small: (4, 4, 5, 5), area 1
-        # Intersection: (4, 4, 5, 5), area 1
-        # Fraction = 1 / min(100, 1) = 1.0
         fraction = compute_overlap_fraction(
             (0, 0, 10, 10), 100.0, (4, 4, 5, 5), 1.0
         )
@@ -174,10 +155,6 @@ class TestComputeOverlapFraction:
 
     def test_just_below_threshold(self):
         """Overlap at exactly threshold boundary."""
-        # Box A: (0, 0, 4, 4), area 16
-        # Box B: (3, 0, 5, 2), area 4 (smaller)
-        # Intersection: (3, 0, 4, 2), area 2
-        # Fraction = 2 / 4 = 0.5 > 0.25 threshold
         fraction = compute_overlap_fraction(
             (0, 0, 4, 4), 16.0, (3, 0, 5, 2), 4.0
         )
@@ -221,16 +198,6 @@ class TestHasExcessiveOverlap:
 
     def test_overlap_below_threshold(self):
         """Overlap below 25% threshold passes."""
-        # Existing: (0, 0, 10, 10), area 100
-        # New: (9, 0, 11, 10), area 20
-        # Intersection: (9, 0, 10, 10), area 10
-        # Fraction = 10 / min(100, 20) = 10/20 = 0.5 > 0.25 -- fails
-        # Let's try: existing=(0,0,10,10), area=100; new=(9.5,0,11,10), area=15
-        # Intersection: (9.5,0,10,10), area=5
-        # Fraction = 5/15 = 0.33 > 0.25 -- still fails
-        # Try: existing=(0,0,10,1), area=10; new=(9,0,20,1), area=11
-        # Intersection: (9,0,10,1), area=1
-        # Fraction = 1/min(10,11) = 1/10 = 0.1 < 0.25 -- passes
         existing = self._make_instance((0, 0, 10, 1), 10.0)
         new = self._make_instance((9, 0, 20, 1), 11.0)
         assert has_excessive_overlap(new, [existing]) is False
@@ -239,7 +206,6 @@ class TestHasExcessiveOverlap:
         """Custom threshold changes overlap detection."""
         existing = self._make_instance((0, 0, 10, 1), 10.0)
         new = self._make_instance((9, 0, 20, 1), 11.0)
-        # Fraction = 1/10 = 0.1; threshold=0.05 → exceeds
         assert has_excessive_overlap(new, [existing], threshold=0.05) is True
 
 
@@ -299,16 +265,6 @@ class TestCameraSetup:
         config = generator.setup_camera("dashcam", road_length=100.0)
         assert -15.0 <= config.pitch <= -5.0
 
-    def test_drone_height_range(self, generator):
-        """Drone height is within 8-15m."""
-        config = generator.setup_camera("drone", road_length=100.0)
-        assert 8.0 <= config.height <= 15.0
-
-    def test_drone_pitch_range(self, generator):
-        """Drone pitch is within -90° to -60°."""
-        config = generator.setup_camera("drone", road_length=100.0)
-        assert -90.0 <= config.pitch <= -60.0
-
     def test_dashcam_specific_values(self, generator):
         """Dashcam with specific height and pitch."""
         config = generator.setup_camera(
@@ -317,15 +273,6 @@ class TestCameraSetup:
         assert config.height == 1.3
         assert config.pitch == -10.0
         assert config.view_type == "dashcam"
-
-    def test_drone_specific_values(self, generator):
-        """Drone with specific height and pitch."""
-        config = generator.setup_camera(
-            "drone", road_length=100.0, height=12.0, pitch=-75.0
-        )
-        assert config.height == 12.0
-        assert config.pitch == -75.0
-        assert config.view_type == "drone"
 
     def test_intrinsics_shape(self, generator):
         """Intrinsics matrix is 3x3."""
@@ -341,17 +288,13 @@ class TestCameraSetup:
         """Intrinsics has proper structure: fx, fy on diagonal, cx/cy in last column."""
         config = generator.setup_camera("dashcam", road_length=100.0)
         K = config.intrinsics
-        # Zero elements
         assert K[0, 1] == 0.0
         assert K[1, 0] == 0.0
         assert K[2, 0] == 0.0
         assert K[2, 1] == 0.0
-        # K[2,2] = 1
         assert K[2, 2] == 1.0
-        # Focal lengths positive
         assert K[0, 0] > 0
         assert K[1, 1] > 0
-        # Principal point at center
         assert K[0, 2] == pytest.approx(256.0)
         assert K[1, 2] == pytest.approx(256.0)
 
@@ -359,10 +302,8 @@ class TestCameraSetup:
         """Rotation part of extrinsics is a proper rotation matrix."""
         config = generator.setup_camera("dashcam", road_length=100.0)
         R = config.extrinsics[:, :3]
-        # R^T * R should be identity (orthogonal)
         RTR = R.T @ R
         assert np.allclose(RTR, np.eye(3), atol=1e-10)
-        # det(R) should be 1 (proper rotation)
         assert np.linalg.det(R) == pytest.approx(1.0, abs=1e-10)
 
     def test_invalid_view_type(self, generator):
@@ -374,11 +315,6 @@ class TestCameraSetup:
         """Height outside valid range raises ValueError."""
         with pytest.raises(ValueError, match="height"):
             generator.setup_camera("dashcam", road_length=100.0, height=5.0)
-
-    def test_pitch_out_of_range(self, generator):
-        """Pitch outside valid range raises ValueError."""
-        with pytest.raises(ValueError, match="pitch"):
-            generator.setup_camera("drone", road_length=100.0, pitch=-30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +385,7 @@ class TestGenerateRoadMesh:
     def test_random_parameters_in_range(self, generator):
         """Random parameters are within configured ranges."""
         mesh, width, length = generator.generate_road_mesh()
-        assert 3.0 <= width <= 15.0  # 1-4 lanes * 3.0-3.75m
+        assert 3.0 <= width <= 15.0
         assert 50.0 <= length <= 200.0
 
     def test_invalid_lanes(self, generator):
@@ -491,7 +427,6 @@ class TestPlaceDefects:
         instances = generator.place_defects(
             road_width=15.0, road_length=200.0, num_defects=5
         )
-        # May be fewer if placement fails, but generally should place all
         assert 1 <= len(instances) <= 5
 
     def test_all_within_bounds(self, generator):
@@ -502,7 +437,7 @@ class TestPlaceDefects:
         for inst in instances:
             assert is_within_road_bounds(
                 inst.bounding_box_2d, 15.0, 200.0
-            ), f"Defect out of bounds: {inst.bounding_box_2d}"
+            )
 
     def test_no_excessive_overlap(self, generator):
         """No pair of defects overlaps more than 25% of smaller area."""
@@ -517,9 +452,7 @@ class TestPlaceDefects:
                     instances[j].bounding_box_2d,
                     instances[j].area,
                 )
-                assert overlap <= OVERLAP_THRESHOLD, (
-                    f"Excessive overlap {overlap:.3f} between defects {i} and {j}"
-                )
+                assert overlap <= OVERLAP_THRESHOLD
 
     def test_custom_defect_specs(self, generator):
         """Placement with pre-defined defect specs."""
@@ -546,7 +479,6 @@ class TestPlaceDefects:
         instances = generator.place_defects(
             road_width=3.5, road_length=100.0, num_defects=3
         )
-        # Should place at least some
         assert len(instances) >= 1
 
     def test_defect_areas_positive(self, generator):

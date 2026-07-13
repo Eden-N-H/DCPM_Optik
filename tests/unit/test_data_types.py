@@ -89,21 +89,6 @@ class TestCameraConfig:
         assert config.intrinsics.shape == (3, 3)
         assert config.extrinsics.shape == (3, 4)
 
-    def test_drone_config(self):
-        K = np.eye(3, dtype=np.float64)
-        Rt = np.hstack([np.eye(3), np.zeros((3, 1))])
-
-        config = CameraConfig(
-            view_type="drone",
-            height=12.0,
-            pitch=-75.0,
-            intrinsics=K,
-            extrinsics=Rt,
-        )
-        assert config.view_type == "drone"
-        assert config.intrinsics.shape == (3, 3)
-        assert config.extrinsics.shape == (3, 4)
-
 
 class TestRenderOutputs:
     """Tests for RenderOutputs — validates Req 1.3."""
@@ -133,7 +118,7 @@ class TestDatasetManifest:
             splits={"train": 12829, "val": 1604, "test": 1603},
             samples=[
                 {"scene_id": "001", "view_type": "dashcam", "defect_types_present": ["crack"]},
-                {"scene_id": "002", "view_type": "drone", "defect_types_present": ["pothole", "puddle"]},
+                {"scene_id": "002", "view_type": "dashcam", "defect_types_present": ["pothole", "puddle"]},
             ],
         )
         assert manifest.total_samples == 16036

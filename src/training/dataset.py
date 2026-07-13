@@ -32,7 +32,6 @@ class RoadQualityDataset(Dataset):
         'severity': [1, H, W] severity tensor [0, 1]
         'camera_intrinsics': [4] tensor (fx, fy, cx, cy)
         'camera_extrinsics': [6] tensor (rodrigues3, translation3)
-        'view_label': scalar long tensor (0=dashcam, 1=drone)
     """
 
     def __init__(self, root: str, split: str = 'train', crop_size: int = 480):
@@ -96,7 +95,6 @@ class RoadQualityDataset(Dataset):
         # Extract camera parameters
         intrinsics = camera_params['intrinsics']  # [4] fx, fy, cx, cy
         extrinsics = camera_params['extrinsics']  # [6] rodrigues + translation
-        view_label = camera_params['view_label']  # 0 or 1
 
         # Convert to tensors
         image_tensor = torch.from_numpy(image.transpose(2, 0, 1)).float()  # [3, H, W]
@@ -105,7 +103,6 @@ class RoadQualityDataset(Dataset):
         severity_tensor = torch.from_numpy(severity[np.newaxis]).float()  # [1, H, W]
         intrinsics_tensor = torch.from_numpy(np.array(intrinsics, dtype=np.float32))  # [4]
         extrinsics_tensor = torch.from_numpy(np.array(extrinsics, dtype=np.float32))  # [6]
-        view_tensor = torch.tensor(view_label, dtype=torch.long)
 
         return {
             'image': image_tensor,
@@ -114,7 +111,6 @@ class RoadQualityDataset(Dataset):
             'severity': severity_tensor,
             'camera_intrinsics': intrinsics_tensor,
             'camera_extrinsics': extrinsics_tensor,
-            'view_label': view_tensor,
         }
 
     def _load_rgb(self, sample_id: str) -> np.ndarray:
@@ -156,7 +152,7 @@ class RoadQualityDataset(Dataset):
         {
             "K": [[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
             "extrinsics": [r1, r2, r3, t1, t2, t3],
-            "view_type": "dashcam" or "drone"
+            "view_type": "dashcam"
         }
         """
         path = self.camera_dir / f"{sample_id}.json"
@@ -167,12 +163,10 @@ class RoadQualityDataset(Dataset):
         fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
 
         extrinsics = np.array(data['extrinsics'], dtype=np.float64)
-        view_label = 0 if data.get('view_type', 'dashcam') == 'dashcam' else 1
 
         return {
             'intrinsics': [fx, fy, cx, cy],
             'extrinsics': extrinsics.tolist(),
-            'view_label': view_label,
         }
 
     def _train_augment(self, rgb: np.ndarray, depth: np.ndarray,

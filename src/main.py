@@ -155,9 +155,8 @@ def evaluate(args, config):
     with torch.no_grad():
         for batch in test_loader:
             images = batch['image'].to(device)
-            view_labels = batch['view_label'].to(device)
 
-            predictions = model(images, view_labels)
+            predictions = model(images)
 
             targets = {
                 'segmentation': batch['segmentation'].to(device),
@@ -211,7 +210,7 @@ def reconstruct(args, config):
             if not ret:
                 break
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            _process_frame(model, pipeline, frame_rgb, device, view_label=0)
+            _process_frame(model, pipeline, frame_rgb, device)
             frame_count += 1
             if frame_count % 10 == 0:
                 logger.info(f"Processed {frame_count} frames")
@@ -224,7 +223,7 @@ def reconstruct(args, config):
             if frame is None:
                 continue
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            _process_frame(model, pipeline, frame_rgb, device, view_label=0)
+            _process_frame(model, pipeline, frame_rgb, device)
             if (i + 1) % 10 == 0:
                 logger.info(f"Processed {i + 1}/{len(image_paths)} images")
 
@@ -238,7 +237,7 @@ def reconstruct(args, config):
         logger.warning("No valid points after filtering. No output generated.")
 
 
-def _process_frame(model, pipeline, frame_rgb, device, view_label=0):
+def _process_frame(model, pipeline, frame_rgb, device):
     """Process a single frame through the model and add to reconstruction."""
     import cv2
     import numpy as np
@@ -253,11 +252,10 @@ def _process_frame(model, pipeline, frame_rgb, device, view_label=0):
 
     # To tensor
     img_tensor = torch.from_numpy(img.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
-    view_tensor = torch.tensor([view_label], dtype=torch.long, device=device)
 
     # Inference
     with torch.no_grad():
-        outputs = model(img_tensor, view_tensor)
+        outputs = model(img_tensor)
 
     # Extract predictions
     seg_pred = outputs['segmentation'][0].argmax(dim=0).cpu().numpy()  # [512, 512]

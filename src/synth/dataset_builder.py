@@ -1,9 +1,12 @@
 """Dataset builder for orchestrating full synthetic dataset generation.
 
-Generates the complete dataset of images split into train/val/test sets with
-balanced dashcam/drone viewpoints. Uses concurrent subprocesses to instruct the
-system Blender executable to render scenes, vastly increasing generation speed
-while avoiding memory leaks and library conflict issues.
+Generates the complete dataset of images split into train/val/test sets. Uses
+concurrent subprocesses to instruct the system Blender executable to render
+scenes, vastly increasing generation speed while avoiding memory leaks and
+library conflict issues.
+
+Note: This pipeline has been specialized exclusively for Dashcam footage. 
+Aerial/Drone support has been removed.
 
 Requirements: 1.7, 2.1, 2.2, 2.3, 2.4, 2.5
 """
@@ -45,8 +48,6 @@ DEFAULT_SPLIT_RATIOS: Dict[str, float] = {
     "val": 0.10,
     "test": 0.10,
 }
-
-VIEW_TYPES: List[str] = ["dashcam", "drone"]
 
 @dataclass
 class DatasetConfig:
@@ -95,9 +96,8 @@ def compute_split_counts(total: int, ratios: Dict[str, float]) -> Dict[str, int]
     return floor_counts
 
 def compute_view_counts(split_count: int) -> Dict[str, int]:
-    dashcam_count = split_count // 2
-    drone_count = split_count - dashcam_count
-    return {"dashcam": dashcam_count, "drone": drone_count}
+    # Hardcoded to 100% dashcam view
+    return {"dashcam": split_count}
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ class DatasetBuilder:
             "camera": {
                 "height": camera_config.height,
                 "pitch": camera_config.pitch,
-                "fov": 60.0 if view_type == "dashcam" else 90.0
+                "fov": 60.0
             },
             "env": {
                 "hdri": dr_state.hdri_map,
@@ -305,7 +305,6 @@ class DatasetBuilder:
         }
 
     def validate_split_balance(self, manifest: DatasetManifest) -> Dict[str, Any]:
-        # Remains unchanged...
         total = manifest.total_samples
         results: Dict[str, Any] = {"valid": True, "issues": []}
 
@@ -326,10 +325,16 @@ class DatasetBuilder:
 
         for view_type, count in view_counts.items():
             proportion = count / total if total > 0 else 0
-            if not (0.48 <= proportion <= 0.52):
+            # Ensure dashcam is 100% and drone is 0%
+            if view_type == 'dashcam' and proportion != 1.0:
                 results["valid"] = False
                 results["issues"].append(
-                    f"View type '{view_type}' proportion {proportion:.3f} outside 50% ±2% range"
+                    f"View type 'dashcam' proportion must be 1.0, got {proportion:.3f}"
+                )
+            if view_type == 'drone' and proportion != 0.0:
+                results["valid"] = False
+                results["issues"].append(
+                    f"View type 'drone' proportion must be 0.0, got {proportion:.3f}"
                 )
 
         for split_name, expected_ratio in self.config.split_ratios.items():

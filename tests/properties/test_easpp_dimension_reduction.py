@@ -3,7 +3,7 @@
 **Validates: Requirements 7.3, 7.4**
 
 Property 13: E-ASPP dimension reduction.
-For any input tensor of shape [B, 2080, 16, 16], the E-ASPP module SHALL
+For any input tensor of shape [B, 2048, 16, 16], the E-ASPP module SHALL
 produce an output of exactly shape [B, 256, 16, 16].
 """
 
@@ -43,17 +43,17 @@ def test_easpp_dimension_reduction(
 
     **Validates: Requirements 7.3, 7.4**
 
-    For any [B, 2080, 16, 16] input, the E-ASPP module produces
+    For any [B, 2048, 16, 16] input, the E-ASPP module produces
     output of exactly [B, 256, 16, 16].
     """
     torch.manual_seed(seed)
 
-    # Create input tensor: [B, 2080, 16, 16]
-    # This represents encoder stage4 (2048 ch) + view embedding (32 ch)
-    x = torch.randn(batch_size, 2080, 16, 16)
+    # Create input tensor: [B, 2048, 16, 16]
+    # This represents encoder stage4 (2048 ch)
+    x = torch.randn(batch_size, 2048, 16, 16)
 
     # Instantiate E-ASPP module
-    easpp = EASPP(in_channels=2080, out_channels=256)
+    easpp = EASPP(in_channels=2048, out_channels=256)
     easpp.eval()
 
     with torch.no_grad():

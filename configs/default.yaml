@@ -20,9 +20,6 @@ scene_generation:
     dashcam:
       height: [1.2, 1.5]
       pitch: [-15, -5]
-    drone:
-      height: [8, 15]
-      pitch: [-90, -60]
   domain_randomization:
     hdri_count: 20
     vehicles: [0, 5]
@@ -53,9 +50,6 @@ model:
     backbone: "resnet50"
     pretrained: true
     dsc_stages: [3, 4]
-  view_embedding:
-    num_views: 2
-    embed_dim: 32
   easpp:
     dilations: [3, 6, 12, 18]
     out_channels: 256
@@ -98,7 +92,6 @@ training:
     depth: 1.0
     camera: 0.3
     adversarial: 0.1
-    view: 0.1
   amp: true
   grad_clip_norm: 1.0
 
