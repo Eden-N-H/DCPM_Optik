@@ -73,8 +73,7 @@ class MultiTaskTrainer:
             self.optimizer,
             mode='min',
             patience=sched_cfg.get('patience', 10),
-            factor=sched_cfg.get('factor', 0.5),
-            verbose=True,
+            factor=sched_cfg.get('factor', 0.5)
         )
 
         # AMP scaler

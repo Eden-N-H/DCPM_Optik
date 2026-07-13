@@ -5,6 +5,7 @@ Usage:
     python -m src.main train --config configs/default.yaml [--training.lr=1e-3] [--resume checkpoint.pt]
     python -m src.main evaluate --config configs/default.yaml --checkpoint best_model.pt
     python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
+    python -m src.main visualize --config configs/default.yaml --cyclegan-ckpt cyclegan.pt --multitask-ckpt multitask.pt --samples 5
     python -m src.main web --config configs/default.yaml --checkpoint best_model.pt
 """
 
@@ -19,6 +20,7 @@ from torch.utils.data import DataLoader
 from src.utils.config import ConfigLoader
 from src.utils.logging import ExperimentLogger
 from src.model import MultiTaskModel
+from src.cyclegan import ResNetGenerator
 from src.training import (
     RoadQualityDataset,
     MultiTaskTrainer,
@@ -27,6 +29,7 @@ from src.training import (
 )
 from src.reconstruction import ReconstructionPipeline
 from src.synth.dataset_builder import DatasetBuilder, DatasetConfig
+from src.visualization import PipelineVisualizer
 
 
 logging.basicConfig(
@@ -275,6 +278,48 @@ def _process_frame(model, pipeline, frame_rgb, device):
     pipeline.process_frame(predictions, rgb=frame_resized)
 
 
+def visualize(args, config):
+    """Run end-to-end pipeline visualization."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Visualizing pipeline on device: {device}")
+
+    # Load Dataset (Using val split for stability and proper GT labels)
+    data_root = config.get('data.root', './data/road_quality')
+    dataset = RoadQualityDataset(data_root, split='val', crop_size=512)
+    dataset.is_train = False # Disable augmentation
+
+    # Load CycleGAN Generator
+    cyclegan = ResNetGenerator(
+        input_channels=config.get('cyclegan.input_nc', 4),
+        output_channels=config.get('cyclegan.output_nc', 3),
+        ngf=config.get('cyclegan.ngf', 64),
+        n_residual_blocks=config.get('cyclegan.n_blocks', 9)
+    )
+    if args.cyclegan_ckpt:
+        cg_data = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
+        # Handle full trainer checkpoints vs raw state dicts
+        state_dict = cg_data.get('G_AB_state_dict', cg_data)
+        cyclegan.load_state_dict(state_dict)
+
+    # Load MultiTask Model
+    multitask = MultiTaskModel(
+        pretrained=False,
+        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+    )
+    if args.multitask_ckpt:
+        mt_data = torch.load(args.multitask_ckpt, map_location=device, weights_only=False)
+        state_dict = mt_data.get('model_state_dict', mt_data)
+        multitask.load_state_dict(state_dict)
+
+    # Init and Run Visualizer
+    visualizer = PipelineVisualizer(config.config, dataset, cyclegan, multitask, device)
+    output_dir = Path(args.output_dir)
+    
+    logger.info(f"Generating storyboard grids for {args.samples} samples...")
+    visualizer.visualize_samples(args.samples, output_dir)
+    logger.info(f"Visualization complete! Output saved to {output_dir}")
+
+
 def main():
     """Main entry point for the road quality analysis pipeline."""
     parser = argparse.ArgumentParser(description='Road Quality Analysis Pipeline')
@@ -312,6 +357,14 @@ def main():
     recon_parser.add_argument('--output', type=str, default='./reconstruction',
                              help='Output directory')
 
+    # Visualize command
+    viz_parser = subparsers.add_parser('visualize', help='Visualize pipeline end-to-end')
+    viz_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    viz_parser.add_argument('--cyclegan-ckpt', type=str, required=False, help='Path to CycleGAN checkpoint')
+    viz_parser.add_argument('--multitask-ckpt', type=str, required=True, help='Path to MultiTask checkpoint')
+    viz_parser.add_argument('--samples', type=int, default=5, help='Number of samples to visualize')
+    viz_parser.add_argument('--output-dir', type=str, default='./visualizations', help='Output directory')
+
     # Web UI command
     web_parser = subparsers.add_parser('web', help='Start the web UI dispatcher')
     web_parser.add_argument('--config', type=str, default='configs/default.yaml')
@@ -341,6 +394,8 @@ def main():
         evaluate(args, config)
     elif args.command == 'reconstruct':
         reconstruct(args, config)
+    elif args.command == 'visualize':
+        visualize(args, config)
     elif args.command == 'web':
         from src.web import start_server
         start_server(args)
