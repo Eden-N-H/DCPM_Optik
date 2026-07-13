@@ -7,6 +7,7 @@ Usage:
     python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
     python -m src.main visualize --config configs/default.yaml --cyclegan-ckpt cyclegan.pt --multitask-ckpt multitask.pt --samples 5
     python -m src.main web --config configs/default.yaml --checkpoint best_model.pt
+    python -m src.main colab --output Colab_Pipeline.ipynb
 """
 
 import argparse
@@ -30,6 +31,7 @@ from src.training import (
 from src.reconstruction import ReconstructionPipeline
 from src.synth.dataset_builder import DatasetBuilder, DatasetConfig
 from src.visualization import PipelineVisualizer
+from src.generate_colab import generate_colab_notebook
 
 
 logging.basicConfig(
@@ -365,6 +367,11 @@ def main():
     viz_parser.add_argument('--samples', type=int, default=5, help='Number of samples to visualize')
     viz_parser.add_argument('--output-dir', type=str, default='./visualizations', help='Output directory')
 
+    # Colab Notebook Generation
+    colab_parser = subparsers.add_parser('colab', help='Generate Google Colab execution notebook')
+    colab_parser.add_argument('--output', type=str, default='Colab_Pipeline.ipynb',
+                              help='Output path for the .ipynb file')
+
     # Web UI command
     web_parser = subparsers.add_parser('web', help='Start the web UI dispatcher')
     web_parser.add_argument('--config', type=str, default='configs/default.yaml')
@@ -381,6 +388,11 @@ def main():
 
     # Collect remaining args as overrides (e.g., --training.lr=1e-3)
     overrides = [a for a in sys.argv[1:] if '=' in a and a.startswith('--')]
+
+    # Don't try to parse config if generating colab (doesn't need it)
+    if args.command == 'colab':
+        generate_colab_notebook(args.output)
+        return
 
     # Load config
     config = ConfigLoader(config_path=Path(args.config), overrides=overrides if overrides else None)
