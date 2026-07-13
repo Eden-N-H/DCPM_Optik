@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import cv2
 import torch
+from PIL import Image
 
 from src.synth.scene_generator import SceneConfig, SceneGenerator
 from src.synth.renderer import (
@@ -150,12 +150,13 @@ class DatasetBuilder:
         
         # Parallel Execution
         if torch.cuda.is_available():
-            # Blender GPU rendering is extremely VRAM intensive.
-            # Limiting to 2 concurrent workers to prevent CUDA OOM on 16GB GPUs (e.g. Colab T4)
-            max_workers = min(2, max(1, os.cpu_count() // 2))
-            logger.info(f"CUDA GPU detected. Limiting to {max_workers} concurrent Blender workers to prevent VRAM OOM.")
+            # Oversubscribe CPU cores to hide Blender startup latency and keep GPU fed.
+            # Our scenes are lightweight enough in VRAM to support many concurrent workers.
+            cores = os.cpu_count() or 2
+            max_workers = min(12, cores * 4)
+            logger.info(f"CUDA GPU detected. Using {max_workers} concurrent Blender workers to maximize throughput.")
         else:
-            max_workers = max(1, os.cpu_count() // 2)
+            max_workers = max(1, (os.cpu_count() or 2) // 2)
             
         logger.info(f"Starting rendering queue with {max_workers} background Blender workers...")
         
@@ -275,10 +276,11 @@ class DatasetBuilder:
             logger.error(f"Scene {scene_id} failed with error: {err_msg}")
             raise RuntimeError(f"Blender worker failed for {scene_id}. See logs for Traceback.")
 
-        # Post-Process Severity (PNG to NPY)
+        # Post-Process Severity (PNG to NPY) - Using PIL to avoid OpenCV libpng warnings
         if Path(sev_png).exists():
-            img = cv2.imread(sev_png, cv2.IMREAD_UNCHANGED)
-            severity = (img.astype(np.float32) / 65535.0)
+            with Image.open(sev_png) as img:
+                img_array = np.array(img)
+            severity = (img_array.astype(np.float32) / 65535.0)
             np.save(str(render_outputs.severity), severity)
             Path(sev_png).unlink()
 
