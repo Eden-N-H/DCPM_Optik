@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>Task: {{ type | title }}</h1>
+    <p>ID: <code>{{ task_id }}</code> | Status: <span id="status-badge" class="status-{{ status }}">{{ status | upper }}</span></p>
+</header>
+
+<section>
+    <h2>Console Output</h2>
+    <pre id="log-console">Connecting to log stream...</pre>
+</section>
+
+{% if type == 'reconstruct' %}
+<section id="reconstruct-results" style="display:none; margin-top: 2rem;">
+    <h2>Outputs</h2>
+    <div style="display: flex; gap: 1rem;">
+        <a href="/download/{{ task_id }}/bev_map.png" class="btn" download>Download BEV Map (.png)</a>
+        <a href="/download/{{ task_id }}/reconstruction.ply" class="btn" download>Download Point Cloud (.ply)</a>
+    </div>
+    <div style="margin-top: 1rem; border: 1px solid var(--border-color); background: #eee; text-align: center;">
+        <img id="bev-img" src="" alt="BEV Map" style="max-width: 100%;">
+    </div>
+</section>
+{% endif %}
+
+{% if type == 'visualize' %}
+<section id="visualize-results" style="display:none; margin-top: 2rem;">
+    <h2>Visualization Grids</h2>
+    <p>Click on any image to view it full size.</p>
+    <div id="grid-container" style="display: flex; flex-direction: column; gap: 2rem;">
+        <!-- Images will be injected here dynamically -->
+    </div>
+</section>
+{% endif %}
+
+<script>
+    const consoleEl = document.getElementById('log-console');
+    const badge = document.getElementById('status-badge');
+    const evtSource = new EventSource(`/stream/logs/{{ task_id }}`);
+    
+    // Function to load visualization grid files
+    async function loadVisualizations() {
+        try {
+            const res = await fetch(`/api/tasks/{{ task_id }}/files`);
+            const data = await res.json();
+            const container = document.getElementById('grid-container');
+            container.innerHTML = '';
+            
+            data.files.forEach(file => {
+                if (file.startsWith('grid_')) {
+                    const wrapper = document.createElement('div');
+                    wrapper.style.border = '1px solid var(--border-color)';
+                    wrapper.style.background = '#eee';
+                    wrapper.style.padding = '0.5rem';
+                    wrapper.style.textAlign = 'center';
+                    
+                    const title = document.createElement('h3');
+                    title.textContent = file;
+                    title.style.marginTop = '0';
+                    
+                    const link = document.createElement('a');
+                    link.href = `/download/{{ task_id }}/${file}`;
+                    link.target = '_blank';
+                    
+                    const img = document.createElement('img');
+                    img.src = `/download/{{ task_id }}/${file}`;
+                    img.style.maxWidth = '100%';
+                    img.style.height = 'auto';
+                    img.alt = file;
+                    
+                    link.appendChild(img);
+                    wrapper.appendChild(title);
+                    wrapper.appendChild(link);
+                    container.appendChild(wrapper);
+                }
+            });
+        } catch(e) {
+            console.error("Failed to load visualization files", e);
+        }
+    }
+    
+    evtSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        
+        if (data.log) {
+            if (consoleEl.textContent === "Connecting to log stream...") {
+                consoleEl.textContent = "";
+            }
+            consoleEl.textContent += data.log;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+        
+        if (data.status === 'completed' || data.status === 'failed') {
+            evtSource.close();
+            badge.className = `status-${data.status}`;
+            badge.textContent = data.status.toUpperCase();
+            
+            if (data.status === 'completed') {
+                if ('{{ type }}' === 'reconstruct') {
+                    document.getElementById('reconstruct-results').style.display = 'block';
+                    document.getElementById('bev-img').src = `/download/{{ task_id }}/bev_map.png`;
+                } else if ('{{ type }}' === 'visualize') {
+                    document.getElementById('visualize-results').style.display = 'block';
+                    loadVisualizations();
+                }
+            }
+        }
+    };
+</script>
+{% endblock %}

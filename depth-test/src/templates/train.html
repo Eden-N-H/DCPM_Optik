@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>Train Model</h1>
+    <p>Train the Multi-Task Model on the generated dataset.</p>
+</header>
+
+<form id="train-form">
+    <fieldset>
+        <legend>Resume (Optional)</legend>
+        <div class="form-group">
+            <label>Checkpoint</label>
+            <select name="resume_checkpoint">
+                <option value="">-- Start from Scratch --</option>
+                {% for ckpt in checkpoints %}
+                <option value="{{ ckpt }}">{{ ckpt }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </fieldset>
+
+    <fieldset>
+        <legend>Hyperparameters</legend>
+        <div style="display:flex; gap:1rem;">
+            <div class="form-group" style="flex:1;">
+                <label>Epochs</label>
+                <input type="number" name="training.epochs" value="200" min="1" required>
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Batch Size</label>
+                <input type="number" name="training.batch_size" value="8" min="1" required>
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Learning Rate</label>
+                <input type="number" name="training.optimizer.lr" value="0.0001" step="any" min="0.00000001" required>
+            </div>
+        </div>
+    </fieldset>
+
+    <details>
+        <summary>Advanced Configuration (Loss Weights, AMP)</summary>
+        <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-top:1rem;">
+            <div class="form-group">
+                <label>Seg Weight</label>
+                <input type="number" name="training.loss_weights.segmentation" value="1.5" step="any">
+            </div>
+            <div class="form-group">
+                <label>Depth Weight</label>
+                <input type="number" name="training.loss_weights.depth" value="1.0" step="any">
+            </div>
+            <div class="form-group">
+                <label>Camera Weight</label>
+                <input type="number" name="training.loss_weights.camera" value="0.3" step="any">
+            </div>
+            <div class="form-group">
+                <label>Adv Weight (GRL)</label>
+                <input type="number" name="domain_adaptation.lambda_adv" value="0.1" step="any">
+            </div>
+        </div>
+    </details>
+
+    <button type="submit">Start Training</button>
+</form>
+
+<script>
+    handleFormSubmit('train-form', '/api/run/train');
+</script>
+{% endblock %}

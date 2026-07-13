@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>End-to-End Pipeline Visualization</h1>
+    <p>Select validation samples, apply CycleGAN styling, run multi-task inference, and generate storyboard grids.</p>
+</header>
+
+<form id="viz-form">
+    <fieldset>
+        <legend>Model Checkpoints</legend>
+        <div class="form-group">
+            <label>CycleGAN Checkpoint (Optional)</label>
+            <select name="cyclegan_ckpt">
+                <option value="" selected>-- Skip CycleGAN (Use Synth RGB) --</option>
+                {% for ckpt in checkpoints %}
+                <option value="{{ ckpt }}">{{ ckpt }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>MultiTask Checkpoint (Required)</label>
+            <select name="multitask_ckpt" required>
+                <option value="" disabled selected>-- Select a checkpoint --</option>
+                {% for ckpt in checkpoints %}
+                <option value="{{ ckpt }}">{{ ckpt }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </fieldset>
+
+    <fieldset>
+        <legend>Parameters</legend>
+        <div class="form-group">
+            <label>Number of Samples</label>
+            <input type="number" name="samples" value="5" min="1" max="20" required>
+        </div>
+    </fieldset>
+
+    <button type="submit">Generate Storyboards</button>
+</form>
+
+<script>
+    handleFormSubmit('viz-form', '/api/run/visualize');
+</script>
+{% endblock %}

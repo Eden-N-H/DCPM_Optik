@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>Evaluate Model</h1>
+    <p>Run inference on the test split and compute metrics (mIoU, RMSE, Geodesic Error).</p>
+</header>
+
+<form id="eval-form">
+    <fieldset>
+        <legend>Select Target</legend>
+        <div class="form-group">
+            <label>Model Checkpoint</label>
+            <select name="checkpoint" required>
+                <option value="" disabled selected>-- Select a checkpoint --</option>
+                {% for ckpt in checkpoints %}
+                <option value="{{ ckpt }}">{{ ckpt }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </fieldset>
+
+    <button type="submit">Run Evaluation</button>
+</form>
+
+<script>
+    handleFormSubmit('eval-form', '/api/run/evaluate');
+</script>
+{% endblock %}

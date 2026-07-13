@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>System Dashboard</h1>
+    <p>View and manage pipeline tasks.</p>
+</header>
+
+<section>
+    <h2>Task History</h2>
+    {% if tasks %}
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Task ID</th>
+                <th>Status</th>
+                <th>Created At</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for task in tasks %}
+            <tr>
+                <td style="text-transform: capitalize;">{{ task.type }}</td>
+                <td><a href="/task/{{ task.id }}" style="color:var(--accent-color);">{{ task.id[:8] }}...</a></td>
+                <td class="status-{{ task.status }}">{{ task.status | upper }}</td>
+                <td>{{ task.created[:19] | replace("T", " ") }}</td>
+                <td>
+                    {% if task.status == 'running' %}
+                    <button class="danger" onclick="cancelTask('{{ task.id }}')" style="padding:0.25rem 0.5rem; font-size:0.8rem;">Kill</button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No tasks found. Go generate some data or train a model.</p>
+    {% endif %}
+</section>
+
+<script>
+    async function cancelTask(taskId) {
+        if (!confirm("Are you sure you want to kill this task?")) return;
+        await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+        window.location.reload();
+    }
+</script>
+{% endblock %}
