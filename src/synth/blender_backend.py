@@ -258,6 +258,8 @@ class BlenderRenderBackend:
         sky = nodes.new("ShaderNodeTexSky")
         sky.sky_type = 'NISHITA'
         bg = nodes.new("ShaderNodeBackground")
+        # FIX: Lower the strength heavily to prevent Nishita sky from blowing out standard view transforms
+        bg.inputs['Strength'].default_value = 0.05 
         out = nodes.new("ShaderNodeOutputWorld")
         
         if "noon" in hdri_name:
@@ -281,6 +283,23 @@ class BlenderRenderBackend:
         vehicle.location = (position[0], position[1], 0.7)
         vehicle.rotation_euler = (0, 0, math.radians(rotation))
         vehicle.pass_index = 7
+        
+        # FIX: Assign a basic material to vehicles so they don't glow white and wash out
+        mat = bpy.data.materials.new(name="Mat_Vehicle")
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if not bsdf:
+            bsdf = mat.node_tree.nodes.new("ShaderNodeBsdfPrincipled")
+            out = mat.node_tree.nodes.get("Material Output")
+            mat.node_tree.links.new(bsdf.outputs[0], out.inputs[0])
+            
+        color = (np.random.uniform(0.05, 0.3), np.random.uniform(0.05, 0.3), np.random.uniform(0.05, 0.3), 1.0)
+        bsdf.inputs['Base Color'].default_value = color
+        bsdf.inputs['Roughness'].default_value = 0.3
+        bsdf.inputs['Metallic'].default_value = 0.5
+        
+        vehicle.data.materials.append(mat)
+        
         return vehicle
 
     def apply_weather_effect(self, weather: str) -> None:

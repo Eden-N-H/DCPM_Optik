@@ -9,6 +9,7 @@ import glob
 import shutil
 import os
 import traceback
+import random
 
 try:
     import bpy
@@ -36,7 +37,7 @@ def main():
         bpy.context.scene.render.engine = 'CYCLES'
         bpy.context.scene.cycles.samples = 32
         
-        # FIXED: Disable denoising to prevent crashes on builds lacking OpenImageDenoise
+        # Disable denoising to prevent crashes on builds lacking OpenImageDenoise
         bpy.context.scene.cycles.use_denoising = False 
         
         bpy.context.scene.render.resolution_x = job['render_size']
@@ -154,6 +155,24 @@ def main():
             veh.location = (v[0], v[1], 0.7)
             veh.rotation_euler = (0, 0, math.radians(v[2]))
             veh.pass_index = 7
+            
+            # FIX: Assign a basic material to vehicles so they don't glow white and wash out
+            mat = bpy.data.materials.new(f"Mat_Vehicle_{i}")
+            mat.use_nodes = True
+            n = mat.node_tree.nodes
+            b = None
+            for node in n:
+                if node.type == 'BSDF_PRINCIPLED':
+                    b = node
+                    break
+                    
+            if b:
+                color = (random.uniform(0.05, 0.3), random.uniform(0.05, 0.3), random.uniform(0.05, 0.3), 1.0)
+                b.inputs['Base Color'].default_value = color
+                b.inputs['Roughness'].default_value = 0.3
+                b.inputs['Metallic'].default_value = 0.5
+                
+            veh.data.materials.append(mat)
 
         # 6. Build Camera
         cam_data = job['camera']
@@ -178,6 +197,8 @@ def main():
         sky = wn.new("ShaderNodeTexSky")
         sky.sky_type = 'NISHITA'
         bg = wn.new("ShaderNodeBackground")
+        # FIX: Lower the strength heavily to prevent Nishita sky from blowing out standard view transforms
+        bg.inputs['Strength'].default_value = 0.05 
         out = wn.new("ShaderNodeOutputWorld")
         world.node_tree.links.new(sky.outputs['Color'], bg.inputs['Color'])
         world.node_tree.links.new(bg.outputs['Background'], out.inputs['Surface'])
@@ -194,7 +215,7 @@ def main():
             sky.sun_intensity = 0.05
             dust_val = 10.0
             
-        # FIXED: Robustly handle the API change from dust_intensity to dust_density
+        # Robustly handle the API change from dust_intensity to dust_density
         if hasattr(sky, 'dust_density'):
             sky.dust_density = dust_val
         elif hasattr(sky, 'dust_intensity'):
