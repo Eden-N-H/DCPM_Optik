@@ -218,4 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Misc
 prompt
+data
+.tasks
+checkpoints

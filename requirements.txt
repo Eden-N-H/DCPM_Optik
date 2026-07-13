@@ -9,4 +9,5 @@ plyfile>=1.0
 opencv-python>=4.8
 scipy>=1.10
 Pillow>=10.0
-
+Flask>=2.0.0
+Werkzeug>=2.0.0

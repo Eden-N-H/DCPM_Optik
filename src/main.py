@@ -1,9 +1,11 @@
 """Road Quality Pipeline - Main Entry Point.
 
 Usage:
+    python -m src.main data --config configs/default.yaml --output-dir ./data/synthetic
     python -m src.main train --config configs/default.yaml [--training.lr=1e-3] [--resume checkpoint.pt]
     python -m src.main evaluate --config configs/default.yaml --checkpoint best_model.pt
     python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
+    python -m src.main web --config configs/default.yaml --checkpoint best_model.pt
 """
 
 import argparse
@@ -24,6 +26,7 @@ from src.training import (
     set_seed,
 )
 from src.reconstruction import ReconstructionPipeline
+from src.synth.dataset_builder import DatasetBuilder, DatasetConfig
 
 
 logging.basicConfig(
@@ -32,6 +35,29 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
+
+
+def data(args, config):
+    """Run synthetic data generation."""
+    logger.info("Starting synthetic dataset generation...")
+    
+    # Map ConfigLoader settings to DatasetConfig
+    dataset_cfg = DatasetConfig(
+        total_samples=config.get('scene_generation.dataset_size', 16036),
+        split_ratios={
+            'train': config.get('data.train_split', 0.8),
+            'val': config.get('data.val_split', 0.1),
+            'test': config.get('data.test_split', 0.1)
+        },
+        seed=config.get('seed', 42)
+    )
+    
+    builder = DatasetBuilder(config=dataset_cfg)
+    output_path = Path(args.output_dir)
+    
+    manifest = builder.generate_dataset(output_root=output_path)
+    logger.info(f"Dataset generation complete. Manifest saved to {output_path / 'manifest.json'}")
+    logger.info(f"Total samples generated: {manifest.total_samples}")
 
 
 def train(args, config):
@@ -195,6 +221,8 @@ def reconstruct(args, config):
         image_paths = sorted(input_path.glob('*.png')) + sorted(input_path.glob('*.jpg'))
         for i, img_path in enumerate(image_paths):
             frame = cv2.imread(str(img_path))
+            if frame is None:
+                continue
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             _process_frame(model, pipeline, frame_rgb, device, view_label=0)
             if (i + 1) % 10 == 0:
@@ -254,6 +282,13 @@ def main():
     parser = argparse.ArgumentParser(description='Road Quality Analysis Pipeline')
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
+    # Data command
+    data_parser = subparsers.add_parser('data', help='Generate synthetic dataset')
+    data_parser.add_argument('--config', type=str, default='configs/default.yaml',
+                             help='Path to config YAML file')
+    data_parser.add_argument('--output-dir', type=str, default='./data/road_quality',
+                             help='Output directory for synthetic data')
+
     # Train command
     train_parser = subparsers.add_parser('train', help='Train the model')
     train_parser.add_argument('--config', type=str, default='configs/default.yaml',
@@ -279,6 +314,14 @@ def main():
     recon_parser.add_argument('--output', type=str, default='./reconstruction',
                              help='Output directory')
 
+    # Web UI command
+    web_parser = subparsers.add_parser('web', help='Start the web UI dispatcher')
+    web_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    web_parser.add_argument('--port', type=int, default=5000,
+                            help='Port to run the web server on')
+    web_parser.add_argument('--host', type=str, default='0.0.0.0',
+                            help='Host interface to bind to')
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -292,12 +335,17 @@ def main():
     config = ConfigLoader(config_path=Path(args.config), overrides=overrides if overrides else None)
 
     # Dispatch
-    if args.command == 'train':
+    if args.command == 'data':
+        data(args, config)
+    elif args.command == 'train':
         train(args, config)
     elif args.command == 'evaluate':
         evaluate(args, config)
     elif args.command == 'reconstruct':
         reconstruct(args, config)
+    elif args.command == 'web':
+        from src.web import start_server
+        start_server(args)
 
 
 if __name__ == "__main__":

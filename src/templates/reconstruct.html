@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+    <h1>Reconstruct (Inference)</h1>
+    <p>Upload a video or image to generate a Bird's-Eye View map and a 3D Point Cloud.</p>
+</header>
+
+<form id="recon-form">
+    <fieldset>
+        <legend>Inputs</legend>
+        
+        <div class="form-group">
+            <label>File (Video or Image)</label>
+            <input type="file" name="file" accept="video/*,image/*" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Camera View Type</label>
+            <select name="view_type">
+                <option value="0">Dashcam (Vehicle-mounted)</option>
+                <option value="1">Drone (Aerial)</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Model Checkpoint</label>
+            <select name="checkpoint" required>
+                <option value="" disabled selected>-- Select a checkpoint --</option>
+                {% for ckpt in checkpoints %}
+                <option value="{{ ckpt }}">{{ ckpt }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </fieldset>
+
+    <button type="submit">Run Pipeline</button>
+</form>
+
+<script>
+    handleFormSubmit('recon-form', '/api/run/reconstruct');
+</script>
+{% endblock %}
