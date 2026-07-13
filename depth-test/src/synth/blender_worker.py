@@ -125,8 +125,7 @@ def main():
             
             # Create Severity AOV
             aov = n.new("ShaderNodeOutputAOV")
-            aov.name = "Severity"
-            aov.aov_name = "Severity" # IMPORTANT: Target the specific AOV pass
+            aov.name = "Severity" # IMPORTANT: Target the specific AOV pass by name
             aov.inputs['Value'].default_value = d.get('severity', 0.5)
             
             if b:
