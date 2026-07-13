@@ -43,16 +43,43 @@ def main():
         bpy.context.scene.render.resolution_x = job['render_size']
         bpy.context.scene.render.resolution_y = job['render_size']
         
-        # Attempt to enable GPU silently
+        # Attempt to enable GPU explicitly with logging
         try:
+            # We must explicitly enable the cycles addon in headless mode
+            bpy.ops.preferences.addon_enable(module="cycles")
             prefs = bpy.context.preferences.addons['cycles'].preferences
-            prefs.compute_device_type = 'CUDA'
+            
+            # Fetch devices (Initializes the internal device list)
             prefs.get_devices()
+            
+            # Try to set OPTIX (Significantly faster for RTX/T4 GPUs on Colab)
+            try:
+                prefs.compute_device_type = 'OPTIX'
+                print("Blender Worker: Compute device type set to OPTIX")
+            except TypeError:
+                prefs.compute_device_type = 'CUDA'
+                print("Blender Worker: Compute device type set to CUDA")
+                
+            has_gpu = False
             for d in prefs.devices:
-                d.use = True
-            bpy.context.scene.cycles.device = 'GPU'
-        except Exception:
-            pass  # Fallback to CPU silently
+                if d.type != 'CPU':
+                    d.use = True
+                    has_gpu = True
+                    print(f"Blender Worker: Enabled GPU device: {d.name} ({d.type})")
+                else:
+                    # Disable CPU to prevent hybrid rendering bottlenecks
+                    d.use = False
+            
+            if has_gpu:
+                bpy.context.scene.cycles.device = 'GPU'
+                print("Blender Worker: Cycles rendering set to GPU.")
+            else:
+                bpy.context.scene.cycles.device = 'CPU'
+                print("Blender Worker: No GPU devices found, falling back to CPU.")
+                
+        except Exception as e:
+            print(f"Blender Worker: GPU initialization failed: {e}. Falling back to CPU.", file=sys.stderr)
+            bpy.context.scene.cycles.device = 'CPU'
 
         # 3. Build Road
         bpy.ops.mesh.primitive_plane_add(size=1)

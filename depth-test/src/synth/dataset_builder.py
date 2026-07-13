@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import cv2
+import torch
 
 from src.synth.scene_generator import SceneConfig, SceneGenerator
 from src.synth.renderer import (
@@ -148,7 +149,14 @@ class DatasetBuilder:
         all_samples: List[Dict[str, Any]] = []
         
         # Parallel Execution
-        max_workers = max(1, os.cpu_count() // 2)
+        if torch.cuda.is_available():
+            # Blender GPU rendering is extremely VRAM intensive.
+            # Limiting to 2 concurrent workers to prevent CUDA OOM on 16GB GPUs (e.g. Colab T4)
+            max_workers = min(2, max(1, os.cpu_count() // 2))
+            logger.info(f"CUDA GPU detected. Limiting to {max_workers} concurrent Blender workers to prevent VRAM OOM.")
+        else:
+            max_workers = max(1, os.cpu_count() // 2)
+            
         logger.info(f"Starting rendering queue with {max_workers} background Blender workers...")
         
         completed = 0
