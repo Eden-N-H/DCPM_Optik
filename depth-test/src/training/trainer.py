@@ -1,6 +1,8 @@
-"""Multi-task training loop with AMP, gradient clipping, and early stopping."""
+"""Multi-task training loop with AMP, gradient clipping, early stopping, and Relay logic."""
 import logging
-import time
+import signal
+import sys
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Any
 
@@ -8,6 +10,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
+import requests
 
 from src.model import MultiTaskModel
 from .losses import MultiTaskLoss
@@ -28,11 +31,14 @@ class MultiTaskTrainer:
         - Early stopping (patience=30)
         - NaN detection
         - Checkpoint saving
+        - Preemption signal handling (SIGTERM)
+        - Webhook Telemetry
     """
 
     def __init__(self, config: Dict[str, Any], model: MultiTaskModel,
                  train_loader: DataLoader, val_loader: DataLoader,
-                 device: torch.device, output_dir: str = './checkpoints'):
+                 device: torch.device, output_dir: str = './checkpoints',
+                 webhook_url: Optional[str] = None, worker_id: Optional[str] = None):
         self.config = config
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -40,6 +46,10 @@ class MultiTaskTrainer:
         self.device = device
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Relay Telemetry
+        self.webhook_url = webhook_url
+        self.worker_id = worker_id or "local"
 
         # Training config
         train_cfg = config.get('training', {})
@@ -94,6 +104,44 @@ class MultiTaskTrainer:
         log_cfg = config.get('logging', {})
         self.console_log_interval = log_cfg.get('console_log_interval', 10)
         self.checkpoint_interval = log_cfg.get('checkpoint_interval', 5)
+        
+        # Preemption Handler
+        self._interrupted = False
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self):
+        """Bind SIGTERM and SIGINT to trigger a graceful shutdown."""
+        def handler(signum, frame):
+            logger.warning(f"Received signal {signum}. Commencing graceful shutdown...")
+            self._interrupted = True
+            
+        try:
+            signal.signal(signal.SIGTERM, handler)
+            signal.signal(signal.SIGINT, handler)
+        except ValueError:
+            # Cannot register signals if not running in main thread
+            pass
+
+    def _send_telemetry(self, status: str, train_loss: float = 0.0, val_loss: float = 0.0):
+        """Send asynchronous ping to the Orchestrator laptop."""
+        if not self.webhook_url:
+            return
+            
+        payload = {
+            "worker_id": self.worker_id,
+            "status": status,
+            "epoch": self.current_epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss
+        }
+        
+        def _post():
+            try:
+                requests.post(self.webhook_url, json=payload, timeout=5)
+            except Exception:
+                pass # Fire and forget, don't crash training if laptop sleeps
+                
+        threading.Thread(target=_post, daemon=True).start()
 
     def train(self, resume_from: Optional[str] = None) -> Dict[str, float]:
         """Run full training loop.
@@ -112,15 +160,24 @@ class MultiTaskTrainer:
             self.best_metric = checkpoint.best_metric
             logger.info(f"Resumed from epoch {checkpoint.epoch}, best_metric={checkpoint.best_metric:.4f}")
 
+        self._send_telemetry(status="started")
+
         for epoch in range(self.current_epoch, self.epochs):
             self.current_epoch = epoch
 
             # Train one epoch
             train_loss = self._train_epoch(epoch)
 
+            if self._interrupted:
+                logger.info("Graceful shutdown triggered. Saving emergency checkpoint...")
+                self._save_periodic_checkpoint(epoch, suffix="_interrupted")
+                self._send_telemetry(status="interrupted", train_loss=train_loss)
+                break
+
             # Check for NaN
             if self._check_nan(train_loss):
                 logger.error(f"NaN detected in training loss at epoch {epoch}. Stopping.")
+                self._send_telemetry(status="failed_nan", train_loss=train_loss)
                 break
 
             # Validate
@@ -143,6 +200,9 @@ class MultiTaskTrainer:
             if (epoch + 1) % self.checkpoint_interval == 0:
                 self._save_periodic_checkpoint(epoch)
 
+            # Telemetry
+            self._send_telemetry(status="running", train_loss=train_loss, val_loss=val_loss)
+
             # Early stopping
             if self.epochs_without_improvement >= self.early_stopping_patience:
                 logger.info(f"Early stopping at epoch {epoch} (no improvement for "
@@ -158,6 +218,9 @@ class MultiTaskTrainer:
                 f"{self.early_stopping_patience}"
             )
 
+        if not self._interrupted:
+            self._send_telemetry(status="completed")
+            
         return val_metrics
 
     def _train_epoch(self, epoch: int) -> float:
@@ -171,6 +234,9 @@ class MultiTaskTrainer:
         num_batches = 0
 
         for batch_idx, batch in enumerate(self.train_loader):
+            if self._interrupted:
+                break
+                
             loss = self._train_step(batch)
 
             if self._check_nan(loss):
@@ -261,7 +327,6 @@ class MultiTaskTrainer:
             num_batches += 1
 
             # Update metrics
-            # Detach predictions for metrics (avoid keeping computation graph)
             detached_preds = {
                 'segmentation': predictions['segmentation'].detach(),
                 'depth': predictions['depth'].detach(),
@@ -291,9 +356,9 @@ class MultiTaskTrainer:
                         epoch, self.best_metric)
         logger.info(f"Saved best checkpoint to {path}")
 
-    def _save_periodic_checkpoint(self, epoch: int) -> None:
+    def _save_periodic_checkpoint(self, epoch: int, suffix: str = "") -> None:
         """Save periodic checkpoint."""
-        path = self.output_dir / f"checkpoint_epoch_{epoch:04d}.pt"
+        path = self.output_dir / f"checkpoint_epoch_{epoch:04d}{suffix}.pt"
         save_checkpoint(path, self.model, self.optimizer, self.scheduler,
                         epoch, self.best_metric)
         logger.info(f"Saved periodic checkpoint to {path}")

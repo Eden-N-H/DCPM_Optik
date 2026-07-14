@@ -1,37 +1,54 @@
 {% extends "base.html" %}
-
 {% block content %}
-<h1>Dashboard</h1>
 
-<fieldset>
-    <legend>One-Click End-to-End Test</legend>
-    <p>Run the full pipeline (Data Generation &rarr; CycleGAN &rarr; Multi-Task &rarr; 3D BEV &rarr; Storyboard) on a small sample set to verify functionality.</p>
-    <form action="/quicktest" method="GET">
-        <button type="submit">>>> Run Quick Test</button>
-    </form>
-</fieldset>
+<h1>SYSTEM DASHBOARD</h1>
 
-<h2>Recent Tasks</h2>
+<h2>RELAY WORKERS (REMOTE)</h2>
+{% if relay_workers %}
 <table>
-    <thead>
-        <tr>
-            <th>Task ID</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Action</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for task in tasks %}
-        <tr>
-            <td>{{ task.id[:8] }}...</td>
-            <td>{{ task.type }}</td>
-            <td><strong>{{ task.status }}</strong></td>
-            <td>{{ task.created }}</td>
-            <td><a href="/task/{{ task.id }}">[ View ]</a></td>
-        </tr>
-        {% endfor %}
-    </tbody>
+    <tr>
+        <th>WORKER ID</th>
+        <th>STATUS</th>
+        <th>EPOCH</th>
+        <th>TRAIN LOSS</th>
+        <th>LAST PING</th>
+    </tr>
+    {% for w in relay_workers %}
+    <tr>
+        <td>{{ w.id }}</td>
+        <td><span class="status-badge status-{{ w.status }}">{{ w.status }}</span></td>
+        <td>{{ w.epoch }}</td>
+        <td>{{ "%.4f"|format(w.loss) }}</td>
+        <td>{{ w.ping }}</td>
+    </tr>
+    {% endfor %}
 </table>
+{% else %}
+<p>NO REMOTE WORKERS REGISTERED.</p>
+{% endif %}
+
+<h2>LOCAL TASKS</h2>
+{% if tasks %}
+<table>
+    <tr>
+        <th>TASK ID</th>
+        <th>TYPE</th>
+        <th>STATUS</th>
+        <th>CREATED AT</th>
+        <th>ACTION</th>
+    </tr>
+    {% for task in tasks %}
+    <tr>
+        <td>{{ task.id[:8] }}...</td>
+        <td>{{ task.type }}</td>
+        <td><span class="status-badge status-{{ task.status }}">{{ task.status }}</span></td>
+        <td>{{ task.created }}</td>
+        <td><a href="/task/{{ task.id }}" style="font-weight:bold; color:blue;">VIEW LOGS</a></td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>NO LOCAL TASKS RECORDED.</p>
+{% endif %}
+
 {% endblock %}

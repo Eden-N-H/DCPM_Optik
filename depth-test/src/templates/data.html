@@ -1,42 +1,31 @@
 {% extends "base.html" %}
-
 {% block content %}
-<header>
-    <h1>Synthetic Data Generation</h1>
-    <p>Configure and generate an aligned synthetic dataset using the mock Blender backend.</p>
-</header>
 
-<form id="data-form">
-    <fieldset>
-        <legend>Dataset Size</legend>
-        <div class="form-group">
-            <label for="ds">Total Images</label>
-            <input type="number" id="ds" name="scene_generation.dataset_size" value="100" min="10" required>
-        </div>
-    </fieldset>
+<h1>1. DATA GENERATION</h1>
+<p>GENERATE SYNTHETIC ROAD SCENES VIA BLENDER SUBPROCESSES.</p>
 
-    <fieldset>
-        <legend>Data Splits (must sum to 1.0)</legend>
-        <div style="display:flex; gap:1rem;">
-            <div class="form-group" style="flex:1;">
-                <label>Train</label>
-                <input type="number" name="data.train_split" value="0.8" step="any" min="0" max="1" required>
-            </div>
-            <div class="form-group" style="flex:1;">
-                <label>Validation</label>
-                <input type="number" name="data.val_split" value="0.1" step="any" min="0" max="1" required>
-            </div>
-            <div class="form-group" style="flex:1;">
-                <label>Test</label>
-                <input type="number" name="data.test_split" value="0.1" step="any" min="0" max="1" required>
-            </div>
-        </div>
-    </fieldset>
-
-    <button type="submit">Generate Dataset</button>
+<form onsubmit="handleFormSubmit(event, '/api/run/data')">
+    <div class="form-group">
+        <label>DATASET SIZE (TOTAL IMAGES)</label>
+        <input type="number" name="scene_generation.dataset_size" value="100" required>
+    </div>
+    
+    <div class="form-group">
+        <label>TRAIN SPLIT</label>
+        <input type="number" step="0.01" name="data.train_split" value="0.8" required>
+    </div>
+    
+    <div class="form-group">
+        <label>VAL SPLIT</label>
+        <input type="number" step="0.01" name="data.val_split" value="0.1" required>
+    </div>
+    
+    <div class="form-group">
+        <label>TEST SPLIT</label>
+        <input type="number" step="0.01" name="data.test_split" value="0.1" required>
+    </div>
+    
+    <button type="submit">EXECUTE DATA GEN</button>
 </form>
 
-<script>
-    handleFormSubmit('data-form', '/api/run/data');
-</script>
 {% endblock %}

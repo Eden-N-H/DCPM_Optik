@@ -1,64 +1,36 @@
 {% extends "base.html" %}
-
 {% block content %}
-<h1>Run Quick Test</h1>
 
-<fieldset>
-    <legend>Quick Test Configuration</legend>
-    <form id="quickTestForm">
-        <p>
-            <label><strong>Samples to Generate:</strong></label><br>
-            <input type="number" name="samples" value="5" min="1" max="20">
-            <br><small>(Keep between 1-5 for a fast test)</small>
-        </p>
+<h1>TEST. QUICKTEST</h1>
+<p>RUN END-TO-END PIPELINE (GENERATE -> TRANSLATE -> PREDICT -> BEV).</p>
 
-        <p>
-            <label><strong>CycleGAN Checkpoint:</strong></label><br>
-            <select name="cyclegan_ckpt">
-                <option value="">-- Use Dummy Random Weights --</option>
-                {% for ckpt in checkpoints %}
-                <option value="{{ ckpt }}">{{ ckpt }}</option>
-                {% endfor %}
-            </select>
-        </p>
+<form onsubmit="handleFormSubmit(event, '/api/run/quicktest')">
+    <div class="form-group">
+        <label>CYCLEGAN CHECKPOINT (OPTIONAL)</label>
+        <select name="cyclegan_ckpt">
+            <option value="">-- RANDOM WEIGHTS --</option>
+            {% for ckpt in checkpoints %}
+            <option value="{{ ckpt }}">{{ ckpt }}</option>
+            {% endfor %}
+        </select>
+    </div>
 
-        <p>
-            <label><strong>Multi-Task Checkpoint:</strong></label><br>
-            <select name="multitask_ckpt">
-                <option value="">-- Use Dummy Random Weights --</option>
-                {% for ckpt in checkpoints %}
-                <option value="{{ ckpt }}">{{ ckpt }}</option>
-                {% endfor %}
-            </select>
-        </p>
-
-        <button type="submit" id="submitBtn">[ Execute End-to-End Test ]</button>
-    </form>
-</fieldset>
-{% endblock %}
-
-{% block scripts %}
-<script>
-document.getElementById('quickTestForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    const formData = new FormData(this);
-    const btn = document.getElementById('submitBtn');
-    btn.disabled = true;
-    btn.innerText = "[ Submitting... ]";
+    <div class="form-group">
+        <label>MULTITASK CHECKPOINT (OPTIONAL)</label>
+        <select name="multitask_ckpt">
+            <option value="">-- RANDOM WEIGHTS --</option>
+            {% for ckpt in checkpoints %}
+            <option value="{{ ckpt }}">{{ ckpt }}</option>
+            {% endfor %}
+        </select>
+    </div>
     
-    fetch('/api/run/quicktest', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        window.location.href = `/task/${data.task_id}`;
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        btn.disabled = false;
-        btn.innerText = "[ Execute End-to-End Test ]";
-    });
-});
-</script>
+    <div class="form-group">
+        <label>NUMBER OF SAMPLES TO GENERATE</label>
+        <input type="number" name="samples" value="3" required>
+    </div>
+    
+    <button type="submit">EXECUTE QUICKTEST</button>
+</form>
+
 {% endblock %}
