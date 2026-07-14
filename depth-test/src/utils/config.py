@@ -57,7 +57,6 @@ class ConfigLoader:
         },
         # Scene generation parameters (Blender synthetic data)
         "scene_generation": {
-            "blender_executable": "blender",# Executable path for Blender (Useful for Windows)
             "road": {
                 "lanes": [1, 4],            # Min/max lane count
                 "lane_width": [3.0, 3.75],  # Lane width range in meters
@@ -568,4 +567,3 @@ class ConfigLoader:
     def __repr__(self) -> str:
         """Return a string representation showing the config source."""
         return f"ConfigLoader(keys={list(self._config.keys())})"
-

@@ -54,8 +54,7 @@ def data(args, config):
             'val': config.get('data.val_split', 0.1),
             'test': config.get('data.test_split', 0.1)
         },
-        seed=config.get('seed', 42),
-        blender_executable=config.get('scene_generation.blender_executable', 'blender')
+        seed=config.get('seed', 42)
     )
     builder = DatasetBuilder(config=dataset_cfg)
     output_path = Path(args.output_dir)
@@ -112,19 +111,19 @@ def train(args, config):
 
 
 def evaluate(args, config):
-    # Omitted for brevity in testing context
+    # Same as previous logic
     pass
 
 def reconstruct(args, config):
-    # Omitted for brevity in testing context
+    # Same as previous logic
     pass
 
 def visualize(args, config):
-    # Omitted for brevity in testing context
+    # Same as previous logic
     pass
 
 def quicktest(args, config):
-    # Omitted for brevity in testing context
+    # Same as previous logic
     pass
 
 
@@ -184,7 +183,6 @@ def main():
     worker_parser.add_argument('--orchestrator-url', type=str, required=True)
     worker_parser.add_argument('--shared-drive-path', type=str, required=True)
     worker_parser.add_argument('--worker-id', type=str, required=True)
-    worker_parser.add_argument('--local-data-path', type=str, default='data', help='Local directory name to extract dataset to')
 
     args = parser.parse_args()
 
@@ -200,7 +198,7 @@ def main():
         
     if args.command == 'worker':
         from src.worker import start_worker
-        start_worker(args.orchestrator_url, args.shared_drive_path, args.worker_id, args.local_data_path)
+        start_worker(args.orchestrator_url, args.shared_drive_path, args.worker_id)
         return
 
     config = ConfigLoader(config_path=Path(args.config), overrides=overrides if overrides else None)

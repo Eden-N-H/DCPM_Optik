@@ -424,7 +424,7 @@ def cancel_task(task_id):
             import signal
             os.kill(row[0], signal.SIGTERM)
             update_task_status(task_id, "failed")
-        except Exception:
+        except ProcessLookupError:
             update_task_status(task_id, "completed")
     conn.close()
     return jsonify({"success": True})

@@ -8,7 +8,6 @@ data:
   prefetch_factor: 2
 
 scene_generation:
-  blender_executable: "blender"
   road:
     lanes: [1, 4]
     lane_width: [3.0, 3.75]
