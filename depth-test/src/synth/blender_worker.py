@@ -307,8 +307,14 @@ def main():
         out_seg.format.color_depth = '8'
         out_seg.base_path = tmp_dir
         out_seg.file_slots[0].path = "seg_"
+        
+        math_seg = tree.nodes.new('CompositorNodeMath')
+        math_seg.operation = 'DIVIDE'
+        math_seg.inputs[1].default_value = 255.0
+
         if 'IndexOB' in rlayers.outputs:
-            tree.links.new(rlayers.outputs['IndexOB'], out_seg.inputs[0])
+            tree.links.new(rlayers.outputs['IndexOB'], math_seg.inputs[0])
+            tree.links.new(math_seg.outputs['Value'], out_seg.inputs[0])
         
         # Severity (16-bit BW)
         out_sev = tree.nodes.new('CompositorNodeOutputFile')

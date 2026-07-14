@@ -6,7 +6,7 @@ from src.model import MultiTaskModel
 def main():
     print("Initializing dummy model...")
     # Initialize the model structure without downloading ImageNet weights
-    model = MultiTaskModel(pretrained=False, num_classes=3)
+    model = MultiTaskModel(pretrained=False, num_classes=8)
     
     # Create the dummy checkpoint dict matching our Checkpoint structure
     checkpoint_data = {

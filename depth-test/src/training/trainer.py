@@ -1,5 +1,6 @@
 """Multi-task training loop with AMP, gradient clipping, early stopping, and Relay logic."""
 import logging
+import math
 import signal
 import sys
 import threading
@@ -8,8 +9,8 @@ from typing import Dict, Optional, Any
 
 import torch
 import torch.nn as nn
+import torch.cuda.amp
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
 import requests
 
 from src.model import MultiTaskModel
@@ -86,12 +87,16 @@ class MultiTaskTrainer:
             factor=sched_cfg.get('factor', 0.5)
         )
 
-        # AMP scaler
-        self.scaler = GradScaler(enabled=self.use_amp)
+        # Safe AMP scaler resolving UserWarnings on non-CUDA nodes and deprecation warnings
+        is_cuda_amp = self.use_amp and self.device.type == 'cuda'
+        if hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+            self.scaler = torch.amp.GradScaler('cuda', enabled=is_cuda_amp)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=is_cuda_amp)
 
         # Metrics
         num_classes = config.get('model', {}).get('heads', {}).get(
-            'segmentation', {}).get('num_classes', 3)
+            'segmentation', {}).get('num_classes', 8)
         self.metrics_computer = MetricsComputer(num_classes=num_classes)
 
         # Training state
@@ -276,7 +281,8 @@ class MultiTaskTrainer:
         self.optimizer.zero_grad()
 
         # Forward pass with AMP
-        with autocast(enabled=self.use_amp):
+        device_type = self.device.type if self.device.type in ['cuda', 'cpu'] else 'cpu'
+        with torch.autocast(device_type=device_type, enabled=self.use_amp):
             predictions = self.model(
                 images, use_domain_adapter=self.use_domain_adapter
             )
@@ -319,7 +325,8 @@ class MultiTaskTrainer:
                 'camera_extrinsics': batch['camera_extrinsics'].to(self.device),
             }
 
-            with autocast(enabled=self.use_amp):
+            device_type = self.device.type if self.device.type in ['cuda', 'cpu'] else 'cpu'
+            with torch.autocast(device_type=device_type, enabled=self.use_amp):
                 predictions = self.model(images, use_domain_adapter=False)
                 losses = self.criterion(predictions, targets)
 
@@ -344,7 +351,6 @@ class MultiTaskTrainer:
 
     def _check_nan(self, value: float) -> bool:
         """Check if a value is NaN or Inf."""
-        import math
         if isinstance(value, torch.Tensor):
             return torch.isnan(value).any().item() or torch.isinf(value).any().item()
         return math.isnan(value) or math.isinf(value)
@@ -362,3 +368,4 @@ class MultiTaskTrainer:
         save_checkpoint(path, self.model, self.optimizer, self.scheduler,
                         epoch, self.best_metric)
         logger.info(f"Saved periodic checkpoint to {path}")
+

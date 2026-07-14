@@ -1,4 +1,4 @@
-"""Flask Web UI Backend - SQLite-backed Subprocess & Relay Dispatcher."""
+"""Flask Web UI Backend - SQLite-backed Queue & Relay Dispatcher."""
 
 import os
 import sys
@@ -23,6 +23,7 @@ TASKS_DIR = Path(".tasks")
 CHECKPOINTS_DIR = Path("checkpoints")
 DATA_DIR = Path("data")
 DB_PATH = TASKS_DIR / "tasks.db"
+
 
 def init_db():
     """Initialize the SQLite database for task tracking and relay orchestration."""
@@ -56,21 +57,31 @@ def init_db():
             last_ping TEXT NOT NULL
         )
     ''')
+
+    # Relay Queue (DAG of tasks)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS relay_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            task TEXT NOT NULL,
+            status TEXT NOT NULL, 
+            payload TEXT, 
+            order_idx INTEGER
+        )
+    ''')
     
-    # Relay state (What the remote workers should do)
+    # Relay state (Global variables for the cloud workers)
     c.execute('''
         CREATE TABLE IF NOT EXISTS relay_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            active_task TEXT,
-            dataset_zip TEXT,
-            target_epochs INTEGER
+            dataset_zip TEXT
         )
     ''')
     # Insert default state
-    c.execute("INSERT OR IGNORE INTO relay_state (id, active_task, dataset_zip, target_epochs) VALUES (1, 'train', 'dataset.zip', 200)")
+    c.execute("INSERT OR IGNORE INTO relay_state (id, dataset_zip) VALUES (1, 'dataset.zip')")
     
     conn.commit()
     conn.close()
+
 
 def update_task_status(task_id: str, status: str, pid: int = None):
     conn = sqlite3.connect(DB_PATH)
@@ -83,6 +94,7 @@ def update_task_status(task_id: str, status: str, pid: int = None):
     conn.commit()
     conn.close()
 
+
 def expand_dot_notation(flat_dict):
     """Convert flat dict with dot.notation.keys to a nested dictionary."""
     nested = {}
@@ -94,7 +106,6 @@ def expand_dot_notation(flat_dict):
                 current[part] = {}
             current = current[part]
         
-        # Convert numeric strings where appropriate
         if isinstance(value, str):
             if value.isdigit():
                 value = int(value)
@@ -105,6 +116,7 @@ def expand_dot_notation(flat_dict):
                     pass
         current[parts[-1]] = value
     return nested
+
 
 def run_subprocess(task_id: str, cmd: list, workspace: Path):
     """Background thread to monitor the subprocess and update the DB upon exit."""
@@ -136,8 +148,6 @@ def dashboard():
     workers = [{"id": r[0], "status": r[1], "epoch": r[2], "loss": r[3], "ping": r[4]} for r in c.fetchall()]
     
     conn.close()
-    
-    # Renders the HTML template and passes both local tasks and remote workers
     return render_template('index.html', tasks=tasks, relay_workers=workers)
 
 @app.route('/data')
@@ -187,28 +197,34 @@ def task_view(task_id):
 
 @app.route('/api/relay/register', methods=['POST'])
 def relay_register():
-    """Colab worker asks for instructions."""
-    data = request.json
-    worker_id = data.get("worker_id")
+    """Colab worker asks for the next task in the queue."""
+    worker_id = request.json.get("worker_id")
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO relay_workers (worker_id, status, current_epoch, train_loss, val_loss, last_ping) VALUES (?, ?, 0, 0, 0, ?)",
               (worker_id, "registered", datetime.now().isoformat()))
               
-    c.execute("SELECT active_task, dataset_zip FROM relay_state WHERE id = 1")
+    # Pop next task
+    c.execute("SELECT id, task, payload FROM relay_queue WHERE status = 'pending' ORDER BY order_idx ASC LIMIT 1")
+    row = c.fetchone()
+    
+    if not row:
+        conn.commit()
+        conn.close()
+        return jsonify({"action": "wait"})
+        
+    q_id, task, payload = row
+    c.execute("UPDATE relay_queue SET status = 'running' WHERE id = ?", (q_id,))
+    
+    c.execute("SELECT dataset_zip FROM relay_state WHERE id = 1")
     state = c.fetchone()
+    ds_zip = state[0] if state else "dataset.zip"
+    
     conn.commit()
     conn.close()
     
-    if not state or not state[0]:
-        return jsonify({"action": "wait"})
-        
-    return jsonify({
-        "action": "run",
-        "task": state[0],
-        "dataset_zip": state[1],
-    })
+    return jsonify({"action": "run", "task": task, "task_id": q_id, "dataset_zip": ds_zip})
 
 @app.route('/api/relay/telemetry', methods=['POST'])
 def relay_telemetry():
@@ -216,21 +232,48 @@ def relay_telemetry():
     data = request.json
     worker_id = data.get("worker_id")
     status = data.get("status")
+    task_id = data.get("task_id")
     epoch = data.get("epoch", 0)
     train_loss = data.get("train_loss", 0.0)
-    val_loss = data.get("val_loss", 0.0)
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''
-        UPDATE relay_workers 
-        SET status = ?, current_epoch = ?, train_loss = ?, val_loss = ?, last_ping = ?
-        WHERE worker_id = ?
-    ''', (status, epoch, train_loss, val_loss, datetime.now().isoformat(), worker_id))
+    
+    # Update worker telemetry
+    c.execute('''UPDATE relay_workers SET status = ?, current_epoch = ?, train_loss = ?, last_ping = ? WHERE worker_id = ?''', 
+              (status, epoch, train_loss, datetime.now().isoformat(), worker_id))
+    
+    # Update queue if a task has resolved
+    if task_id and status in ["completed", "failed", "failed_nan"]:
+        c.execute("UPDATE relay_queue SET status = ? WHERE id = ?", (status, task_id))
+        if "fail" in status:
+            c.execute("UPDATE relay_queue SET status = 'cancelled' WHERE status = 'pending'")
+            
     conn.commit()
     conn.close()
-    
     return jsonify({"success": True})
+
+@app.route('/api/run/auto', methods=['POST'])
+def run_auto():
+    """Queues the entire pipeline DAG for the Relay worker."""
+    task_id = str(uuid.uuid4())
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM relay_queue")
+    
+    # DAG Sequence
+    tasks = [
+        ("train_cyclegan", "{}"), 
+        ("translate", "{}"), 
+        ("train", "{}")
+    ]
+    
+    for idx, (t, p) in enumerate(tasks):
+        c.execute("INSERT INTO relay_queue (task, status, payload, order_idx) VALUES (?, 'pending', ?, ?)", (t, p, idx))
+        
+    conn.commit()
+    conn.close()
+    return jsonify({"task_id": task_id, "message": "Pipeline Queued. Cloud Worker will execute sequence."})
 
 
 # ---------------------------------------------------------------------------

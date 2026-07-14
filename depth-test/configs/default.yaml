@@ -62,7 +62,7 @@ model:
     channels: [256, 128, 64]
   heads:
     segmentation:
-      num_classes: 3
+      num_classes: 8
       hidden_channels: 128
     severity:
       hidden_channels: 128

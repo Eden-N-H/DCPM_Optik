@@ -13,7 +13,7 @@ class MetricsComputer:
     Severity: MAE, Pearson correlation (within defect regions only)
     """
 
-    def __init__(self, num_classes: int = 3):
+    def __init__(self, num_classes: int = 8):
         self.num_classes = num_classes
         self.reset()
 
