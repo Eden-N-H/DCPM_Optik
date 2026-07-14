@@ -7,12 +7,16 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+import matplotlib
+matplotlib.use('Agg') # FIX: Force headless rendering to prevent Flask UI hangs
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 from src.training.dataset import IMAGENET_MEAN, IMAGENET_STD
 from src.reconstruction.pipeline import ReconstructionPipeline
 from src.reconstruction.bev import DEFAULT_COLOR_MAP
+
 
 class PipelineVisualizer:
     """Visualizes the end-to-end pipeline (Data -> CycleGAN -> MultiTask -> 3D BEV)."""
@@ -81,7 +85,8 @@ class PipelineVisualizer:
 
             # --- 4. 3D BEV Reconstruction ---
             gt_bev_img = self._generate_bev(gt_depth[0], gt_seg, gt_sev[0], gt_intr, gt_extr)
-            pred_bev_img = self._generate_bev(pred_depth[0], pred_seg[0], pred_sev[0], pred_intr[0], pred_extr[0])
+            # FIX: Ensure 2D arrays are passed to unprojector
+            pred_bev_img = self._generate_bev(pred_depth[0, 0], pred_seg[0], pred_sev[0, 0], pred_intr[0], pred_extr[0])
 
             # --- 5. Error Maps & Overlays ---
             # Segmentation Overlay

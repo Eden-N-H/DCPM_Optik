@@ -1,167 +1,35 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Road Quality Pipeline</title>
+    <title>DCPM Optik - Road Quality</title>
     <style>
-        /* Brutalist, fast, semantic, and accessible styling */
-        :root {
-            --bg-color: #fdfdfd;
-            --text-color: #111111;
-            --accent-color: #0055ff;
-            --border-color: #cccccc;
-            --disabled-color: #888888;
-        }
-        body {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem 1rem;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            line-height: 1.6;
-            color: var(--text-color);
-            background: var(--bg-color);
-        }
-        nav {
-            display: flex;
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-            border-bottom: 2px solid var(--text-color);
-            padding-bottom: 1rem;
-        }
-        nav a {
-            color: var(--text-color);
-            text-decoration: none;
-            font-weight: bold;
-            font-size: 1.1rem;
-        }
-        nav a:hover, nav a.active {
-            text-decoration: underline;
-            color: var(--accent-color);
-        }
-        h1, h2, h3 { margin-top: 0; line-height: 1.2; }
-        
-        form { margin-bottom: 2rem; }
-        fieldset {
-            border: 1px solid var(--border-color);
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-        }
-        legend { font-weight: bold; padding: 0 0.5rem; }
-        
-        .form-group { margin-bottom: 1rem; }
-        label { display: block; font-weight: bold; margin-bottom: 0.25rem; }
-        input, select {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid var(--border-color);
-            box-sizing: border-box;
-            font-family: inherit;
-        }
-        /* Native Validation styling */
-        input:invalid { border-color: #cc0000; }
-        input:valid { border-color: #008800; }
-        
-        button, .btn {
-            display: inline-block;
-            background: var(--accent-color);
-            color: #ffffff;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-            text-decoration: none;
-            text-align: center;
-            font-family: inherit;
-        }
-        button:hover, .btn:hover { background: #0044cc; }
-        button:disabled { background: var(--disabled-color); cursor: not-allowed; }
-        button.danger { background: #cc0000; }
-        button.danger:hover { background: #990000; }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 2rem;
-        }
-        th, td {
-            border: 1px solid var(--border-color);
-            padding: 0.75rem;
-            text-align: left;
-        }
-        th { background: #f4f4f4; }
-        
-        details {
-            border: 1px solid var(--border-color);
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-            background: #fcfcfc;
-        }
-        summary { font-weight: bold; cursor: pointer; }
-        
-        pre {
-            background: #111;
-            color: #0f0;
-            padding: 1rem;
-            overflow-x: auto;
-            max-height: 500px;
-            overflow-y: auto;
-            font-family: monospace;
-        }
-        
-        .status-queued { color: #888; font-weight: bold; }
-        .status-running { color: var(--accent-color); font-weight: bold; }
-        .status-completed { color: #008800; font-weight: bold; }
-        .status-failed { color: #cc0000; font-weight: bold; }
-        
-        .svg-icon { vertical-align: middle; margin-right: 0.5rem; }
+        body { font-family: monospace; max-width: 1000px; margin: 40px auto; color: #000; background: #fff; }
+        nav { margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px; }
+        nav a { margin-right: 15px; text-decoration: none; color: #000; font-weight: bold; }
+        nav a:hover { text-decoration: underline; background: #000; color: #fff; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #000; padding: 8px; text-align: left; }
+        th { background: #eee; }
+        button, input, select { font-family: monospace; border: 1px solid #000; padding: 5px; background: #fff; }
+        button { font-weight: bold; cursor: pointer; }
+        button:hover { background: #000; color: #fff; }
+        fieldset { border: 2px solid #000; padding: 20px; margin-bottom: 20px; }
+        legend { font-weight: bold; padding: 0 5px; }
     </style>
-    <script>
-        // Form intercept helper moved to head so it loads before block content
-        function handleFormSubmit(formId, endpoint) {
-            // Use DOMContentLoaded to ensure the form exists when we attach the listener
-            window.addEventListener('DOMContentLoaded', () => {
-                const form = document.getElementById(formId);
-                if (!form) return;
-                
-                form.addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    const btn = form.querySelector('button[type="submit"]');
-                    btn.disabled = true;
-                    btn.textContent = "Starting...";
-                    
-                    try {
-                        const res = await fetch(endpoint, {
-                            method: 'POST',
-                            body: new FormData(form)
-                        });
-                        const data = await res.json();
-                        if (!res.ok) throw new Error(data.error || 'Failed to start task');
-                        
-                        window.location.href = `/task/${data.task_id}`;
-                    } catch(err) {
-                        alert(err.message);
-                        btn.disabled = false;
-                        btn.textContent = "Run";
-                    }
-                });
-            });
-        }
-    </script>
 </head>
 <body>
     <nav>
-        <a href="/">Dashboard</a>
-        <a href="/data">1. Data Gen</a>
-        <a href="/train">2. Train</a>
-        <a href="/evaluate">3. Evaluate</a>
-        <a href="/reconstruct">4. Reconstruct</a>
-        <a href="/visualize">5. Visualize</a>
+        <a href="/">[ Dashboard ]</a>
+        <a href="/quicktest">[ Quick Test ]</a>
+        <a href="/data">[ Data Gen ]</a>
+        <a href="/train">[ Train ]</a>
+        <a href="/evaluate">[ Evaluate ]</a>
+        <a href="/reconstruct">[ Reconstruct ]</a>
+        <a href="/visualize">[ Visualize ]</a>
     </nav>
-
     <main>
         {% block content %}{% endblock %}
     </main>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

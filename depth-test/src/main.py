@@ -6,6 +6,7 @@ Usage:
     python -m src.main evaluate --config configs/default.yaml --checkpoint best_model.pt
     python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
     python -m src.main visualize --config configs/default.yaml --cyclegan-ckpt cyclegan.pt --multitask-ckpt multitask.pt --samples 5
+    python -m src.main quicktest --config configs/default.yaml --samples 5 --output-dir ./quicktest_out
     python -m src.main web --config configs/default.yaml --checkpoint best_model.pt
     python -m src.main colab --output Colab_Pipeline.ipynb
 """
@@ -13,6 +14,7 @@ Usage:
 import argparse
 import logging
 import sys
+import shutil
 from pathlib import Path
 
 import torch
@@ -299,7 +301,6 @@ def visualize(args, config):
     )
     if args.cyclegan_ckpt:
         cg_data = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
-        # Handle full trainer checkpoints vs raw state dicts
         state_dict = cg_data.get('G_AB_state_dict', cg_data)
         cyclegan.load_state_dict(state_dict)
 
@@ -320,6 +321,70 @@ def visualize(args, config):
     logger.info(f"Generating storyboard grids for {args.samples} samples...")
     visualizer.visualize_samples(args.samples, output_dir)
     logger.info(f"Visualization complete! Output saved to {output_dir}")
+
+
+def quicktest(args, config):
+    """Run a fast end-to-end test pipeline."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info("Starting Quick Test Pipeline...")
+
+    # 1. Generate Data
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = output_dir / "data"
+    
+    # Override config to force 100% of the tiny dataset into the validation split
+    # We use validation split so the PipelineVisualizer doesn't try to augment it
+    dataset_cfg = DatasetConfig(
+        total_samples=args.samples,
+        split_ratios={'train': 0.0, 'val': 1.0, 'test': 0.0},
+        seed=config.get('seed', 42)
+    )
+    
+    logger.info(f"Generating {args.samples} synthetic samples...")
+    builder = DatasetBuilder(config=dataset_cfg)
+    builder.generate_dataset(output_root=data_dir)
+    
+    # 2. Load Models
+    logger.info("Loading models...")
+    cyclegan = ResNetGenerator(
+        input_channels=config.get('cyclegan.input_nc', 4),
+        output_channels=config.get('cyclegan.output_nc', 3),
+        ngf=config.get('cyclegan.ngf', 64),
+        n_residual_blocks=config.get('cyclegan.n_blocks', 9)
+    )
+    if args.cyclegan_ckpt and Path(args.cyclegan_ckpt).exists():
+        cg_data = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
+        cyclegan.load_state_dict(cg_data.get('G_AB_state_dict', cg_data))
+        logger.info(f"Loaded CycleGAN from {args.cyclegan_ckpt}")
+    else:
+        logger.warning("No CycleGAN checkpoint provided. Using randomly initialized weights.")
+
+    multitask = MultiTaskModel(
+        pretrained=False,
+        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+    )
+    if args.multitask_ckpt and Path(args.multitask_ckpt).exists():
+        mt_data = torch.load(args.multitask_ckpt, map_location=device, weights_only=False)
+        multitask.load_state_dict(mt_data.get('model_state_dict', mt_data))
+        logger.info(f"Loaded MultiTask model from {args.multitask_ckpt}")
+    else:
+        logger.warning("No MultiTask checkpoint provided. Using randomly initialized weights.")
+
+    # 3. Visualize
+    logger.info("Running pipeline and generating storyboards...")
+    dataset = RoadQualityDataset(str(data_dir), split='val', crop_size=512)
+    dataset.is_train = False
+    
+    visualizer = PipelineVisualizer(config.config, dataset, cyclegan, multitask, device)
+    visualizer.visualize_samples(args.samples, output_dir)
+    
+    # 4. Cleanup raw data
+    if not args.keep_data:
+        logger.info("Cleaning up raw generated data to save space...")
+        shutil.rmtree(data_dir, ignore_errors=True)
+        
+    logger.info("Quick Test Complete! Check your output directory for the storyboard grids.")
 
 
 def main():
@@ -366,6 +431,15 @@ def main():
     viz_parser.add_argument('--multitask-ckpt', type=str, required=True, help='Path to MultiTask checkpoint')
     viz_parser.add_argument('--samples', type=int, default=5, help='Number of samples to visualize')
     viz_parser.add_argument('--output-dir', type=str, default='./visualizations', help='Output directory')
+    
+    # Quicktest command (One-Click Test)
+    qt_parser = subparsers.add_parser('quicktest', help='Run an end-to-end generation and visualization test')
+    qt_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    qt_parser.add_argument('--cyclegan-ckpt', type=str, required=False, help='Optional path to CycleGAN checkpoint')
+    qt_parser.add_argument('--multitask-ckpt', type=str, required=False, help='Optional path to MultiTask checkpoint')
+    qt_parser.add_argument('--samples', type=int, default=5, help='Number of samples to generate and test')
+    qt_parser.add_argument('--output-dir', type=str, default='./quicktest_out', help='Output directory')
+    qt_parser.add_argument('--keep-data', action='store_true', help='Do not delete the raw generated data')
 
     # Colab Notebook Generation
     colab_parser = subparsers.add_parser('colab', help='Generate Google Colab execution notebook')
@@ -408,6 +482,8 @@ def main():
         reconstruct(args, config)
     elif args.command == 'visualize':
         visualize(args, config)
+    elif args.command == 'quicktest':
+        quicktest(args, config)
     elif args.command == 'web':
         from src.web import start_server
         start_server(args)

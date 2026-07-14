@@ -127,6 +127,11 @@ def visualize_view():
     checkpoints = [p.name for p in CHECKPOINTS_DIR.glob("*.pt")]
     return render_template('visualize.html', checkpoints=checkpoints)
 
+@app.route('/quicktest')
+def quicktest_view():
+    checkpoints = [p.name for p in CHECKPOINTS_DIR.glob("*.pt")]
+    return render_template('quicktest.html', checkpoints=checkpoints)
+
 @app.route('/task/<task_id>')
 def task_view(task_id):
     conn = sqlite3.connect(DB_PATH)
@@ -289,6 +294,38 @@ def run_visualize():
     threading.Thread(target=run_subprocess, args=(task_id, cmd, workspace), daemon=True).start()
     return jsonify({"task_id": task_id})
 
+@app.route('/api/run/quicktest', methods=['POST'])
+def run_quicktest():
+    task_id = str(uuid.uuid4())
+    workspace = TASKS_DIR / task_id
+    workspace.mkdir()
+    
+    form_data = request.form.to_dict()
+    cg_ckpt = form_data.get("cyclegan_ckpt", "")
+    mt_ckpt = form_data.get("multitask_ckpt", "")
+    samples = form_data.get("samples", "5")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO tasks (id, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+              (task_id, "quicktest", "queued", datetime.now().isoformat(), datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    cmd = [
+        sys.executable, "-m", "src.main", "quicktest", 
+        "--config", "configs/default.yaml", 
+        "--samples", str(samples),
+        "--output-dir", str(workspace)
+    ]
+    if cg_ckpt:
+        cmd.extend(["--cyclegan-ckpt", str(CHECKPOINTS_DIR / cg_ckpt)])
+    if mt_ckpt:
+        cmd.extend(["--multitask-ckpt", str(CHECKPOINTS_DIR / mt_ckpt)])
+        
+    threading.Thread(target=run_subprocess, args=(task_id, cmd, workspace), daemon=True).start()
+    return jsonify({"task_id": task_id})
+
 @app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
 def cancel_task(task_id):
     conn = sqlite3.connect(DB_PATH)
@@ -359,7 +396,9 @@ def stream_logs(task_id):
 @app.route('/download/<task_id>/<filename>')
 def download_file(task_id, filename):
     safe_filename = secure_filename(filename)
-    return send_from_directory(TASKS_DIR / task_id, safe_filename, as_attachment=True)
+    # FIX: Use absolute path and remove as_attachment to allow browser inline viewing
+    directory = os.path.abspath(TASKS_DIR / task_id)
+    return send_from_directory(directory, safe_filename)
 
 
 def start_server(args):
