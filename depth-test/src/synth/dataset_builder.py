@@ -62,6 +62,7 @@ class DatasetConfig:
     )
     render_config: RenderConfig = field(default_factory=RenderConfig)
     seed: Optional[int] = None
+    blender_executable: str = "blender"
 
 
 class DryRunRenderBackend:
@@ -266,9 +267,10 @@ class DatasetBuilder:
 
         # Execute Blender subprocess with explicit error capturing
         worker_script = Path(__file__).parent / "blender_worker.py"
+        blender_cmd = self.config.blender_executable
         try:
             subprocess.run(
-                ["blender", "-b", "-P", str(worker_script), "--", "--job-file", str(job_file)],
+                [blender_cmd, "-b", "-P", str(worker_script), "--", "--job-file", str(job_file)],
                 check=True, capture_output=True, text=True
             )
         except subprocess.CalledProcessError as exc:

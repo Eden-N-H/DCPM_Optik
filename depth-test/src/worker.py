@@ -47,10 +47,10 @@ def get_latest_checkpoint(shared_drive_path: Path) -> str:
     return ""
 
 
-def start_worker(orchestrator_url: str, shared_drive_path: str, worker_id: str):
+def start_worker(orchestrator_url: str, shared_drive_path: str, worker_id: str, local_data_path: str = "data"):
     print(f"Starting Worker {worker_id}...")
     shared_drive_path = Path(shared_drive_path)
-    local_data_path = Path("/content/data")
+    local_data_path = Path(local_data_path)
     
     # 1. Register with Orchestrator
     try:
