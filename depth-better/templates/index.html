@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DepthAnything3 - Web Viewer</title>
+    <!-- Tailwind CSS for quick styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Model Viewer for rendering GLB meshes -->
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js"></script>
+    <style>
+        /* Custom styling for the 3D viewer */
+        model-viewer {
+            width: 100%;
+            height: 500px;
+            background-color: #f3f4f6; /* matches Tailwind gray-100 */
+            border-radius: 0.5rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans text-gray-800">
+
+    <div class="max-w-5xl mx-auto px-4 py-12">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">DepthAnything3 Viewer</h1>
+            <p class="text-gray-600">Upload a photo to generate a depth heatmap and a 3D mesh.</p>
+        </header>
+
+        <!-- Upload Form -->
+        <div class="bg-white p-6 rounded-lg shadow-md max-w-md mx-auto mb-10">
+            <form id="uploadForm" class="flex flex-col space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Select Image</label>
+                    <input type="file" id="imageInput" accept="image/jpeg, image/png, image/webp" required
+                           class="block w-full text-sm text-gray-500
+                                  file:mr-4 file:py-2 file:px-4
+                                  file:rounded-md file:border-0
+                                  file:text-sm file:font-semibold
+                                  file:bg-indigo-50 file:text-indigo-700
+                                  hover:file:bg-indigo-100 border border-gray-300 rounded-md p-2">
+                </div>
+                <button type="submit" id="submitBtn" 
+                        class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors">
+                    Generate Depth & Mesh
+                </button>
+            </form>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="hidden text-center py-12">
+            <svg class="animate-spin h-10 w-10 text-indigo-600 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="text-lg font-medium text-gray-600">Processing image with DepthAnything3...</p>
+            <p class="text-sm text-gray-500">This may take a few seconds.</p>
+        </div>
+
+        <!-- Error State -->
+        <div id="errorState" class="hidden bg-red-50 border-l-4 border-red-500 p-4 max-w-2xl mx-auto mb-10">
+            <p class="text-red-700 font-medium" id="errorMessage"></p>
+        </div>
+
+        <!-- Results Section -->
+        <div id="resultsSection" class="hidden space-y-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <!-- Heatmap -->
+                <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Depth Heatmap</h2>
+                    <div class="flex-grow flex items-center justify-center bg-gray-100 rounded-lg overflow-hidden">
+                        <img id="heatmapImg" src="" alt="Depth Heatmap" class="max-w-full h-auto object-contain">
+                    </div>
+                </div>
+
+                <!-- 3D Mesh -->
+                <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">3D Point Cloud Mesh</h2>
+                    <div class="flex-grow rounded-lg overflow-hidden relative">
+                        <!-- model-viewer allows interactive 3D orbiting -->
+                        <model-viewer id="meshViewer" 
+                                      src="" 
+                                      alt="3D Depth Mesh" 
+                                      auto-rotate 
+                                      camera-controls 
+                                      shadow-intensity="1"
+                                      interaction-prompt="hover">
+                        </model-viewer>
+                        <p class="absolute bottom-2 left-0 right-0 text-center text-xs text-gray-500 pointer-events-none">Scroll to zoom, click & drag to rotate</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loadingState = document.getElementById('loadingState');
+        const errorState = document.getElementById('errorState');
+        const errorMessage = document.getElementById('errorMessage');
+        const resultsSection = document.getElementById('resultsSection');
+        const heatmapImg = document.getElementById('heatmapImg');
+        const meshViewer = document.getElementById('meshViewer');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('imageInput');
+            if (fileInput.files.length === 0) return;
+
+            // Update UI for loading
+            submitBtn.disabled = true;
+            submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            resultsSection.classList.add('hidden');
+            errorState.classList.add('hidden');
+            loadingState.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/process', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Server processing failed');
+                }
+
+                // Update UI with results
+                heatmapImg.src = data.heatmap_url;
+                meshViewer.src = data.mesh_url;
+
+                loadingState.classList.add('hidden');
+                resultsSection.classList.remove('hidden');
+                
+            } catch (error) {
+                loadingState.classList.add('hidden');
+                errorMessage.textContent = error.message;
+                errorState.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        });
+    </script>
+</body>
+</html>
