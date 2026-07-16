@@ -6,24 +6,62 @@
     <title>DepthAnything3 - Web Viewer</title>
     <!-- Tailwind CSS for quick styling -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Google Model Viewer for rendering GLB meshes -->
-    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js"></script>
+    <!-- Official Google Model Viewer for rendering GLB meshes -->
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
     <style>
-        /* Custom styling for the 3D viewer */
-        model-viewer {
+        /* Container for 3D viewers to handle fullscreen gracefully */
+        .viewer-container {
+            position: relative;
             width: 100%;
             height: 500px;
-            background-color: #f3f4f6; /* matches Tailwind gray-100 */
+            background-color: #f3f4f6;
             border-radius: 0.5rem;
+            overflow: hidden;
+        }
+
+        /* When the container is fullscreen, take up the whole screen */
+        .viewer-container:fullscreen {
+            height: 100vh;
+            width: 100vw;
+            border-radius: 0;
+            background-color: #111827; /* Dark background in fullscreen */
+        }
+
+        /* The actual model viewer fills its container */
+        model-viewer {
+            width: 100%;
+            height: 100%;
+            outline: none;
+        }
+        
+        /* Fullscreen button styling */
+        .fullscreen-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #d1d5db;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #374151;
+            z-index: 10;
+            transition: all 0.2s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .fullscreen-btn:hover {
+            background-color: #ffffff;
+            transform: scale(1.05);
         }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
 
-    <div class="max-w-5xl mx-auto px-4 py-12">
+    <div class="max-w-7xl mx-auto px-4 py-12">
         <header class="text-center mb-10">
             <h1 class="text-4xl font-extrabold text-gray-900 mb-2">DepthAnything3 Viewer</h1>
-            <p class="text-gray-600">Upload a photo to generate a depth heatmap and a 3D mesh.</p>
+            <p class="text-gray-600">Upload a photo to generate a depth heatmap, a point cloud, and a solid mesh.</p>
         </header>
 
         <!-- Upload Form -->
@@ -41,7 +79,7 @@
                 </div>
                 <button type="submit" id="submitBtn" 
                         class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors">
-                    Generate Depth & Mesh
+                    Generate 3D Models
                 </button>
             </form>
         </div>
@@ -52,8 +90,8 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <p class="text-lg font-medium text-gray-600">Processing image with DepthAnything3...</p>
-            <p class="text-sm text-gray-500">This may take a few seconds.</p>
+            <p class="text-lg font-medium text-gray-600">Processing image...</p>
+            <p class="text-sm text-gray-500">Generating point cloud and solid mesh. This takes a moment.</p>
         </div>
 
         <!-- Error State -->
@@ -61,31 +99,48 @@
             <p class="text-red-700 font-medium" id="errorMessage"></p>
         </div>
 
-        <!-- Results Section -->
+        <!-- Results Section (3 Columns) -->
         <div id="resultsSection" class="hidden space-y-8">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <!-- Heatmap -->
+            <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                
+                <!-- 1. Heatmap -->
                 <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
                     <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Depth Heatmap</h2>
-                    <div class="flex-grow flex items-center justify-center bg-gray-100 rounded-lg overflow-hidden">
-                        <img id="heatmapImg" src="" alt="Depth Heatmap" class="max-w-full h-auto object-contain">
+                    <div class="flex-grow flex items-center justify-center bg-gray-100 rounded-lg overflow-hidden h-[500px]">
+                        <img id="heatmapImg" src="" alt="Depth Heatmap" class="max-w-full max-h-full object-contain">
                     </div>
                 </div>
 
-                <!-- 3D Mesh -->
+                <!-- 2. Point Cloud -->
                 <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
-                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">3D Point Cloud Mesh</h2>
-                    <div class="flex-grow rounded-lg overflow-hidden relative">
-                        <!-- model-viewer allows interactive 3D orbiting -->
-                        <model-viewer id="meshViewer" 
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Point Cloud (Raw)</h2>
+                    <div class="viewer-container" id="pcContainer">
+                        <button class="fullscreen-btn" onclick="toggleFullscreen('pcContainer')">⛶ Fullscreen</button>
+                        <!-- min-camera-orbit="auto auto 0m" allows zooming into the model infinitely -->
+                        <model-viewer id="pcViewer" 
                                       src="" 
-                                      alt="3D Depth Mesh" 
+                                      alt="Point Cloud" 
                                       auto-rotate 
                                       camera-controls 
-                                      shadow-intensity="1"
-                                      interaction-prompt="hover">
+                                      min-camera-orbit="auto auto 0m"
+                                      shadow-intensity="1">
                         </model-viewer>
-                        <p class="absolute bottom-2 left-0 right-0 text-center text-xs text-gray-500 pointer-events-none">Scroll to zoom, click & drag to rotate</p>
+                    </div>
+                </div>
+
+                <!-- 3. Solid Polygon Mesh -->
+                <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Polygon Mesh (Solid)</h2>
+                    <div class="viewer-container" id="meshContainer">
+                        <button class="fullscreen-btn" onclick="toggleFullscreen('meshContainer')">⛶ Fullscreen</button>
+                        <model-viewer id="meshViewer" 
+                                      src="" 
+                                      alt="Solid Polygon Mesh" 
+                                      auto-rotate 
+                                      camera-controls 
+                                      min-camera-orbit="auto auto 0m"
+                                      shadow-intensity="1">
+                        </model-viewer>
                     </div>
                 </div>
             </div>
@@ -93,13 +148,35 @@
     </div>
 
     <script>
+        console.log("UI Loaded Successfully");
+
+        // Fullscreen Toggle Function
+        function toggleFullscreen(containerId) {
+            const container = document.getElementById(containerId);
+            if (!document.fullscreenElement) {
+                if (container.requestFullscreen) {
+                    container.requestFullscreen();
+                } else if (container.webkitRequestFullscreen) { /* Safari */
+                    container.webkitRequestFullscreen();
+                } else if (container.msRequestFullscreen) { /* IE11 */
+                    container.msRequestFullscreen();
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                }
+            }
+        }
+
         const form = document.getElementById('uploadForm');
         const submitBtn = document.getElementById('submitBtn');
         const loadingState = document.getElementById('loadingState');
         const errorState = document.getElementById('errorState');
         const errorMessage = document.getElementById('errorMessage');
         const resultsSection = document.getElementById('resultsSection');
+        
         const heatmapImg = document.getElementById('heatmapImg');
+        const pcViewer = document.getElementById('pcViewer');
         const meshViewer = document.getElementById('meshViewer');
 
         form.addEventListener('submit', async (e) => {
@@ -132,6 +209,7 @@
 
                 // Update UI with results
                 heatmapImg.src = data.heatmap_url;
+                pcViewer.src = data.pointcloud_url;
                 meshViewer.src = data.mesh_url;
 
                 loadingState.classList.add('hidden');
