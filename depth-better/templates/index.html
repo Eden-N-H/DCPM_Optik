@@ -8,6 +8,17 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Official Google Model Viewer for rendering GLB meshes -->
     <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+    
+    <!-- ES Module Import Map for 3D Gaussian Splatting -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+            "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d@0.4.3/build/gaussian-splats-3d.module.js"
+        }
+    }
+    </script>
+
     <style>
         /* Container for 3D viewers to handle fullscreen gracefully */
         .viewer-container {
@@ -54,22 +65,28 @@
             background-color: #ffffff;
             transform: scale(1.05);
         }
+
+        #gsViewer {
+            width: 100%;
+            height: 100%;
+            display: none; /* Hidden by default, shown if .ply is returned */
+        }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
 
     <div class="max-w-7xl mx-auto px-4 py-12">
         <header class="text-center mb-10">
-            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">DepthAnything3 Viewer</h1>
-            <p class="text-gray-600">Upload a photo to generate a depth heatmap, a point cloud, and a solid mesh.</p>
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">Road Defect Detector (DA3)</h1>
+            <p class="text-gray-600">Upload a video or photo to generate a depth heatmap, a 3D Gaussian Splat, and a solid mesh using temporal parallax.</p>
         </header>
 
         <!-- Upload Form -->
         <div class="bg-white p-6 rounded-lg shadow-md max-w-md mx-auto mb-10">
             <form id="uploadForm" class="flex flex-col space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Select Image</label>
-                    <input type="file" id="imageInput" accept="image/jpeg, image/png, image/webp" required
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Select Media (Video/Image)</label>
+                    <input type="file" id="fileInput" accept="video/mp4, video/webm, video/quicktime, image/jpeg, image/png, image/webp" required
                            class="block w-full text-sm text-gray-500
                                   file:mr-4 file:py-2 file:px-4
                                   file:rounded-md file:border-0
@@ -77,9 +94,27 @@
                                   file:bg-indigo-50 file:text-indigo-700
                                   hover:file:bg-indigo-100 border border-gray-300 rounded-md p-2">
                 </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Camera Height (Meters)</label>
+                        <input type="number" id="camHeight" value="1.5" step="0.01" required
+                               class="block w-full text-sm text-gray-700 border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Model Size</label>
+                        <select id="modelSize" class="block w-full text-sm text-gray-700 border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500">
+                            <option value="da3-base">Base (GLB Pointcloud)</option>
+                            <option value="da3-large">Large (GLB Pointcloud)</option>
+                            <option value="da3-giant">Giant (Gaussian Splats)</option>
+                            <option value="da3nested-giant-large" selected>Nested Giant (Gaussian Splats)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <button type="submit" id="submitBtn" 
                         class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors">
-                    Generate 3D Models
+                    Detect Potholes
                 </button>
             </form>
         </div>
@@ -90,8 +125,9 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <p class="text-lg font-medium text-gray-600">Processing image...</p>
-            <p class="text-sm text-gray-500">Generating point cloud and solid mesh. This takes a moment.</p>
+            <p class="text-lg font-medium text-gray-600">Processing media...</p>
+            <!-- Dynamic Progress Message -->
+            <p id="progressMessage" class="text-sm text-indigo-500 font-semibold mt-2">Uploading file to server...</p>
         </div>
 
         <!-- Error State -->
@@ -103,20 +139,21 @@
         <div id="resultsSection" class="hidden space-y-8">
             <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 
-                <!-- 1. Heatmap -->
+                <!-- 1. Heatmap Video/Image -->
                 <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
-                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Depth Heatmap</h2>
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Depth Heatmap (Side-by-Side)</h2>
                     <div class="flex-grow flex items-center justify-center bg-gray-100 rounded-lg overflow-hidden h-[500px]">
-                        <img id="heatmapImg" src="" alt="Depth Heatmap" class="max-w-full max-h-full object-contain">
+                        <video id="heatmapVideo" src="" autoplay loop muted playsinline class="max-w-full max-h-full object-contain"></video>
                     </div>
                 </div>
 
-                <!-- 2. Point Cloud -->
+                <!-- 2. Gaussian Splats / Point Cloud -->
                 <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
-                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Point Cloud (Raw)</h2>
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">3D Scene (Splats/Points)</h2>
                     <div class="viewer-container" id="pcContainer">
                         <button class="fullscreen-btn" onclick="toggleFullscreen('pcContainer')">⛶ Fullscreen</button>
-                        <!-- min-camera-orbit="auto auto 0m" allows zooming into the model infinitely -->
+                        
+                        <!-- Fallback Viewer for GLB -->
                         <model-viewer id="pcViewer" 
                                       src="" 
                                       alt="Point Cloud" 
@@ -125,12 +162,15 @@
                                       min-camera-orbit="auto auto 0m"
                                       shadow-intensity="1">
                         </model-viewer>
+                        
+                        <!-- Splat Viewer for PLY -->
+                        <div id="gsViewer"></div>
                     </div>
                 </div>
 
                 <!-- 3. Solid Polygon Mesh -->
                 <div class="bg-white p-4 rounded-lg shadow-md flex flex-col">
-                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Polygon Mesh (Solid)</h2>
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 border-b pb-2">Defect Mesh (Red = Potholes)</h2>
                     <div class="viewer-container" id="meshContainer">
                         <button class="fullscreen-btn" onclick="toggleFullscreen('meshContainer')">⛶ Fullscreen</button>
                         <model-viewer id="meshViewer" 
@@ -147,18 +187,50 @@
         </div>
     </div>
 
+    <!-- Gaussian Splats Logic -->
+    <script type="module">
+        import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+        
+        let splatViewerInstance = null;
+
+        window.loadSplat = function(url) {
+            const container = document.getElementById('gsViewer');
+            container.innerHTML = ''; // Clear previous renders
+
+            // Show GS viewer, hide Model viewer
+            container.style.display = 'block';
+            document.getElementById('pcViewer').style.display = 'none';
+
+            splatViewerInstance = new GaussianSplats3D.Viewer({
+                'rootElement': container,
+                'cameraUp': [0, -1, 0],
+                'initialCameraPosition': [0, -2, -5],
+                'initialCameraLookAt': [0, 0, 0]
+            });
+
+            splatViewerInstance.addSplatScene(url, {
+                'showLoadingUI': true,
+                'position': [0, 0, 0],
+                'rotation': [0, 0, 0, 1],
+                'scale': [1.5, 1.5, 1.5]
+            }).then(() => {
+                splatViewerInstance.start();
+            });
+        };
+    </script>
+
+    <!-- General Application Logic -->
     <script>
         console.log("UI Loaded Successfully");
 
-        // Fullscreen Toggle Function
         function toggleFullscreen(containerId) {
             const container = document.getElementById(containerId);
             if (!document.fullscreenElement) {
                 if (container.requestFullscreen) {
                     container.requestFullscreen();
-                } else if (container.webkitRequestFullscreen) { /* Safari */
+                } else if (container.webkitRequestFullscreen) {
                     container.webkitRequestFullscreen();
-                } else if (container.msRequestFullscreen) { /* IE11 */
+                } else if (container.msRequestFullscreen) {
                     container.msRequestFullscreen();
                 }
             } else {
@@ -171,29 +243,34 @@
         const form = document.getElementById('uploadForm');
         const submitBtn = document.getElementById('submitBtn');
         const loadingState = document.getElementById('loadingState');
+        const progressMessage = document.getElementById('progressMessage');
         const errorState = document.getElementById('errorState');
         const errorMessage = document.getElementById('errorMessage');
         const resultsSection = document.getElementById('resultsSection');
         
-        const heatmapImg = document.getElementById('heatmapImg');
+        const heatmapVideo = document.getElementById('heatmapVideo');
         const pcViewer = document.getElementById('pcViewer');
         const meshViewer = document.getElementById('meshViewer');
+        
+        let pollInterval;
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const fileInput = document.getElementById('imageInput');
+            const fileInput = document.getElementById('fileInput');
             if (fileInput.files.length === 0) return;
 
-            // Update UI for loading
             submitBtn.disabled = true;
             submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
             resultsSection.classList.add('hidden');
             errorState.classList.add('hidden');
             loadingState.classList.remove('hidden');
+            progressMessage.textContent = "Uploading file to server...";
 
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
+            formData.append('cam_height', document.getElementById('camHeight').value);
+            formData.append('model_size', document.getElementById('modelSize').value);
 
             try {
                 const response = await fetch('/process', {
@@ -206,24 +283,71 @@
                 if (!response.ok) {
                     throw new Error(data.error || 'Server processing failed');
                 }
-
-                // Update UI with results
-                heatmapImg.src = data.heatmap_url;
-                pcViewer.src = data.pointcloud_url;
-                meshViewer.src = data.mesh_url;
-
-                loadingState.classList.add('hidden');
-                resultsSection.classList.remove('hidden');
+                
+                const taskId = data.task_id;
+                pollInterval = setInterval(() => pollTaskStatus(taskId), 1500);
                 
             } catch (error) {
-                loadingState.classList.add('hidden');
-                errorMessage.textContent = error.message;
-                errorState.classList.remove('hidden');
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                showError(error.message);
             }
         });
+        
+        async function pollTaskStatus(taskId) {
+            try {
+                const response = await fetch(`/status/${taskId}`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch status');
+                }
+                
+                if (data.status === 'processing') {
+                    progressMessage.textContent = data.progress;
+                } else if (data.status === 'completed') {
+                    clearInterval(pollInterval);
+                    
+                    heatmapVideo.src = data.result.heatmap_url;
+                    meshViewer.src = data.result.mesh_url;
+
+                    // Handle graceful fallback for GLB vs PLY
+                    const pcUrl = data.result.pointcloud_url;
+                    if (pcUrl.endsWith('.ply')) {
+                        if (window.loadSplat) {
+                            window.loadSplat(pcUrl);
+                        }
+                    } else {
+                        // Fallback to GLB Point Cloud for smaller models
+                        document.getElementById('gsViewer').style.display = 'none';
+                        pcViewer.style.display = 'block';
+                        pcViewer.src = pcUrl;
+                    }
+
+                    loadingState.classList.add('hidden');
+                    resultsSection.classList.remove('hidden');
+                    resetSubmitButton();
+                    
+                } else if (data.status === 'error') {
+                    clearInterval(pollInterval);
+                    showError(data.error);
+                }
+                
+            } catch (error) {
+                clearInterval(pollInterval);
+                showError(error.message);
+            }
+        }
+        
+        function showError(msg) {
+            loadingState.classList.add('hidden');
+            errorMessage.textContent = msg;
+            errorState.classList.remove('hidden');
+            resetSubmitButton();
+        }
+        
+        function resetSubmitButton() {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
     </script>
 </body>
 </html>
