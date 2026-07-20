@@ -1,10 +1,10 @@
 import { state } from './state.js';
-import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle } from './map.js';
+import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle, setPassPairsData, clearPassPairsData } from './map.js';
 import { stringToColor } from './utils.js';
-import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP, fetchSam2Preview } from './api.js';
+import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP, fetchSam2Preview, fetchSam2PreviewCorridor, fetchPassDiagnostics } from './api.js';
 
-export function handleMapClick(originalName) {
-    const target = state.fullResults.find(r => r.original_name === originalName);
+export function handleMapClick(clickedName) {
+    const target = state.fullResults.find(r => r.original_name === clickedName || r.filename === clickedName);
     if (target) {
         const selLocation = document.getElementById("sel-location");
         if (selLocation.value !== target.location) {
@@ -46,7 +46,6 @@ export function setupDz(dzId, inId, nameId, isMulti, callback) {
     const inp = document.getElementById(inId);
     const nm = document.getElementById(nameId);
     
-    // Add proxy click listener to open the file selector natively
     dz.addEventListener('click', () => inp.click());
     
     dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add("drag-active"); });
@@ -138,10 +137,12 @@ export function updateCarousel(panMap = true) {
     }
     imgRect.src = activeViewData.rect_url.split('?')[0] + `?t=${ts}`;
 
-    // Pass the exact backend detection index (d.det_idx) instead of visual array loop idx
-    document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d) => `
-        <tr>
-            <td><span class="color-dot" style="background-color: ${d.color || stringToColor(d.class)};"></span>${d.class}</td>
+    document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d) => {
+        let badge = '';
+        if(d.is_stitched || d.is_grouped) badge = `<span class="badge" style="background:#ff9900; margin-left:4px;" title="Spans multiple frames: ${d.spanned_frames ? d.spanned_frames.join(', ') : ''}">MULTI</span>`;
+        
+        return `<tr>
+            <td><span class="color-dot" style="background-color: ${d.color || stringToColor(d.class)};"></span>${d.class} ${badge}</td>
             <td>${(d.conf*100).toFixed(0)}%</td>
             <td><strong>${d.area_sqm} m²</strong></td>
             <td class="text-right">
@@ -155,8 +156,8 @@ export function updateCarousel(panMap = true) {
                     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
             </td>
-        </tr>
-    `).join('') || `<tr><td colspan="4" style="text-align:center; padding:10px; color:var(--muted);">NO DETECTIONS FOUND</td></tr>`;
+        </tr>`;
+    }).join('') || `<tr><td colspan="4" style="text-align:center; padding:10px; color:var(--muted);">NO DETECTIONS FOUND</td></tr>`;
 
     state.activeMarkerFilename = current.original_name;
     state.nodesGeoJson.features.forEach(f => { f.properties.active = (f.properties.original_name === state.activeMarkerFilename); });
@@ -212,6 +213,149 @@ export function toggleWarningsModal(show) {
     else modal.close();
 }
 
+export function toggleDiagnosticsModal(show) {
+    const modal = document.getElementById("diagnostics-modal");
+    if (show) modal.showModal();
+    else modal.close();
+}
+
+function severityClass(absVal, warnAt, badAt) {
+    if (absVal >= badAt) return 'text-red-ish';
+    if (absVal >= warnAt) return 'text-orange';
+    return 'text-green';
+}
+
+export function renderPassDiagnostics(report) {
+    const summaryEl = document.getElementById("diag-summary");
+    const tableBody = document.getElementById("diag-table-body");
+    const emptyMsg = document.getElementById("diag-empty-msg");
+
+    const s = report.summary;
+    if (!s || s.pair_count === 0) {
+        summaryEl.innerHTML = "";
+        tableBody.innerHTML = "";
+        emptyMsg.classList.remove("hidden");
+        clearPassPairsData();
+        return;
+    }
+    emptyMsg.classList.add("hidden");
+
+    summaryEl.innerHTML = `
+        <div class="stat-card"><span class="stat-label">Matched Pairs</span><span class="stat-value">${s.pair_count}</span></div>
+        <div class="stat-card"><span class="stat-label">Mean Lateral Drift</span><span class="stat-value">${s.mean_lateral_m} m</span></div>
+        <div class="stat-card"><span class="stat-label">Max Lateral Drift</span><span class="stat-value">${s.max_lateral_m} m</span></div>
+        <div class="stat-card"><span class="stat-label">Mean Longitudinal Drift</span><span class="stat-value">${s.mean_longitudinal_m} m</span></div>
+        <div class="stat-card"><span class="stat-label">Max Longitudinal Drift</span><span class="stat-value">${s.max_longitudinal_m} m</span></div>
+        <div class="stat-card"><span class="stat-label">Mean ΔHeading</span><span class="stat-value">${s.mean_delta_heading}°</span></div>
+        <div class="stat-card"><span class="stat-label">Max ΔHeading</span><span class="stat-value">${s.max_delta_heading}°</span></div>
+    `;
+
+    tableBody.innerHTML = report.pairs.map(p => `
+        <tr>
+            <td>${p.frame_a}</td>
+            <td>${p.frame_b}</td>
+            <td>${p.distance_m}</td>
+            <td class="${severityClass(Math.abs(p.corrected_lateral_m), 0.5, 1.5)}">${p.corrected_lateral_m}</td>
+            <td>${p.corrected_longitudinal_m}</td>
+            <td class="${severityClass(Math.abs(p.delta_heading), 2, 5)}">${p.delta_heading}°</td>
+            <td>${p.speed_a_ms ?? '-'} / ${p.speed_b_ms ?? '-'}</td>
+        </tr>
+    `).join('');
+
+    setPassPairsData(report.pairs);
+}
+
+export function setupDiagnosticsUI() {
+    const btnOpen = document.getElementById("btn-analyze-passes");
+    const btnClose = document.getElementById("btn-close-diagnostics");
+    const btnRun = document.getElementById("btn-run-diagnostics");
+    const btnAlign = document.getElementById("btn-align-passes");
+    const inputGap = document.getElementById("diag-min-gap");
+    const inputDist = document.getElementById("diag-max-dist");
+
+    btnOpen.onclick = () => {
+        toggleDiagnosticsModal(true);
+        if (state.fullResults.length > 0 && document.getElementById("diag-table-body").innerHTML === "") {
+            btnRun.click();
+        }
+    };
+    
+    btnClose.onclick = () => toggleDiagnosticsModal(false);
+
+    btnRun.onclick = async () => {
+        if (state.fullResults.length === 0) {
+            alert("No processed project data available yet.");
+            return;
+        }
+        btnRun.disabled = true;
+        const originalText = btnRun.innerHTML;
+        btnRun.innerHTML = "ANALYZING...";
+        try {
+            const minGap = parseInt(inputGap.value, 10) || 15;
+            const maxDist = parseFloat(inputDist.value) || 4.0;
+            const report = await fetchPassDiagnostics(minGap, maxDist);
+            renderPassDiagnostics(report);
+            btnAlign.classList.remove("hidden");
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            btnRun.disabled = false;
+            btnRun.innerHTML = originalText;
+        }
+    };
+
+    btnAlign.onclick = async () => {
+        btnAlign.disabled = true;
+        btnAlign.innerHTML = "ALIGNING (ICP)...";
+        try {
+            const minGap = parseInt(inputGap.value, 10) || 15;
+            const maxDist = parseFloat(inputDist.value) || 4.0;
+            const res = await fetch("/align_passes", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ results: state.fullResults, min_index_gap: minGap, max_dist_m: maxDist })
+            });
+            const data = await res.json();
+            
+            if (data.success) {
+                state.fullResults = data.results;
+                refreshLocationsUI(); 
+                
+                state.fullGeojson.features = [];
+                state.fullResults.forEach(r => state.fullGeojson.features.push(...r.geojson));
+                updateMapSource('defects-source', state.fullGeojson);
+                
+                if(state.trailGeoJson.features.length > 0) {
+                    state.trailGeoJson.features[0].geometry.coordinates = state.fullResults.map(r => [r.lon, r.lat]);
+                    updateMapSource('trail-source', state.trailGeoJson);
+                }
+                
+                state.nodesGeoJson.features.forEach(f => {
+                    const r = state.fullResults.find(x => x.original_name === f.properties.original_name);
+                    if (r) f.geometry.coordinates = [r.lon, r.lat];
+                });
+                updateMapSource('nodes-source', state.nodesGeoJson);
+                
+                clearOrthomosaics();
+                const chkF = document.getElementById("chk-layer-front").checked;
+                const chkR = document.getElementById("chk-layer-rear").checked;
+                state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
+                
+                updateCarousel(false);
+                toggleDiagnosticsModal(false);
+                alert("Trajectory successfully aligned. Defect locations have been automatically re-projected onto the corrected GPS baseline.");
+            } else {
+                alert(data.error);
+            }
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            btnAlign.disabled = false;
+            btnAlign.innerHTML = "AUTO-ALIGN PASSES (ICP)";
+        }
+    };
+}
+
 export function setupCalibrationUI() {
     const btnOpen = document.getElementById("btn-open-calibrate");
     const btnClose = document.getElementById("btn-close-calibrate");
@@ -223,7 +367,7 @@ export function setupCalibrationUI() {
     const previewImg = document.getElementById("img-calibrate-preview");
     const loader = document.getElementById("calibrate-loader");
     
-    const inputs = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'lane_width'];
+    const inputs = ['yaw_offset', 'fov', 'cam_height', 'z_near', 'z_far', 'lane_width'];
     
     const getCalibrationValues = () => {
         let calib = {};
@@ -239,7 +383,7 @@ export function setupCalibrationUI() {
             const el = document.getElementById(`calib-${id}`);
             const lbl = document.getElementById(`lbl-${id}`);
             if (el && lbl) {
-                const unit = ['pitch_offset', 'roll_offset', 'yaw_offset', 'fov'].includes(id) ? '°' : 'm';
+                const unit = ['yaw_offset', 'fov'].includes(id) ? '°' : 'm';
                 lbl.textContent = `${el.value}${unit}`;
             }
         });
@@ -274,8 +418,8 @@ export function setupCalibrationUI() {
         if(state.appResults.length === 0) return;
         const current = state.appResults[state.currentIndex];
         const baseCalib = current.views[state.currentDirection].calibration || {
-            pitch_offset: 0, roll_offset: 0, yaw_offset: 0,
-            fov: 100, cam_height: 1.6, z_near: 1.2, z_far: 8.0, lane_width: 6.0
+            yaw_offset: 0,
+            fov: 100, cam_height: 1.6, z_near: 1.2, z_far: 5.0, lane_width: 6.0
         };
         setCalibrationValues(baseCalib);
         previewImg.src = current.views[state.currentDirection].rect_url;
@@ -559,6 +703,10 @@ export function initDrawMode() {
     window.drawAction = null;
     window.drawIndex = -1;
     window.drawPoints = [];
+    window.drawFrames = [];
+    window.drawFrameActions = [];
+    window.corridorMeta = null;
+    window.corridorImageUrl = null;
 
     const overlay = document.getElementById("draw-overlay");
     const imgDraw = document.getElementById("img-draw-preview");
@@ -619,6 +767,11 @@ export function initDrawMode() {
         window.drawAction = "re-outline";
         window.drawIndex = idx;
         window.drawPoints = [];
+        window.drawFrames = [state.currentIndex];
+        window.drawFrameActions = [];
+        window.corridorMeta = null;
+        window.corridorImageUrl = null;
+        updateDrawFramesUI();
         
         const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
         imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
@@ -631,6 +784,11 @@ export function initDrawMode() {
         window.drawMode = true;
         window.drawAction = "add";
         window.drawPoints = [];
+        window.drawFrames = [state.currentIndex];
+        window.drawFrameActions = [];
+        window.corridorMeta = null;
+        window.corridorImageUrl = null;
+        updateDrawFramesUI();
         
         const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
         imgDraw.src = editSrc.split('?')[0] + '?t=' + Date.now();
@@ -638,9 +796,95 @@ export function initDrawMode() {
         document.getElementById("draw-class-container").classList.remove("hidden");
     };
 
+    document.getElementById("btn-draw-prev").onclick = async () => {
+        const actions = window.drawFrameActions;
+        if (actions.length > 0 && actions[actions.length - 1] === 'next') {
+            actions.pop();
+            window.drawFrames.pop();
+            await loadCorridor();
+            return;
+        }
+        const firstIdx = window.drawFrames[0];
+        if(firstIdx > 0) {
+            window.drawFrames.unshift(firstIdx - 1);
+            actions.push('prev');
+            await loadCorridor();
+        }
+    };
+    
+    document.getElementById("btn-draw-next").onclick = async () => {
+        const actions = window.drawFrameActions;
+        if (actions.length > 0 && actions[actions.length - 1] === 'prev') {
+            actions.pop();
+            window.drawFrames.shift();
+            await loadCorridor();
+            return;
+        }
+        const lastIdx = window.drawFrames[window.drawFrames.length - 1];
+        if(lastIdx < state.appResults.length - 1) {
+            window.drawFrames.push(lastIdx + 1);
+            actions.push('next');
+            await loadCorridor();
+        }
+    };
+    
+    async function loadCorridor() {
+        if(window.drawFrames.length === 1) {
+            updateDrawFramesUI();
+            const current = state.appResults[window.drawFrames[0]];
+            const editSrc = current.views[state.currentDirection].edit_bev_url || current.views[state.currentDirection].raw_bev_url;
+            document.getElementById("img-draw-preview").src = editSrc.split('?')[0] + '?t=' + Date.now();
+            window.corridorMeta = null;
+            window.corridorImageUrl = null;
+            return;
+        }
+        
+        updateDrawFramesUI();
+        const framesData = window.drawFrames.map(idx => {
+            const r = state.appResults[idx];
+            return {
+                filename: r.filename,
+                bev_url: r.views[state.currentDirection].raw_bev_url,
+                footprint: r.views[state.currentDirection].footprint
+            };
+        });
+        
+        document.getElementById("btn-draw-prev").disabled = true;
+        document.getElementById("btn-draw-next").disabled = true;
+        
+        try {
+            const res = await fetch("/render_corridor", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ frames: framesData, view: state.currentDirection })
+            });
+            const data = await res.json();
+            if(data.success) {
+                document.getElementById("img-draw-preview").src = data.url + "?t=" + Date.now();
+                window.corridorMeta = data.meta;
+                window.corridorImageUrl = data.url;
+                window.drawPoints = [];
+                renderDrawPoints();
+            }
+        } catch(e) {
+            console.error(e);
+        } finally {
+            updateDrawFramesUI();
+        }
+    }
+    
+    function updateDrawFramesUI() {
+        document.getElementById("draw-frame-range").textContent = `${window.drawFrames.length} FRAME(S)`;
+        document.getElementById("btn-draw-prev").disabled = (window.drawFrames[0] === 0);
+        document.getElementById("btn-draw-next").disabled = (window.drawFrames[window.drawFrames.length - 1] === state.appResults.length - 1);
+    }
+
     document.getElementById("btn-draw-cancel").onclick = () => {
         window.drawMode = false;
         window.drawPoints = [];
+        window.drawFrames = [];
+        window.drawFrameActions = [];
+        window.corridorMeta = null;
+        window.corridorImageUrl = null;
         document.getElementById("draw-overlay").innerHTML = "";
         document.getElementById("draw-modal").close();
     };
@@ -675,10 +919,6 @@ export function initDrawMode() {
                 return;
             }
             
-            const current = state.appResults[state.currentIndex];
-            const view = state.currentDirection;
-            const calib = current.views[view].calibration || {};
-            
             const btnDone = document.getElementById("btn-draw-done");
             
             btnSam2.disabled = true;
@@ -686,7 +926,15 @@ export function initDrawMode() {
             btnSam2.innerHTML = "COMPUTING...";
             
             try {
-                const newPoints = await fetchSam2Preview(current.filename, view, calib, window.drawPoints);
+                let newPoints;
+                if (window.drawFrames.length > 1 && window.corridorImageUrl) {
+                    newPoints = await fetchSam2PreviewCorridor(window.corridorImageUrl, window.drawPoints);
+                } else {
+                    const current = state.appResults[window.drawFrames[0]];
+                    const view = state.currentDirection;
+                    const calib = current.views[view].calibration || {};
+                    newPoints = await fetchSam2Preview(current.filename, view, calib, window.drawPoints);
+                }
                 window.drawPoints = newPoints;
                 renderDrawPoints();
             } catch(err) {
@@ -713,10 +961,53 @@ export function initDrawMode() {
         btn.innerHTML = "SAVING...";
         
         try {
-            await modifyDefects(window.drawAction, window.drawIndex, window.drawPoints, className);
+            let action = window.drawAction;
+            let payload = {
+                filename: state.appResults[window.drawFrames[0]].filename,
+                view: state.currentDirection,
+                action: action,
+                index: window.drawIndex,
+                points: window.drawPoints,
+                class_name: className,
+                calibration: state.appResults[window.drawFrames[0]].views[state.currentDirection].calibration,
+                use_sam2: false
+            };
+            
+            if(window.drawFrames.length > 1) {
+                payload.action = "add_corridor";
+                payload.filenames = window.drawFrames.map(idx => state.appResults[idx].filename);
+                payload.corridor_meta = window.corridorMeta;
+            }
+            
+            const res = await fetch("/modify_defects", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if(data.success) {
+                const current = state.appResults[window.drawFrames[0]];
+                current.views[state.currentDirection].defects = data.defects;
+                
+                if(payload.filenames) {
+                    state.fullGeojson.features = state.fullGeojson.features.filter(f => !(payload.filenames.includes(f.properties.filename) && f.properties.view === state.currentDirection));
+                } else {
+                    state.fullGeojson.features = state.fullGeojson.features.filter(f => !(f.properties.filename === current.filename && f.properties.view === state.currentDirection));
+                }
+                
+                state.fullGeojson.features.push(...data.geojson);
+                
+                updateMapSource('defects-source', state.fullGeojson);
+                updateCarousel(false);
+            } else {
+                alert(data.error || "Modification failed");
+            }
         } finally {
             window.drawMode = false;
             window.drawPoints = [];
+            window.drawFrames = [];
+            window.drawFrameActions = [];
+            window.corridorMeta = null;
+            window.corridorImageUrl = null;
             document.getElementById("draw-overlay").innerHTML = "";
             document.getElementById("draw-modal").close();
             btn.disabled = false; 
@@ -822,7 +1113,6 @@ async function modifyDefects(action, index, points=null, className=null) {
                 points: points,
                 class_name: className,
                 calibration: calib
-                // Note: use_sam2 is not sent so backend defaults to False (saves points exactly as requested)
             })
         });
         const data = await res.json();
@@ -832,7 +1122,7 @@ async function modifyDefects(action, index, points=null, className=null) {
             current.geojson = current.geojson.filter(f => f.properties.view !== view);
             current.geojson.push(...data.geojson);
             
-            state.fullGeojson.features = state.fullGeojson.features.filter(f => !(f.properties.filename === current.original_name && f.properties.view === view));
+            state.fullGeojson.features = state.fullGeojson.features.filter(f => !(f.properties.filename === current.filename && f.properties.view === view));
             state.fullGeojson.features.push(...data.geojson);
             
             updateMapSource('defects-source', state.fullGeojson);
@@ -843,5 +1133,47 @@ async function modifyDefects(action, index, points=null, className=null) {
     } catch(e) {
         console.error(e);
         alert("Failed to modify defects");
+    }
+}
+
+export async function combineDefectSegments(triggerButtons) {
+    if (state.fullResults.length === 0) {
+        alert("No processed project data available yet.");
+        return;
+    }
+    const btns = triggerButtons.filter(Boolean);
+    const originalHtml = btns.map(b => b.innerHTML);
+    btns.forEach(b => { b.disabled = true; b.innerHTML = "COMBINING..."; });
+    
+    try {
+        const res = await fetch("/group_defects", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ results: state.fullResults })
+        });
+        const data = await res.json();
+        if(data.success) {
+            state.fullResults = data.results;
+            refreshLocationsUI(); 
+            
+            state.fullGeojson.features = [];
+            state.fullResults.forEach(r => state.fullGeojson.features.push(...r.geojson));
+            updateMapSource('defects-source', state.fullGeojson);
+            
+            clearOrthomosaics();
+            const chkF = document.getElementById("chk-layer-front").checked;
+            const chkR = document.getElementById("chk-layer-rear").checked;
+            state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
+            
+            updateCarousel(false);
+            alert("Defects successfully combined: continuous defects stitched into single polygons, and repeated observations of the same defect grouped into one entry.");
+        } else {
+            alert(data.error || "Failed to combine defect segments.");
+        }
+    } catch(e) {
+        console.error(e);
+        alert("Error combining defect segments.");
+    } finally {
+        btns.forEach((b, i) => { b.disabled = false; b.innerHTML = originalHtml[i]; });
     }
 }

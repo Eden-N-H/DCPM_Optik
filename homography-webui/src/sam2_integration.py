@@ -12,7 +12,12 @@ def load_sam2(checkpoint_path="models/sam2.1_hiera_large.pt", config="configs/sa
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    # NOTE: forced to CPU deliberately. SAM2's MPS backend (Apple Silicon)
+    # produces incorrect/unstable masks -- most visibly on the multi-frame
+    # corridor segmentation path, where a bad mask silently produces a
+    # garbage polygon instead of erroring out. CPU is slower but correct.
+    # Do NOT switch this back to "mps" even though it's available on Mac.
+    device = "cpu"
     sam2_model = build_sam2(config_file=config, ckpt_path=checkpoint_path, device=device)
     _sam2_predictor = SAM2ImagePredictor(sam2_model)
     return _sam2_predictor

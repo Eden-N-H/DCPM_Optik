@@ -5,7 +5,7 @@ import threading
 import queue
 
 from constants import ALLOWED_IMAGE_EXT, ALLOWED_VIDEO_EXT
-from geo_math import calculate_bearing, haversine_distance
+from geo_math import calculate_bearing, haversine_distance, apply_camera_offset
 from pipeline_image import process_single_image
 from pipeline_video import process_video_frames_async, get_video_frame_metadata
 
@@ -18,15 +18,44 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
     initial_ui_state = []
     has_video = any(a['ext'] in ALLOWED_VIDEO_EXT for a in image_data)
 
+    cam_off_fwd = options.get('cam_offset_forward_m', 0.0) or 0.0
+    cam_off_right = options.get('cam_offset_right_m', 0.0) or 0.0
+
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
             lat, lon = image_data[i]['lat'], image_data[i]['lon']
-            if i < len(image_data) - 1 and image_data[i+1]['lat'] is not None and lat is not None:
+
+            # Centered-difference heading: previously this was a pure forward
+            # difference (bearing from i to i+1 only), which systematically
+            # "looks ahead" through corners and produces a heading bias whose
+            # magnitude depends on the spacing between captured photos --
+            # spacing that isn't repeatable between sessions. Using the
+            # midpoint bearing (i-1 -> i+1) removes that directional bias for
+            # all interior points; only the first/last photo in a sequence
+            # fall back to a one-sided difference.
+            prev_valid = i > 0 and image_data[i-1].get('lat') is not None and lat is not None
+            next_valid = i < len(image_data) - 1 and image_data[i+1].get('lat') is not None and lat is not None
+
+            if prev_valid and next_valid:
+                heading = calculate_bearing(image_data[i-1]['lat'], image_data[i-1]['lon'], image_data[i+1]['lat'], image_data[i+1]['lon'])
+            elif next_valid:
                 heading = calculate_bearing(lat, lon, image_data[i+1]['lat'], image_data[i+1]['lon'])
+            elif prev_valid:
+                heading = calculate_bearing(image_data[i-1]['lat'], image_data[i-1]['lon'], lat, lon)
             else:
                 heading = image_data[i-1].get('heading', 0.0) if i > 0 else 0.0
+
             image_data[i]['heading'] = heading
+
             if lat is not None and lon is not None:
+                # Shift the raw GPS antenna fix to the true camera position
+                # before it's used for trail plotting, location clustering,
+                # or (downstream, in pipeline_image) defect world coordinates.
+                if cam_off_fwd or cam_off_right:
+                    image_data[i]['raw_lat'], image_data[i]['raw_lon'] = lat, lon
+                    lat, lon = apply_camera_offset(lat, lon, heading, cam_off_right, cam_off_fwd)
+                    image_data[i]['lat'], image_data[i]['lon'] = lat, lon
+
                 trail_coordinates.append([lon, lat])
                 if last_lat is not None and last_lon is not None:
                     dist = haversine_distance(last_lat, last_lon, lat, lon)
@@ -34,7 +63,7 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                 last_lat, last_lon = lat, lon
             initial_ui_state.append(image_data[i])
         elif image_data[i]['ext'] in ALLOWED_VIDEO_EXT:
-            video_frames = get_video_frame_metadata(image_data[i]['path'], options.get('interval_m', 2.0), image_data[i]['original_name'])
+            video_frames = get_video_frame_metadata(image_data[i]['path'], options, image_data[i]['original_name'])
             for vf in video_frames:
                 initial_ui_state.append(vf)
                 if vf.get('lat') is not None and vf.get('lon') is not None:
@@ -77,18 +106,20 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                     if is_cancelled(): break
                 else:
                     try:
-                        # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
                         telemetry = {
                             "lat": asset['lat'],
                             "lon": asset['lon'],
+                            "raw_lat": asset.get('raw_lat', asset['lat']),
+                            "raw_lon": asset.get('raw_lon', asset['lon']),
                             "heading": asset.get('heading', 0.0),
                             "grav_vec": asset.get('grav_vec'),
                             "klns": asset.get('klns'),
                             "xfov": asset.get('xfov'),
                             "yfov": asset.get('yfov'),
-                            # --- RESTORED FOR UI DISPLAY ONLY ---
                             "pitch": asset.get('pitch'),
-                            "roll": asset.get('roll')
+                            "roll": asset.get('roll'),
+                            "cam_offset_forward_m": cam_off_fwd,
+                            "cam_offset_right_m": cam_off_right
                         }
 
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
@@ -106,13 +137,13 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                         with open(os.path.join(upload_folder, f"process_meta_{asset['filename']}.json"), 'w') as f:
                             json.dump(process_meta_data, f)
                         
+                        # Preserve full precision floats to eliminate map rendering quantisation steps
                         result_payload = {
                             "original_name": asset['original_name'], "filename": asset['filename'],
-                            "lat": round(asset['lat'], 6) if asset['lat'] else None, 
-                            "lon": round(asset['lon'], 6) if asset['lon'] else None,
-                            # --- RESTORED FOR UI DISPLAY ONLY ---
-                            "pitch": round(asset.get('pitch'), 2) if asset.get('pitch') is not None else None,
-                            "roll": round(asset.get('roll'), 2) if asset.get('roll') is not None else None,
+                            "lat": asset['lat'] if asset['lat'] is not None else None, 
+                            "lon": asset['lon'] if asset['lon'] is not None else None,
+                            "pitch": asset.get('pitch') if asset.get('pitch') is not None else None,
+                            "roll": asset.get('roll') if asset.get('roll') is not None else None,
                             "location": asset['location'], "geojson": geo_feats, "views": {}
                         }
                         

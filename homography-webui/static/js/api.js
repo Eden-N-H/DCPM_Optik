@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds } from './map.js';
+import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds, setPassPairsData } from './map.js';
 import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
 
 export async function triggerZipExport(endpoint, btnId, filename) {
@@ -62,7 +62,24 @@ export async function recalculateProject(calibrationConfig) {
     return data.results;
 }
 
-// NEW: Generates a SAM2 polygon preview dynamically
+export async function fetchFrameTrace(filename) {
+    const res = await fetch(`/trace/${encodeURIComponent(filename)}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || "No trace data available for this frame");
+    return data;
+}
+
+export async function fetchPassDiagnostics(minIndexGap, maxDistM) {
+    const res = await fetch("/diagnose_passes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ results: state.fullResults, min_index_gap: minIndexGap, max_dist_m: maxDistM })
+    });
+    const data = await res.json();
+    if(!res.ok || !data.success) throw new Error(data.error || "Failed to run pass diagnostics");
+    return data;
+}
+
+// Generates a SAM2 polygon preview dynamically for a single frame's rect/BEV space
 export async function fetchSam2Preview(filename, view, calibrationConfig, points) {
     const res = await fetch("/preview_sam2", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -70,6 +87,20 @@ export async function fetchSam2Preview(filename, view, calibrationConfig, points
     });
     const data = await res.json();
     if(!res.ok || !data.success) throw new Error(data.error || "Failed to generate SAM2 mask.");
+    return data.points;
+}
+
+// Generates a SAM2 polygon preview directly on a stitched multi-frame
+// corridor image (used when the mask editor has more than one frame
+// loaded). Points are normalized 0-1 relative to the corridor image
+// itself, NOT to any single source frame's rect/BEV space.
+export async function fetchSam2PreviewCorridor(corridorUrl, points) {
+    const res = await fetch("/preview_sam2_corridor", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ corridor_url: corridorUrl, points })
+    });
+    const data = await res.json();
+    if(!res.ok || !data.success) throw new Error(data.error || "Failed to generate SAM2 mask on corridor.");
     return data.points;
 }
 
@@ -101,6 +132,8 @@ function startSSE(taskId, totalImages) {
                 document.getElementById("btn-export-zip").classList.add("hidden");
                 document.getElementById("btn-export-flat-zip").classList.add("hidden");
                 document.getElementById("btn-toggle-map").classList.add("hidden");
+                document.getElementById("btn-analyze-passes").classList.add("hidden");
+                document.getElementById("btn-group-defects").classList.add("hidden");
             } else if (msg.type === "cancelled") {
                 addWarning(`[SYSTEM] User aborted process. Partial state saved.`);
             }
@@ -195,17 +228,22 @@ export async function executeJob() {
     fd.append("interval_m", document.getElementById("interval-m").value);
     
     // Advanced Options
-    fd.append("comp_roll", document.getElementById("chk-comp-roll").checked ? "true" : "false");
-    fd.append("comp_pitch", document.getElementById("chk-comp-pitch").checked ? "true" : "false");
     fd.append("undistort", document.getElementById("chk-undistort").checked ? "true" : "false");
     fd.append("ego_mask", document.getElementById("chk-ego-mask").checked ? "true" : "false");
-    fd.append("skip_ai", document.getElementById("chk-skip-ai").checked ? "true" : "false"); // NEW CHECKBOX
+    fd.append("skip_ai", document.getElementById("chk-skip-ai").checked ? "true" : "false");
     fd.append("conf_thresh", document.getElementById("num-conf").value);
 
-    // Grid Size Options (NEW)
+    // Grid Size Options
     fd.append("z_near", document.getElementById("grid-z-near").value);
     fd.append("z_far", document.getElementById("grid-z-far").value);
     fd.append("lane_width", document.getElementById("grid-lane-width").value);
+    fd.append("gps_lag_sec", document.getElementById("gps-lag-sec").value);
+
+    // GPS antenna -> camera lever-arm offset
+    const camOffFwd = document.getElementById("cam-offset-forward");
+    const camOffRight = document.getElementById("cam-offset-right");
+    fd.append("cam_offset_forward_m", camOffFwd ? camOffFwd.value : "0.0");
+    fd.append("cam_offset_right_m", camOffRight ? camOffRight.value : "0.0");
     
     if(state.stateLastLat !== null) fd.append("last_lat", state.stateLastLat);
     if(state.stateLastLon !== null) fd.append("last_lon", state.stateLastLon);
@@ -232,6 +270,8 @@ export async function executeJob() {
     document.getElementById("btn-export-zip").classList.remove("hidden");
     document.getElementById("btn-export-flat-zip").classList.remove("hidden");
     document.getElementById("btn-toggle-map").classList.remove("hidden");
+    document.getElementById("btn-analyze-passes").classList.remove("hidden");
+    document.getElementById("btn-group-defects").classList.remove("hidden");
     document.getElementById("progress-container").classList.remove("hidden");
     
     state.warningCount = 0;
@@ -255,6 +295,7 @@ export async function executeJob() {
     state.fullGeojson = { type: "FeatureCollection", features: [] };
     state.nodesGeoJson = { type: "FeatureCollection", features: [] };
     state.trailGeoJson = { type: "FeatureCollection", features: [] };
+    state.passPairsGeoJson = { type: "FeatureCollection", features: [] };
     state.fullResults = []; state.appResults = [];
 
     initMap(handleMapClick);
@@ -292,6 +333,8 @@ export async function executeJob() {
         document.getElementById("upload-panel").classList.remove("hidden"); 
         document.getElementById("progress-container").classList.add("hidden");
         document.getElementById("btn-toggle-map").classList.add("hidden");
+        document.getElementById("btn-analyze-passes").classList.add("hidden");
+        document.getElementById("btn-group-defects").classList.add("hidden");
         checkCanProcess();
     }
 }

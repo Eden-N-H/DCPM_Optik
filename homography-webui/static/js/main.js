@@ -1,12 +1,13 @@
 import { state } from './state.js';
 import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, addOrthomosaicShingle } from './map.js';
-import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal } from './ui.js';
+import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal, setupDiagnosticsUI, combineDefectSegments } from './ui.js';
 import { executeJob, triggerZipExport, cancelJob } from './api.js';
 
 document.addEventListener("DOMContentLoaded", () => {
     
     initResizers();
     setupCalibrationUI();
+    setupDiagnosticsUI();
     initDrawMode();
     initFullscreenModal();
 
@@ -80,6 +81,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const a = document.createElement("a");
         a.href = url; a.download = "dcpm_project.json"; a.click(); URL.revokeObjectURL(url);
     };
+    
+    const btnGroupDefectsHeader = document.getElementById("btn-group-defects");
+    if (btnGroupDefectsHeader) {
+        btnGroupDefectsHeader.onclick = () => combineDefectSegments([btnGroupDefectsHeader]);
+    }
 
     document.getElementById("in-load-project").addEventListener("change", (e) => {
         const file = e.target.files[0];
@@ -123,6 +129,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("btn-export-zip").classList.remove("hidden");
                 document.getElementById("btn-export-flat-zip").classList.remove("hidden");
                 document.getElementById("btn-toggle-map").classList.remove("hidden"); 
+                document.getElementById("btn-analyze-passes").classList.remove("hidden");
+                if (document.getElementById("btn-group-defects")) {
+                    document.getElementById("btn-group-defects").classList.remove("hidden");
+                }
                 
                 state.layoutPrefs.mapOn.isManual = false;
                 state.layoutPrefs.mapOff.isManual = false;
