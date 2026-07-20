@@ -12,9 +12,13 @@ export const state = {
     fullGeojson: { type: "FeatureCollection", features: [] },
     nodesGeoJson: { type: "FeatureCollection", features: [] },
     trailGeoJson: { type: "FeatureCollection", features: [] },
+    passPairsGeoJson: { type: "FeatureCollection", features: [] },
     
+    // Ortho (BEV) frame layers are always inserted directly beneath the
+    // fixed 'defects-layer' id in map.js, so the newest-added frame is
+    // always rendered on top of older ones. No rolling "lowest layer"
+    // pointer is needed for this any more -- see addOrthomosaicShingle.
     orthoLayerIds: [], 
-    lowestRasterLayerId: 'defects-layer', 
 
     fullResults: [],
     appResults: [], 

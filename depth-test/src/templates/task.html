@@ -1,101 +1,86 @@
 {% extends "base.html" %}
-
 {% block content %}
-<h1>Task Viewer</h1>
+
+<h1>TASK: {{ type }}</h1>
+<h3>ID: {{ task_id }}</h3>
+
 <p>
-    <strong>Task ID:</strong> {{ task_id }}<br>
-    <strong>Type:</strong> {{ type }}<br>
-    <strong>Status:</strong> <span id="statusText">{{ status }}</span>
+    STATUS: <span id="status-badge" class="status-badge status-{{ status }}">{{ status }}</span>
+    <br>CREATED: {{ created }}
 </p>
 
-{% if status == 'running' or status == 'queued' %}
-<p id="cancelContainer">
-    <button id="cancelBtn">[ Kill Process ]</button>
-</p>
+{% if status == 'running' %}
+<button id="cancel-btn" onclick="cancelTask()" style="background: red; color: white; margin-bottom:1rem;">ABORT TASK</button>
 {% endif %}
 
-<fieldset>
-    <legend>stdout.log</legend>
-    <pre id="logConsole" style="background: #000; color: #0f0; height: 500px; overflow-y: scroll; padding: 15px; margin: 0; white-space: pre-wrap; font-family: monospace;"></pre>
-</fieldset>
+<div class="log-container" id="log-output"></div>
 
-<div id="resultsContainer" style="display: none; margin-top: 30px;">
-    <h2>Task Outputs</h2>
-    <div id="imageGallery"></div>
+<div id="visual-results" style="display: none; margin-top: 2rem;">
+    <h2>OUTPUT FILES</h2>
+    <div class="grid-gallery" id="gallery"></div>
 </div>
-{% endblock %}
 
-{% block scripts %}
 <script>
     const taskId = '{{ task_id }}';
-    const logConsole = document.getElementById('logConsole');
-    const source = new EventSource(`/stream/logs/${taskId}`);
+    const logOutput = document.getElementById('log-output');
+    const statusBadge = document.getElementById('status-badge');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const visualResults = document.getElementById('visual-results');
+    const gallery = document.getElementById('gallery');
+    
+    const source = new EventSource('/stream/logs/' + taskId);
     
     source.onmessage = function(event) {
         const data = JSON.parse(event.data);
+        
         if (data.log) {
-            logConsole.textContent += data.log;
-            logConsole.scrollTop = logConsole.scrollHeight;
+            logOutput.appendChild(document.createTextNode(data.log));
+            logOutput.scrollTop = logOutput.scrollHeight;
         }
         
         if (data.status === 'completed' || data.status === 'failed') {
+            statusBadge.className = 'status-badge status-' + data.status;
+            statusBadge.innerText = data.status;
+            if (cancelBtn) cancelBtn.style.display = 'none';
             source.close();
-            document.getElementById('statusText').innerText = data.status;
             
-            const cancelContainer = document.getElementById('cancelContainer');
-            if(cancelContainer) cancelContainer.remove();
-            
-            // Auto load images if the task created any
+            // If completed, fetch any generated images
             if (data.status === 'completed') {
-                loadOutputImages();
+                fetchFiles();
             }
         }
     };
-
-    function loadOutputImages() {
-        fetch(`/api/tasks/${taskId}/files`)
-            .then(res => res.json())
-            .then(data => {
-                if (data.files && data.files.length > 0) {
-                    document.getElementById('resultsContainer').style.display = 'block';
-                    const gallery = document.getElementById('imageGallery');
-                    data.files.forEach(file => {
-                        const wrapper = document.createElement('div');
-                        wrapper.style.marginBottom = '20px';
-                        wrapper.style.border = '2px solid #000';
-                        wrapper.style.padding = '10px';
-                        
-                        const label = document.createElement('h3');
-                        label.innerText = file;
-                        label.style.marginTop = '0';
-                        
-                        const img = document.createElement('img');
-                        img.src = `/download/${taskId}/${file}`;
-                        img.style.maxWidth = '100%';
-                        img.style.display = 'block';
-                        
-                        wrapper.appendChild(label);
-                        wrapper.appendChild(img);
-                        gallery.appendChild(wrapper);
-                    });
-                }
-            });
-    }
-
-    const cancelBtn = document.getElementById('cancelBtn');
-    if (cancelBtn) {
-        cancelBtn.addEventListener('click', () => {
-            if(confirm("Are you sure you want to terminate this task?")) {
-                fetch(`/api/tasks/${taskId}/cancel`, {method: 'POST'})
-                    .then(r => r.json())
-                    .then(data => { if(data.success) { document.getElementById('cancelContainer').remove(); } });
-            }
-        });
+    
+    async function cancelTask() {
+        if(!confirm("ARE YOU SURE YOU WANT TO ABORT THIS PROCESS?")) return;
+        await fetch('/api/tasks/' + taskId + '/cancel', {method: 'POST'});
+        cancelBtn.style.display = 'none';
     }
     
-    // Auto-load if opened after the task is already completed
-    if('{{ status }}' === 'completed') {
-        loadOutputImages();
+    async function fetchFiles() {
+        const res = await fetch('/api/tasks/' + taskId + '/files');
+        const data = await res.json();
+        
+        if (data.files && data.files.length > 0) {
+            visualResults.style.display = 'block';
+            data.files.forEach(filename => {
+                const a = document.createElement('a');
+                a.href = `/download/${taskId}/${filename}`;
+                a.target = "_blank";
+                
+                const img = document.createElement('img');
+                img.src = `/download/${taskId}/${filename}`;
+                
+                a.appendChild(img);
+                gallery.appendChild(a);
+            });
+        }
+    }
+    
+    // Attempt to fetch files immediately in case the task was already done
+    if ('{{ status }}' === 'completed') {
+        fetchFiles();
     }
 </script>
+
 {% endblock %}

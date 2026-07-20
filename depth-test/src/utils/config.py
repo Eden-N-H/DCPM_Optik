@@ -131,7 +131,7 @@ class ConfigLoader:
             },
             "heads": {
                 "segmentation": {
-                    "num_classes": 3,        # Number of segmentation classes
+                    "num_classes": 8,        # Number of segmentation classes
                     "hidden_channels": 128,  # Hidden layer channels
                 },
                 "severity": {

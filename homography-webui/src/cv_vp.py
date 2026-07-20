@@ -77,23 +77,25 @@ def find_vanishing_point_hough(img_bgr):
 
 def calculate_pitch_yaw_deltas(u, v, w, h, fov, is_360):
     """
-    Translates a 2D pixel coordinate (u, v) into physical Pitch and Yaw offsets.
-    Handles the inverted logic required for 360 (moving the camera) vs Standard (moving the grid).
+    Translates a 2D pixel coordinate (u, v) representing the true horizon/VP 
+    into absolute Pitch and Yaw compensation offsets.
     """
     f = (w / 2.0) / math.tan(math.radians(fov) / 2.0)
     cx, cy = w / 2.0, h / 2.0
     
-    dx = u - cx
-    dy = v - cy
-    
+    if is_360:
+        # For 360 video, the offset is a CORRECTION applied to the spherical projection 
+        # to level the virtual camera. If VP is below center, camera is looking UP, 
+        # so we need to pitch DOWN (negative correction).
+        dx = u - cx
+        dy = cy - v 
+    else:
+        # For standard video, the offset represents the PHYSICAL pose of the camera.
+        # If VP is below center, the camera is physically pitched UP (positive pose).
+        dx = cx - u
+        dy = v - cy
+
     yaw_angle = math.degrees(math.atan2(dx, f))
     pitch_angle = math.degrees(math.atan2(dy, f)) 
     
-    if is_360:
-        # In 360, we move the Virtual Camera to center on the click. 
-        # Click high (negative dy) -> Pitch camera UP (positive).
-        return -pitch_angle, yaw_angle
-    else:
-        # In Standard, we move the 3D Grid to overlay the click.
-        # Click high (negative dy) -> Grid pitches DOWN to reach it.
-        return pitch_angle, yaw_angle
+    return pitch_angle, yaw_angle

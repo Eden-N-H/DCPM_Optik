@@ -1,4 +1,4 @@
-"""Flask Web UI Backend - SQLite-backed Subprocess Dispatcher."""
+"""Flask Web UI Backend - SQLite-backed Queue & Relay Dispatcher."""
 
 import os
 import sys
@@ -24,14 +24,17 @@ CHECKPOINTS_DIR = Path("checkpoints")
 DATA_DIR = Path("data")
 DB_PATH = TASKS_DIR / "tasks.db"
 
+
 def init_db():
-    """Initialize the SQLite database for task tracking."""
+    """Initialize the SQLite database for task tracking and relay orchestration."""
     TASKS_DIR.mkdir(exist_ok=True)
     CHECKPOINTS_DIR.mkdir(exist_ok=True)
     DATA_DIR.mkdir(exist_ok=True)
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Local UI tasks
     c.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
@@ -42,8 +45,43 @@ def init_db():
             updated_at TEXT NOT NULL
         )
     ''')
+    
+    # Relay workers registry
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS relay_workers (
+            worker_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            current_epoch INTEGER,
+            train_loss REAL,
+            val_loss REAL,
+            last_ping TEXT NOT NULL
+        )
+    ''')
+
+    # Relay Queue (DAG of tasks)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS relay_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            task TEXT NOT NULL,
+            status TEXT NOT NULL, 
+            payload TEXT, 
+            order_idx INTEGER
+        )
+    ''')
+    
+    # Relay state (Global variables for the cloud workers)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS relay_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            dataset_zip TEXT
+        )
+    ''')
+    # Insert default state
+    c.execute("INSERT OR IGNORE INTO relay_state (id, dataset_zip) VALUES (1, 'dataset.zip')")
+    
     conn.commit()
     conn.close()
+
 
 def update_task_status(task_id: str, status: str, pid: int = None):
     conn = sqlite3.connect(DB_PATH)
@@ -56,6 +94,7 @@ def update_task_status(task_id: str, status: str, pid: int = None):
     conn.commit()
     conn.close()
 
+
 def expand_dot_notation(flat_dict):
     """Convert flat dict with dot.notation.keys to a nested dictionary."""
     nested = {}
@@ -67,7 +106,6 @@ def expand_dot_notation(flat_dict):
                 current[part] = {}
             current = current[part]
         
-        # Convert numeric strings where appropriate
         if isinstance(value, str):
             if value.isdigit():
                 value = int(value)
@@ -78,6 +116,7 @@ def expand_dot_notation(flat_dict):
                     pass
         current[parts[-1]] = value
     return nested
+
 
 def run_subprocess(task_id: str, cmd: list, workspace: Path):
     """Background thread to monitor the subprocess and update the DB upon exit."""
@@ -90,6 +129,7 @@ def run_subprocess(task_id: str, cmd: list, workspace: Path):
     final_status = "completed" if proc.returncode == 0 else "failed"
     update_task_status(task_id, final_status)
 
+
 # ---------------------------------------------------------------------------
 # HTML Page Routes
 # ---------------------------------------------------------------------------
@@ -98,10 +138,17 @@ def run_subprocess(task_id: str, cmd: list, workspace: Path):
 def dashboard():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Get local tasks
     c.execute("SELECT id, type, status, created_at FROM tasks ORDER BY created_at DESC")
     tasks = [{"id": row[0], "type": row[1], "status": row[2], "created": row[3]} for row in c.fetchall()]
+    
+    # Get relay workers
+    c.execute("SELECT worker_id, status, current_epoch, train_loss, last_ping FROM relay_workers ORDER BY last_ping DESC")
+    workers = [{"id": r[0], "status": r[1], "epoch": r[2], "loss": r[3], "ping": r[4]} for r in c.fetchall()]
+    
     conn.close()
-    return render_template('index.html', tasks=tasks)
+    return render_template('index.html', tasks=tasks, relay_workers=workers)
 
 @app.route('/data')
 def data_view():
@@ -143,8 +190,94 @@ def task_view(task_id):
         return "Task not found", 404
     return render_template('task.html', task_id=task_id, type=row[0], status=row[1], created=row[2])
 
+
 # ---------------------------------------------------------------------------
-# Action API Routes (Spawning Subprocesses)
+# Relay Orchestrator API Routes
+# ---------------------------------------------------------------------------
+
+@app.route('/api/relay/register', methods=['POST'])
+def relay_register():
+    """Colab worker asks for the next task in the queue."""
+    worker_id = request.json.get("worker_id")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO relay_workers (worker_id, status, current_epoch, train_loss, val_loss, last_ping) VALUES (?, ?, 0, 0, 0, ?)",
+              (worker_id, "registered", datetime.now().isoformat()))
+              
+    # Pop next task
+    c.execute("SELECT id, task, payload FROM relay_queue WHERE status = 'pending' ORDER BY order_idx ASC LIMIT 1")
+    row = c.fetchone()
+    
+    if not row:
+        conn.commit()
+        conn.close()
+        return jsonify({"action": "wait"})
+        
+    q_id, task, payload = row
+    c.execute("UPDATE relay_queue SET status = 'running' WHERE id = ?", (q_id,))
+    
+    c.execute("SELECT dataset_zip FROM relay_state WHERE id = 1")
+    state = c.fetchone()
+    ds_zip = state[0] if state else "dataset.zip"
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"action": "run", "task": task, "task_id": q_id, "dataset_zip": ds_zip})
+
+@app.route('/api/relay/telemetry', methods=['POST'])
+def relay_telemetry():
+    """Colab worker reports progress or interruption."""
+    data = request.json
+    worker_id = data.get("worker_id")
+    status = data.get("status")
+    task_id = data.get("task_id")
+    epoch = data.get("epoch", 0)
+    train_loss = data.get("train_loss", 0.0)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Update worker telemetry
+    c.execute('''UPDATE relay_workers SET status = ?, current_epoch = ?, train_loss = ?, last_ping = ? WHERE worker_id = ?''', 
+              (status, epoch, train_loss, datetime.now().isoformat(), worker_id))
+    
+    # Update queue if a task has resolved
+    if task_id and status in ["completed", "failed", "failed_nan"]:
+        c.execute("UPDATE relay_queue SET status = ? WHERE id = ?", (status, task_id))
+        if "fail" in status:
+            c.execute("UPDATE relay_queue SET status = 'cancelled' WHERE status = 'pending'")
+            
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+@app.route('/api/run/auto', methods=['POST'])
+def run_auto():
+    """Queues the entire pipeline DAG for the Relay worker."""
+    task_id = str(uuid.uuid4())
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM relay_queue")
+    
+    # DAG Sequence
+    tasks = [
+        ("train_cyclegan", "{}"), 
+        ("translate", "{}"), 
+        ("train", "{}")
+    ]
+    
+    for idx, (t, p) in enumerate(tasks):
+        c.execute("INSERT INTO relay_queue (task, status, payload, order_idx) VALUES (?, 'pending', ?, ?)", (t, p, idx))
+        
+    conn.commit()
+    conn.close()
+    return jsonify({"task_id": task_id, "message": "Pipeline Queued. Cloud Worker will execute sequence."})
+
+
+# ---------------------------------------------------------------------------
+# Action API Routes (Spawning Local Subprocesses)
 # ---------------------------------------------------------------------------
 
 @app.route('/api/run/data', methods=['POST'])
@@ -153,11 +286,9 @@ def run_data():
     workspace = TASKS_DIR / task_id
     workspace.mkdir()
     
-    # Process form data
     form_data = request.form.to_dict()
     nested_overrides = expand_dot_notation(form_data)
     
-    # Load defaults, apply overrides, save to workspace
     config = ConfigLoader()
     merged = config._deep_merge(config.config, nested_overrides)
     
@@ -167,7 +298,6 @@ def run_data():
         
     output_dir = DATA_DIR / "road_quality"
     
-    # Save to DB
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO tasks (id, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -351,6 +481,7 @@ def list_task_files(task_id):
     files = sorted([f.name for f in task_dir.glob("*.png")])
     return jsonify({"files": files})
 
+
 # ---------------------------------------------------------------------------
 # Streaming & Downloads
 # ---------------------------------------------------------------------------
@@ -361,7 +492,6 @@ def stream_logs(task_id):
     log_file = TASKS_DIR / task_id / "stdout.log"
     
     def generate():
-        # Wait up to 5 seconds for log file to be created
         wait_time = 0
         while not log_file.exists() and wait_time < 5:
             time.sleep(0.5)
@@ -375,7 +505,6 @@ def stream_logs(task_id):
             while True:
                 line = f.readline()
                 if not line:
-                    # Check if process is still running
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
                     c.execute("SELECT status FROM tasks WHERE id = ?", (task_id,))
@@ -396,13 +525,11 @@ def stream_logs(task_id):
 @app.route('/download/<task_id>/<filename>')
 def download_file(task_id, filename):
     safe_filename = secure_filename(filename)
-    # FIX: Use absolute path and remove as_attachment to allow browser inline viewing
     directory = os.path.abspath(TASKS_DIR / task_id)
     return send_from_directory(directory, safe_filename)
 
 
 def start_server(args):
     init_db()
-    # Ensure Flask looks in the right directory for templates
     app.template_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), 'templates'))
     app.run(host=args.host, port=args.port, debug=False)

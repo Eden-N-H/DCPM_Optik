@@ -23,7 +23,7 @@ class MultiTaskModel(nn.Module):
     Also 'aspp_features' and 'domain_pred' if training with domain adaptation.
     """
 
-    def __init__(self, pretrained=True, num_classes=3, lambda_adv=0.1):
+    def __init__(self, pretrained=True, num_classes=8, lambda_adv=0.1):
         super().__init__()
         self.encoder = ResNet50DSCEncoder(pretrained=pretrained)
         self.projection = nn.Conv2d(2048, 2048, kernel_size=1, bias=False)  # 1x1 projection

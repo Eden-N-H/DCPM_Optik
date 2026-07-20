@@ -1,35 +1,88 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>DCPM Optik - Road Quality</title>
+    <meta charset="UTF-8">
+    <title>DCPM OPTIK - SYSTEM CONTROL</title>
     <style>
-        body { font-family: monospace; max-width: 1000px; margin: 40px auto; color: #000; background: #fff; }
-        nav { margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px; }
-        nav a { margin-right: 15px; text-decoration: none; color: #000; font-weight: bold; }
-        nav a:hover { text-decoration: underline; background: #000; color: #fff; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        th, td { border: 1px solid #000; padding: 8px; text-align: left; }
-        th { background: #eee; }
-        button, input, select { font-family: monospace; border: 1px solid #000; padding: 5px; background: #fff; }
-        button { font-weight: bold; cursor: pointer; }
-        button:hover { background: #000; color: #fff; }
-        fieldset { border: 2px solid #000; padding: 20px; margin-bottom: 20px; }
-        legend { font-weight: bold; padding: 0 5px; }
+        /* Brutalist CSS */
+        :root { --bg: #fff; --fg: #000; --border: 4px solid #000; }
+        body { font-family: monospace; background: var(--bg); color: var(--fg); margin: 2rem; line-height: 1.5; }
+        h1, h2, h3 { text-transform: uppercase; border-bottom: var(--border); padding-bottom: 0.5rem; margin-top: 2rem; }
+        
+        nav { border: var(--border); padding: 1rem; margin-bottom: 2rem; background: #eee; }
+        nav a { margin-right: 1rem; color: var(--fg); text-decoration: none; font-weight: bold; background: var(--bg); padding: 0.2rem 0.5rem; border: 2px solid #000; text-transform: uppercase; display: inline-block; margin-bottom: 0.5rem;}
+        nav a:hover { background: var(--fg); color: var(--bg); }
+        
+        form { border: var(--border); padding: 1rem; margin-bottom: 2rem; background: #fafafa; }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; font-weight: bold; margin-bottom: 0.2rem; text-transform: uppercase; }
+        input, select { font-family: monospace; font-size: 1rem; padding: 0.5rem; border: 2px solid #000; width: 100%; max-width: 500px; box-sizing: border-box; background: #fff; }
+        input:focus, select:focus { outline: 2px solid #00f; }
+        
+        button { font-family: monospace; font-size: 1.2rem; font-weight: bold; background: var(--fg); color: var(--bg); padding: 0.75rem 1.5rem; margin-top: 1rem; cursor: pointer; text-transform: uppercase; border: var(--border); transition: all 0.1s; }
+        button:hover { background: var(--bg); color: var(--fg); }
+        button:disabled { background: #666; color: #ccc; cursor: not-allowed; }
+        
+        table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; background: #fff; }
+        th, td { border: 2px solid #000; padding: 0.5rem; text-align: left; }
+        th { background: var(--fg); color: var(--bg); text-transform: uppercase; }
+        
+        .status-badge { padding: 2px 6px; font-weight: bold; border: 2px solid #000; text-transform: uppercase; font-size: 0.9em; }
+        .status-running { background: #ff0; color: #000; }
+        .status-completed { background: #0f0; color: #000; }
+        .status-failed { background: #f00; color: #fff; }
+        .status-queued { background: #ccc; color: #000; }
+        
+        .log-container { background: #000; color: #0f0; padding: 1rem; border: var(--border); height: 500px; overflow-y: scroll; font-family: monospace; white-space: pre-wrap; word-wrap: break-word; }
+        
+        .grid-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; margin-top: 1rem; }
+        .grid-gallery img { width: 100%; border: 2px solid #000; display: block; }
     </style>
+    <script>
+        async function handleFormSubmit(event, endpoint) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const btn = form.querySelector('button[type="submit"]');
+            
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = "PROCESSING...";
+            
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData // Fetch automatically sets multipart/form-data for files
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.task_id) {
+                    window.location.href = '/task/' + data.task_id;
+                } else {
+                    alert("ERROR: " + (data.error || JSON.stringify(data)));
+                    btn.disabled = false;
+                    btn.innerText = originalText;
+                }
+            } catch (err) {
+                alert("NETWORK ERROR: " + err.message);
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+        }
+    </script>
 </head>
 <body>
     <nav>
-        <a href="/">[ Dashboard ]</a>
-        <a href="/quicktest">[ Quick Test ]</a>
-        <a href="/data">[ Data Gen ]</a>
-        <a href="/train">[ Train ]</a>
-        <a href="/evaluate">[ Evaluate ]</a>
-        <a href="/reconstruct">[ Reconstruct ]</a>
-        <a href="/visualize">[ Visualize ]</a>
+        <a href="/">DASHBOARD</a>
+        <a href="/data">1. DATA GEN</a>
+        <a href="/train">2. TRAIN</a>
+        <a href="/evaluate">3. EVALUATE</a>
+        <a href="/reconstruct">4. RECONSTRUCT</a>
+        <a href="/visualize">5. VISUALIZE</a>
+        <a href="/quicktest">TEST. QUICKTEST</a>
     </nav>
-    <main>
-        {% block content %}{% endblock %}
-    </main>
-    {% block scripts %}{% endblock %}
+    
+    {% block content %}{% endblock %}
 </body>
 </html>

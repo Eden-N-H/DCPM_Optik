@@ -2,6 +2,7 @@ import os
 import re
 import struct
 import math
+import numpy as np
 import exifread
 from utils import sanitize_meta
 from parser_gpmf import parse_gpmf, extract_all_telemetry, flatten_global_ast
@@ -74,10 +75,14 @@ def extract_full_photo_metadata(filepath):
             # --- NEW VECTOR-BASED HOMOGRAPHY & YFOV TELEMETRY (From Tester) ---
             if 'GRAV' in constants:
                 grav_vec = list(constants['GRAV'])
-                # --- RESTORED FOR UI DISPLAY ONLY ---
-                # Derive Euler angles solely for UI display (does not affect vector homography)
+                
+                # Derive Exact Euler angles for homography and UI Display
                 gx, gy, gz = grav_vec
-                pitch_ui = -math.degrees(math.atan2(gz, gy))
+                norm = math.sqrt(gx*gx + gy*gy + gz*gz)
+                if norm > 1e-6:
+                    gx, gy, gz = gx/norm, gy/norm, gz/norm
+                    
+                pitch_ui = math.degrees(math.asin(np.clip(-gz, -1.0, 1.0)))
                 roll_ui = math.degrees(math.atan2(gx, gy))
             
             xfov = constants.get('XFOV', None)

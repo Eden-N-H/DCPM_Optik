@@ -29,7 +29,7 @@ class PipelineVisualizer:
         self.device = device
         
         # Setup colormap for segmentation
-        colors = [DEFAULT_COLOR_MAP.get(i, (0, 0, 0)) for i in range(7)]
+        colors = [DEFAULT_COLOR_MAP.get(i, (0, 0, 0)) for i in range(8)]
         self.seg_cmap = ListedColormap([[c[0]/255, c[1]/255, c[2]/255] for c in colors])
 
     @torch.no_grad()
@@ -149,14 +149,14 @@ class PipelineVisualizer:
         
         # Row 1: Ground Truth
         axes[0, 0].imshow(gt_rgb); axes[0, 0].set_title("1. Synthetic RGB (GT)")
-        axes[0, 1].imshow(gt_seg, cmap=self.seg_cmap, vmin=0, vmax=6); axes[0, 1].set_title("2. GT Segmentation")
+        axes[0, 1].imshow(gt_seg, cmap=self.seg_cmap, vmin=0, vmax=7); axes[0, 1].set_title("2. GT Segmentation")
         axes[0, 2].imshow(gt_depth, cmap='plasma'); axes[0, 2].set_title("3. GT Depth")
         axes[0, 3].imshow(gt_sev, cmap='hot'); axes[0, 3].set_title("4. GT Severity")
         axes[0, 4].imshow(gt_bev); axes[0, 4].set_title("5. GT BEV Map")
         
         # Row 2: Predictions
         axes[1, 0].imshow(pr_rgb); axes[1, 0].set_title("6. Translated RGB (CycleGAN)")
-        axes[1, 1].imshow(pr_seg, cmap=self.seg_cmap, vmin=0, vmax=6); axes[1, 1].set_title("7. Predicted Segmentation")
+        axes[1, 1].imshow(pr_seg, cmap=self.seg_cmap, vmin=0, vmax=7); axes[1, 1].set_title("7. Predicted Segmentation")
         axes[1, 2].imshow(pr_depth, cmap='plasma'); axes[1, 2].set_title("8. Predicted Depth")
         axes[1, 3].imshow(pr_sev, cmap='hot'); axes[1, 3].set_title("9. Predicted Severity")
         axes[1, 4].imshow(pr_bev); axes[1, 4].set_title("10. Predicted BEV Map")

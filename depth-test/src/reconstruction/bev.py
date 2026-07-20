@@ -15,6 +15,7 @@ DEFAULT_COLOR_MAP: Dict[int, Tuple[int, int, int]] = {
     4: (0, 0, 255),      # Puddle - blue
     5: (0, 255, 0),      # Patch - green
     6: (255, 255, 0),    # Manhole - yellow
+    7: (255, 0, 255),    # Vehicle - magenta
 }
 
 

@@ -1,40 +1,20 @@
-"""Road Quality Pipeline - Main Entry Point.
-
-Usage:
-    python -m src.main data --config configs/default.yaml --output-dir ./data/synthetic
-    python -m src.main train --config configs/default.yaml [--training.lr=1e-3] [--resume checkpoint.pt]
-    python -m src.main evaluate --config configs/default.yaml --checkpoint best_model.pt
-    python -m src.main reconstruct --config configs/default.yaml --checkpoint best_model.pt --input video.mp4 --output ./output
-    python -m src.main visualize --config configs/default.yaml --cyclegan-ckpt cyclegan.pt --multitask-ckpt multitask.pt --samples 5
-    python -m src.main quicktest --config configs/default.yaml --samples 5 --output-dir ./quicktest_out
-    python -m src.main web --config configs/default.yaml --checkpoint best_model.pt
-    python -m src.main colab --output Colab_Pipeline.ipynb
-"""
+"""Road Quality Pipeline - Main Entry Point."""
 
 import argparse
 import logging
 import sys
-import shutil
+import glob
 from pathlib import Path
+import threading
+import requests
 
 import torch
 from torch.utils.data import DataLoader
 
 from src.utils.config import ConfigLoader
-from src.utils.logging import ExperimentLogger
 from src.model import MultiTaskModel
-from src.cyclegan import ResNetGenerator
-from src.training import (
-    RoadQualityDataset,
-    MultiTaskTrainer,
-    MetricsComputer,
-    set_seed,
-)
-from src.reconstruction import ReconstructionPipeline
-from src.synth.dataset_builder import DatasetBuilder, DatasetConfig
-from src.visualization import PipelineVisualizer
+from src.training import RoadQualityDataset, MultiTaskTrainer, set_seed
 from src.generate_colab import generate_colab_notebook
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,11 +24,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _send_telemetry(url, worker_id, status, epoch=0, train_loss=0.0):
+    if not url: return
+    payload = {"worker_id": worker_id, "status": status, "epoch": epoch, "train_loss": train_loss}
+    def _post():
+        try: requests.post(url, json=payload, timeout=5)
+        except: pass
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def data(args, config):
-    """Run synthetic data generation."""
+    from src.synth.dataset_builder import DatasetBuilder, DatasetConfig
     logger.info("Starting synthetic dataset generation...")
-    
-    # Map ConfigLoader settings to DatasetConfig
     dataset_cfg = DatasetConfig(
         total_samples=config.get('scene_generation.dataset_size', 16036),
         split_ratios={
@@ -58,113 +45,130 @@ def data(args, config):
         },
         seed=config.get('seed', 42)
     )
-    
     builder = DatasetBuilder(config=dataset_cfg)
-    output_path = Path(args.output_dir)
+    manifest = builder.generate_dataset(output_root=Path(args.output_dir))
+    logger.info(f"Dataset generation complete. Saved to {args.output_dir}")
+
+
+def train_cyclegan(args, config):
+    from src.cyclegan.dataset import UnpairedRoadDataset
+    from src.cyclegan import CycleGANConfig, CycleGANTrainer
     
-    manifest = builder.generate_dataset(output_root=output_path)
-    logger.info(f"Dataset generation complete. Manifest saved to {output_path / 'manifest.json'}")
-    logger.info(f"Total samples generated: {manifest.total_samples}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Training CycleGAN on device: {device}")
+    
+    data_root = args.data_root if hasattr(args, 'data_root') and args.data_root else config.get('data.root', './data/road_quality')
+    
+    train_dataset = UnpairedRoadDataset(data_root, args.real_data, split='train', size=config.get('cyclegan.input_size', 256))
+    train_loader = DataLoader(train_dataset, batch_size=config.get('training.batch_size', 4), shuffle=True, num_workers=config.get('data.num_workers', 4), drop_last=True)
+    
+    cg_cfg = CycleGANConfig(
+        input_nc=config.get('cyclegan.input_nc', 4),
+        output_nc=config.get('cyclegan.output_nc', 3),
+        epochs=config.get('cyclegan.training.epochs', 200),
+        lr=config.get('cyclegan.training.lr', 0.0002),
+        checkpoint_dir=args.output_dir
+    )
+    
+    trainer = CycleGANTrainer(cg_cfg, device=device)
+    
+    if args.resume:
+        # Load weights logic here if needed
+        pass
+
+    _send_telemetry(args.webhook_url, args.worker_id, "started")
+    try:
+        for epoch in range(cg_cfg.epochs):
+            for i, batch in enumerate(train_loader):
+                losses = trainer.train_step(batch['A'], batch['B'], batch['mask_A'])
+                if losses.get('diverged', False):
+                    logger.error("CycleGAN diverged.")
+                    _send_telemetry(args.webhook_url, args.worker_id, "failed_nan")
+                    return
+            
+            trainer.step_schedulers()
+            _send_telemetry(args.webhook_url, args.worker_id, "running", epoch, losses.get('loss_G', 0.0))
+            
+            if (epoch + 1) % 5 == 0:
+                trainer._save_checkpoint(Path(args.output_dir), epoch, reason="")
+                
+        trainer._save_checkpoint(Path(args.output_dir), cg_cfg.epochs, reason="final")
+        _send_telemetry(args.webhook_url, args.worker_id, "completed")
+    except Exception as e:
+        logger.error(f"CycleGAN Failed: {e}")
+        _send_telemetry(args.webhook_url, args.worker_id, "failed")
+
+
+def translate(args, config):
+    from src.cyclegan.translator import DatasetTranslator
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    ckpt = Path(args.checkpoint)
+    if ckpt.is_dir():
+        ckpts = sorted(glob.glob(str(ckpt / "*.pt")))
+        if not ckpts:
+            raise FileNotFoundError(f"No checkpoints found in {ckpt}")
+        ckpt = Path(ckpts[-1])
+        
+    translator = DatasetTranslator(str(ckpt), config.config, device)
+    translator.translate_dataset(args.input_dir, args.output_dir)
 
 
 def train(args, config):
-    """Run training."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Training on device: {device}")
+    logger.info(f"Training MT Model on device: {device}")
 
-    # Set seed
-    seed = config.get('seed', 42)
-    set_seed(seed)
-    logger.info(f"Random seed: {seed}")
+    set_seed(config.get('seed', 42))
 
-    # Create datasets
-    data_root = config.get('data.root', './data/road_quality')
+    data_root = args.data_root if hasattr(args, 'data_root') and args.data_root else config.get('data.root', './data/road_quality')
     batch_size = config.get('training.batch_size', 8)
     num_workers = config.get('data.num_workers', 4)
 
     train_dataset = RoadQualityDataset(data_root, split='train', crop_size=480)
     val_dataset = RoadQualityDataset(data_root, split='val', crop_size=512)
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=config.get('data.pin_memory', True),
-        prefetch_factor=config.get('data.prefetch_factor', 2),
-        drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=config.get('data.pin_memory', True),
-        prefetch_factor=config.get('data.prefetch_factor', 2),
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    logger.info(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
-
-    # Create model
     model = MultiTaskModel(
         pretrained=config.get('model.encoder.pretrained', True),
-        num_classes=config.get('model.heads.segmentation.num_classes', 3),
+        num_classes=config.get('model.heads.segmentation.num_classes', 8),
         lambda_adv=config.get('domain_adaptation.lambda_adv', 0.1),
     )
 
-    # Count parameters
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"Model parameters: {total_params / 1e6:.2f}M")
-
-    # Create trainer
     trainer = MultiTaskTrainer(
-        config=config.config,
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device,
-        output_dir=args.output_dir,
+        config=config.config, model=model, train_loader=train_loader, val_loader=val_loader,
+        device=device, output_dir=args.output_dir, webhook_url=args.webhook_url, worker_id=args.worker_id,
     )
-
-    # Train
-    metrics = trainer.train(resume_from=args.resume)
-    logger.info(f"Training complete. Final metrics: {metrics}")
+    trainer.train(resume_from=args.resume)
 
 
 def evaluate(args, config):
-    """Run evaluation."""
+    import json
+    from src.training.metrics import MetricsComputer
+    from src.training.checkpoint import load_checkpoint
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Evaluating on device: {device}")
+    logger.info(f"Evaluating MT Model on device: {device}")
 
-    # Create model and load checkpoint
+    data_root = config.get('data.root', './data/road_quality')
+    dataset = RoadQualityDataset(data_root, split='test', crop_size=512)
+    loader = DataLoader(dataset, batch_size=config.get('training.batch_size', 8), shuffle=False)
+
     model = MultiTaskModel(
         pretrained=False,
-        num_classes=config.get('model.heads.segmentation.num_classes', 3),
-    )
+        num_classes=config.get('model.heads.segmentation.num_classes', 8)
+    ).to(device)
 
-    checkpoint_path = Path(args.checkpoint)
-    if not checkpoint_path.exists():
-        logger.error(f"Checkpoint not found: {checkpoint_path}")
-        sys.exit(1)
-
-    checkpoint_data = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint_data['model_state_dict'])
-    model = model.to(device)
+    load_checkpoint(Path(args.checkpoint), model, device=device)
     model.eval()
 
-    # Create test dataset
-    data_root = config.get('data.root', './data/road_quality')
-    test_dataset = RoadQualityDataset(data_root, split='test', crop_size=512)
-    test_loader = DataLoader(
-        test_dataset, batch_size=config.get('training.batch_size', 8),
-        shuffle=False, num_workers=config.get('data.num_workers', 4),
-    )
+    metrics_comp = MetricsComputer(num_classes=config.get('model.heads.segmentation.num_classes', 8))
 
-    # Evaluate
-    metrics_computer = MetricsComputer(
-        num_classes=config.get('model.heads.segmentation.num_classes', 3)
-    )
-
+    logger.info("Starting evaluation pass...")
     with torch.no_grad():
-        for batch in test_loader:
+        for batch in loader:
             images = batch['image'].to(device)
-
-            predictions = model(images)
-
             targets = {
                 'segmentation': batch['segmentation'].to(device),
                 'depth': batch['depth'].to(device),
@@ -172,287 +176,225 @@ def evaluate(args, config):
                 'camera_intrinsics': batch['camera_intrinsics'].to(device),
                 'camera_extrinsics': batch['camera_extrinsics'].to(device),
             }
+            preds = model(images, use_domain_adapter=False)
+            metrics_comp.update(preds, targets)
 
-            detached_preds = {k: v.detach() for k, v in predictions.items()
-                           if isinstance(v, torch.Tensor)}
-            metrics_computer.update(detached_preds, targets)
-
-    metrics = metrics_computer.compute()
-    logger.info("Evaluation Results:")
-    for key, value in sorted(metrics.items()):
-        logger.info(f"  {key}: {value:.4f}")
+    metrics = metrics_comp.compute()
+    logger.info("Evaluation metrics:")
+    for k, v in metrics.items():
+        logger.info(f"  {k}: {v:.4f}")
+        
+    out_path = Path(args.checkpoint).parent / f"eval_metrics_{Path(args.checkpoint).stem}.json"
+    with open(out_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info(f"Metrics successfully saved to {out_path}")
 
 
 def reconstruct(args, config):
-    """Run 3D reconstruction from video/images."""
     import cv2
     import numpy as np
+    from src.training.dataset import IMAGENET_MEAN, IMAGENET_STD
+    from src.training.checkpoint import load_checkpoint
+    from src.reconstruction.pipeline import ReconstructionPipeline
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Reconstructing on device: {device}")
 
-    # Load model
     model = MultiTaskModel(
         pretrained=False,
-        num_classes=config.get('model.heads.segmentation.num_classes', 3),
-    )
-    checkpoint_data = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint_data['model_state_dict'])
-    model = model.to(device)
+        num_classes=config.get('model.heads.segmentation.num_classes', 8)
+    ).to(device)
+
+    load_checkpoint(Path(args.checkpoint), model, device=device)
     model.eval()
 
-    # Create reconstruction pipeline
-    recon_config = config.get('reconstruction', {})
-    pipeline = ReconstructionPipeline(recon_config)
-
-    # Process input (video or directory of images)
+    pipeline = ReconstructionPipeline(config.get('reconstruction', {}))
     input_path = Path(args.input)
+    frames = []
+    
+    if input_path.is_dir():
+        for ext in ["*.jpg", "*.png", "*.jpeg"]:
+            frames.extend(sorted(input_path.glob(ext)))
+    elif input_path.is_file():
+        if input_path.suffix.lower() not in ['.mp4', '.avi', '.mov']:
+            frames = [input_path]
+    else:
+        logger.error(f"Input path {input_path} does not exist.")
+        return
 
-    if input_path.suffix in ('.mp4', '.avi', '.mov'):
-        # Video input
+    def process_image(img_bgr):
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (512, 512))
+        img_norm = img_resized.astype(np.float32) / 255.0
+        mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+        std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+        img_norm = (img_norm - mean) / std
+
+        tensor = torch.from_numpy(img_norm.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
+        with torch.no_grad():
+            preds = model(tensor, use_domain_adapter=False)
+        
+        preds_np = {
+            'depth': preds['depth'][0, 0].cpu().numpy(),
+            'segmentation': preds['segmentation'][0].argmax(dim=0).cpu().numpy(),
+            'severity': preds['severity'][0, 0].cpu().numpy(),
+            'intrinsics': preds['intrinsics'][0].cpu().numpy(),
+            'extrinsics': preds['extrinsics'][0].cpu().numpy()
+        }
+        pipeline.process_frame(preds_np, rgb=img_resized)
+
+    if input_path.is_file() and input_path.suffix.lower() in ['.mp4', '.avi', '.mov']:
         cap = cv2.VideoCapture(str(input_path))
-        frame_count = 0
-        while cap.isOpened():
+        while True:
             ret, frame = cap.read()
-            if not ret:
-                break
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            _process_frame(model, pipeline, frame_rgb, device)
-            frame_count += 1
-            if frame_count % 10 == 0:
-                logger.info(f"Processed {frame_count} frames")
+            if not ret: break
+            process_image(frame)
         cap.release()
     else:
-        # Directory of images
-        image_paths = sorted(input_path.glob('*.png')) + sorted(input_path.glob('*.jpg'))
-        for i, img_path in enumerate(image_paths):
-            frame = cv2.imread(str(img_path))
-            if frame is None:
-                continue
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            _process_frame(model, pipeline, frame_rgb, device)
-            if (i + 1) % 10 == 0:
-                logger.info(f"Processed {i + 1}/{len(image_paths)} images")
+        for f_path in frames:
+            frame = cv2.imread(str(f_path))
+            if frame is not None:
+                process_image(frame)
 
-    # Finalize and export
-    output_path = Path(args.output)
-    result = pipeline.finalize(output_path)
-    if result:
-        logger.info(f"BEV map saved to: {result}")
-        logger.info(f"PLY file saved to: {output_path / 'reconstruction.ply'}")
+    out_dir = Path(args.output)
+    res = pipeline.finalize(out_dir)
+    if res:
+        logger.info(f"Reconstruction successfully saved to {out_dir}")
     else:
-        logger.warning("No valid points after filtering. No output generated.")
-
-
-def _process_frame(model, pipeline, frame_rgb, device):
-    """Process a single frame through the model and add to reconstruction."""
-    import cv2
-    import numpy as np
-    from src.training.dataset import IMAGENET_MEAN, IMAGENET_STD
-
-    # Preprocess
-    frame_resized = cv2.resize(frame_rgb, (512, 512))
-    img = frame_resized.astype(np.float32) / 255.0
-    mean = np.array(IMAGENET_MEAN).reshape(1, 1, 3)
-    std = np.array(IMAGENET_STD).reshape(1, 1, 3)
-    img = (img - mean) / std
-
-    # To tensor
-    img_tensor = torch.from_numpy(img.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
-
-    # Inference
-    with torch.no_grad():
-        outputs = model(img_tensor)
-
-    # Extract predictions
-    seg_pred = outputs['segmentation'][0].argmax(dim=0).cpu().numpy()  # [512, 512]
-    depth_pred = outputs['depth'][0, 0].cpu().numpy()  # [512, 512]
-    severity_pred = outputs['severity'][0, 0].cpu().numpy()  # [512, 512]
-    intrinsics_pred = outputs['intrinsics'][0].cpu().numpy()  # [4]
-    extrinsics_pred = outputs['extrinsics'][0].cpu().numpy()  # [6]
-
-    # Add to reconstruction pipeline
-    predictions = {
-        'depth': depth_pred,
-        'segmentation': seg_pred,
-        'severity': severity_pred,
-        'intrinsics': intrinsics_pred,
-        'extrinsics': extrinsics_pred,
-    }
-    pipeline.process_frame(predictions, rgb=frame_resized)
+        logger.warning("Reconstruction failed or no points generated (Empty point cloud).")
 
 
 def visualize(args, config):
-    """Run end-to-end pipeline visualization."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Visualizing pipeline on device: {device}")
+    from src.training.checkpoint import load_checkpoint
+    from src.cyclegan.generator import ResNetGenerator
+    from src.visualization.visualizer import PipelineVisualizer
 
-    # Load Dataset (Using val split for stability and proper GT labels)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Visualizing on device: {device}")
+
+    mt_model = MultiTaskModel(
+        pretrained=False,
+        num_classes=config.get('model.heads.segmentation.num_classes', 8)
+    ).to(device)
+    
+    if getattr(args, 'multitask_ckpt', None) and Path(args.multitask_ckpt).exists():
+        load_checkpoint(Path(args.multitask_ckpt), mt_model, device=device)
+    else:
+        logger.warning("No MultiTask checkpoint provided. Using untrained weights.")
+    mt_model.eval()
+
+    if getattr(args, 'cyclegan_ckpt', None) and Path(args.cyclegan_ckpt).exists():
+        cg_model = ResNetGenerator(
+            input_channels=config.get('cyclegan.input_nc', 4),
+            output_channels=config.get('cyclegan.output_nc', 3),
+            ngf=config.get('cyclegan.ngf', 64),
+            n_residual_blocks=config.get('cyclegan.n_blocks', 9)
+        ).to(device)
+        ckpt = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
+        cg_model.load_state_dict(ckpt['G_AB_state_dict'])
+        cg_model.eval()
+    else:
+        class DummyCG(torch.nn.Module):
+            def forward(self, x):
+                return x[:, :3, :, :]
+        cg_model = DummyCG().to(device).eval()
+
     data_root = config.get('data.root', './data/road_quality')
     dataset = RoadQualityDataset(data_root, split='val', crop_size=512)
-    dataset.is_train = False # Disable augmentation
 
-    # Load CycleGAN Generator
-    cyclegan = ResNetGenerator(
-        input_channels=config.get('cyclegan.input_nc', 4),
-        output_channels=config.get('cyclegan.output_nc', 3),
-        ngf=config.get('cyclegan.ngf', 64),
-        n_residual_blocks=config.get('cyclegan.n_blocks', 9)
-    )
-    if args.cyclegan_ckpt:
-        cg_data = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
-        state_dict = cg_data.get('G_AB_state_dict', cg_data)
-        cyclegan.load_state_dict(state_dict)
-
-    # Load MultiTask Model
-    multitask = MultiTaskModel(
-        pretrained=False,
-        num_classes=config.get('model.heads.segmentation.num_classes', 3),
-    )
-    if args.multitask_ckpt:
-        mt_data = torch.load(args.multitask_ckpt, map_location=device, weights_only=False)
-        state_dict = mt_data.get('model_state_dict', mt_data)
-        multitask.load_state_dict(state_dict)
-
-    # Init and Run Visualizer
-    visualizer = PipelineVisualizer(config.config, dataset, cyclegan, multitask, device)
-    output_dir = Path(args.output_dir)
-    
-    logger.info(f"Generating storyboard grids for {args.samples} samples...")
-    visualizer.visualize_samples(args.samples, output_dir)
-    logger.info(f"Visualization complete! Output saved to {output_dir}")
+    visualizer = PipelineVisualizer(config.config, dataset, cg_model, mt_model, device)
+    visualizer.visualize_samples(args.samples, Path(args.output_dir))
+    logger.info(f"Visualizations saved to {args.output_dir}")
 
 
-def quicktest(args, config):
-    """Run a fast end-to-end test pipeline."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info("Starting Quick Test Pipeline...")
-
-    # 1. Generate Data
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = output_dir / "data"
-    
-    # Override config to force 100% of the tiny dataset into the validation split
-    # We use validation split so the PipelineVisualizer doesn't try to augment it
-    dataset_cfg = DatasetConfig(
-        total_samples=args.samples,
-        split_ratios={'train': 0.0, 'val': 1.0, 'test': 0.0},
-        seed=config.get('seed', 42)
-    )
-    
-    logger.info(f"Generating {args.samples} synthetic samples...")
-    builder = DatasetBuilder(config=dataset_cfg)
-    builder.generate_dataset(output_root=data_dir)
-    
-    # 2. Load Models
-    logger.info("Loading models...")
-    cyclegan = ResNetGenerator(
-        input_channels=config.get('cyclegan.input_nc', 4),
-        output_channels=config.get('cyclegan.output_nc', 3),
-        ngf=config.get('cyclegan.ngf', 64),
-        n_residual_blocks=config.get('cyclegan.n_blocks', 9)
-    )
-    if args.cyclegan_ckpt and Path(args.cyclegan_ckpt).exists():
-        cg_data = torch.load(args.cyclegan_ckpt, map_location=device, weights_only=False)
-        cyclegan.load_state_dict(cg_data.get('G_AB_state_dict', cg_data))
-        logger.info(f"Loaded CycleGAN from {args.cyclegan_ckpt}")
-    else:
-        logger.warning("No CycleGAN checkpoint provided. Using randomly initialized weights.")
-
-    multitask = MultiTaskModel(
-        pretrained=False,
-        num_classes=config.get('model.heads.segmentation.num_classes', 3),
-    )
-    if args.multitask_ckpt and Path(args.multitask_ckpt).exists():
-        mt_data = torch.load(args.multitask_ckpt, map_location=device, weights_only=False)
-        multitask.load_state_dict(mt_data.get('model_state_dict', mt_data))
-        logger.info(f"Loaded MultiTask model from {args.multitask_ckpt}")
-    else:
-        logger.warning("No MultiTask checkpoint provided. Using randomly initialized weights.")
-
-    # 3. Visualize
-    logger.info("Running pipeline and generating storyboards...")
-    dataset = RoadQualityDataset(str(data_dir), split='val', crop_size=512)
-    dataset.is_train = False
-    
-    visualizer = PipelineVisualizer(config.config, dataset, cyclegan, multitask, device)
-    visualizer.visualize_samples(args.samples, output_dir)
-    
-    # 4. Cleanup raw data
-    if not args.keep_data:
-        logger.info("Cleaning up raw generated data to save space...")
-        shutil.rmtree(data_dir, ignore_errors=True)
-        
-    logger.info("Quick Test Complete! Check your output directory for the storyboard grids.")
+def auto(args, config):
+    from src.pipeline import PipelineRunner
+    runner = PipelineRunner(args.config, args.real_data, args.output_dir)
+    runner.run_all()
 
 
 def main():
-    """Main entry point for the road quality analysis pipeline."""
     parser = argparse.ArgumentParser(description='Road Quality Analysis Pipeline')
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # Data command
+    # Data
     data_parser = subparsers.add_parser('data', help='Generate synthetic dataset')
-    data_parser.add_argument('--config', type=str, default='configs/default.yaml',
-                             help='Path to config YAML file')
-    data_parser.add_argument('--output-dir', type=str, default='./data/road_quality',
-                             help='Output directory for synthetic data')
+    data_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    data_parser.add_argument('--output-dir', type=str, default='./data/road_quality')
 
-    # Train command
-    train_parser = subparsers.add_parser('train', help='Train the model')
-    train_parser.add_argument('--config', type=str, default='configs/default.yaml',
-                             help='Path to config YAML file')
-    train_parser.add_argument('--resume', type=str, default=None,
-                             help='Path to checkpoint to resume from')
-    train_parser.add_argument('--output-dir', type=str, default='./checkpoints',
-                             help='Output directory for checkpoints')
+    # Train CycleGAN
+    cg_parser = subparsers.add_parser('train_cyclegan', help='Train CycleGAN')
+    cg_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    cg_parser.add_argument('--resume', type=str, default=None)
+    cg_parser.add_argument('--real-data', type=str, required=True)
+    cg_parser.add_argument('--data.root', type=str, dest='data_root')
+    cg_parser.add_argument('--output-dir', type=str, default='./checkpoints/cyclegan')
+    cg_parser.add_argument('--webhook-url', type=str, default=None)
+    cg_parser.add_argument('--worker-id', type=str, default=None)
 
-    # Evaluate command
-    eval_parser = subparsers.add_parser('evaluate', help='Evaluate the model')
-    eval_parser.add_argument('--config', type=str, default='configs/default.yaml')
-    eval_parser.add_argument('--checkpoint', type=str, required=True,
-                            help='Path to model checkpoint')
+    # Translate
+    tr_parser = subparsers.add_parser('translate', help='Translate synthetic data to real style')
+    tr_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    tr_parser.add_argument('--checkpoint', type=str, required=True)
+    tr_parser.add_argument('--input-dir', type=str, required=True)
+    tr_parser.add_argument('--output-dir', type=str, required=True)
 
-    # Reconstruct command
-    recon_parser = subparsers.add_parser('reconstruct', help='Run 3D reconstruction')
-    recon_parser.add_argument('--config', type=str, default='configs/default.yaml')
-    recon_parser.add_argument('--checkpoint', type=str, required=True,
-                             help='Path to model checkpoint')
-    recon_parser.add_argument('--input', type=str, required=True,
-                             help='Input video file or directory of images')
-    recon_parser.add_argument('--output', type=str, default='./reconstruction',
-                             help='Output directory')
-
-    # Visualize command
-    viz_parser = subparsers.add_parser('visualize', help='Visualize pipeline end-to-end')
-    viz_parser.add_argument('--config', type=str, default='configs/default.yaml')
-    viz_parser.add_argument('--cyclegan-ckpt', type=str, required=False, help='Path to CycleGAN checkpoint')
-    viz_parser.add_argument('--multitask-ckpt', type=str, required=True, help='Path to MultiTask checkpoint')
-    viz_parser.add_argument('--samples', type=int, default=5, help='Number of samples to visualize')
-    viz_parser.add_argument('--output-dir', type=str, default='./visualizations', help='Output directory')
+    # Train MultiTask
+    train_parser = subparsers.add_parser('train', help='Train the MultiTask model')
+    train_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    train_parser.add_argument('--resume', type=str, default=None)
+    train_parser.add_argument('--data.root', type=str, dest='data_root')
+    train_parser.add_argument('--output-dir', type=str, default='./checkpoints/multitask')
+    train_parser.add_argument('--webhook-url', type=str, default=None)
+    train_parser.add_argument('--worker-id', type=str, default=None)
     
-    # Quicktest command (One-Click Test)
-    qt_parser = subparsers.add_parser('quicktest', help='Run an end-to-end generation and visualization test')
+    # Evaluate MultiTask
+    eval_parser = subparsers.add_parser('evaluate', help='Evaluate the MultiTask model')
+    eval_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    eval_parser.add_argument('--checkpoint', type=str, required=True)
+    
+    # Reconstruct
+    recon_parser = subparsers.add_parser('reconstruct', help='Run 3D Reconstruction and BEV export')
+    recon_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    recon_parser.add_argument('--checkpoint', type=str, required=True)
+    recon_parser.add_argument('--input', type=str, required=True)
+    recon_parser.add_argument('--output', type=str, required=True)
+    
+    # Visualize
+    vis_parser = subparsers.add_parser('visualize', help='Generate visual output comparisons')
+    vis_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    vis_parser.add_argument('--cyclegan-ckpt', type=str, default=None)
+    vis_parser.add_argument('--multitask-ckpt', type=str, default=None)
+    vis_parser.add_argument('--samples', type=int, default=5)
+    vis_parser.add_argument('--output-dir', type=str, required=True)
+
+    # Quicktest (Alias mapped directly to visualize)
+    qt_parser = subparsers.add_parser('quicktest', help='Run a quick visualization test')
     qt_parser.add_argument('--config', type=str, default='configs/default.yaml')
-    qt_parser.add_argument('--cyclegan-ckpt', type=str, required=False, help='Optional path to CycleGAN checkpoint')
-    qt_parser.add_argument('--multitask-ckpt', type=str, required=False, help='Optional path to MultiTask checkpoint')
-    qt_parser.add_argument('--samples', type=int, default=5, help='Number of samples to generate and test')
-    qt_parser.add_argument('--output-dir', type=str, default='./quicktest_out', help='Output directory')
-    qt_parser.add_argument('--keep-data', action='store_true', help='Do not delete the raw generated data')
+    qt_parser.add_argument('--cyclegan-ckpt', type=str, default=None)
+    qt_parser.add_argument('--multitask-ckpt', type=str, default=None)
+    qt_parser.add_argument('--samples', type=int, default=5)
+    qt_parser.add_argument('--output-dir', type=str, required=True)
 
-    # Colab Notebook Generation
-    colab_parser = subparsers.add_parser('colab', help='Generate Google Colab execution notebook')
-    colab_parser.add_argument('--output', type=str, default='Colab_Pipeline.ipynb',
-                              help='Output path for the .ipynb file')
+    # Auto Pipeline
+    auto_parser = subparsers.add_parser('auto', help='Run full pipeline locally')
+    auto_parser.add_argument('--config', type=str, default='configs/default.yaml')
+    auto_parser.add_argument('--real-data', type=str, required=True)
+    auto_parser.add_argument('--output-dir', type=str, default='./workspace')
 
-    # Web UI command
-    web_parser = subparsers.add_parser('web', help='Start the web UI dispatcher')
+    # Worker, Web, Colab
+    colab_parser = subparsers.add_parser('colab', help='Generate Colab Notebook')
+    colab_parser.add_argument('--output', type=str, default='Colab_Pipeline.ipynb')
+
+    web_parser = subparsers.add_parser('web', help='Start web UI')
     web_parser.add_argument('--config', type=str, default='configs/default.yaml')
-    web_parser.add_argument('--port', type=int, default=5000,
-                            help='Port to run the web server on')
-    web_parser.add_argument('--host', type=str, default='0.0.0.0',
-                            help='Host interface to bind to')
+    web_parser.add_argument('--port', type=int, default=5000)
+    web_parser.add_argument('--host', type=str, default='0.0.0.0')
+
+    worker_parser = subparsers.add_parser('worker', help='Start Colab worker')
+    worker_parser.add_argument('--orchestrator-url', type=str, required=True)
+    worker_parser.add_argument('--shared-drive-path', type=str, required=True)
+    worker_parser.add_argument('--worker-id', type=str, required=True)
 
     args = parser.parse_args()
 
@@ -460,34 +402,29 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    # Collect remaining args as overrides (e.g., --training.lr=1e-3)
-    overrides = [a for a in sys.argv[1:] if '=' in a and a.startswith('--')]
-
-    # Don't try to parse config if generating colab (doesn't need it)
     if args.command == 'colab':
         generate_colab_notebook(args.output)
         return
+    elif args.command == 'worker':
+        from src.worker import start_worker
+        start_worker(args.orchestrator_url, args.shared_drive_path, args.worker_id)
+        return
 
-    # Load config
+    overrides = [a for a in sys.argv[1:] if '=' in a and a.startswith('--')]
     config = ConfigLoader(config_path=Path(args.config), overrides=overrides if overrides else None)
 
-    # Dispatch
-    if args.command == 'data':
-        data(args, config)
-    elif args.command == 'train':
-        train(args, config)
-    elif args.command == 'evaluate':
-        evaluate(args, config)
-    elif args.command == 'reconstruct':
-        reconstruct(args, config)
-    elif args.command == 'visualize':
-        visualize(args, config)
-    elif args.command == 'quicktest':
-        quicktest(args, config)
+    if args.command == 'data': data(args, config)
+    elif args.command == 'train_cyclegan': train_cyclegan(args, config)
+    elif args.command == 'translate': translate(args, config)
+    elif args.command == 'train': train(args, config)
+    elif args.command == 'evaluate': evaluate(args, config)
+    elif args.command == 'reconstruct': reconstruct(args, config)
+    elif args.command == 'visualize': visualize(args, config)
+    elif args.command == 'quicktest': visualize(args, config)
+    elif args.command == 'auto': auto(args, config)
     elif args.command == 'web':
         from src.web import start_server
         start_server(args)
-
 
 if __name__ == "__main__":
     main()

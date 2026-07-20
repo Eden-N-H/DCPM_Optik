@@ -102,7 +102,9 @@ class GeodesicRotationLoss(nn.Module):
         # Geodesic distance: arccos((trace(R_diff) - 1) / 2)
         trace = R_diff[:, 0, 0] + R_diff[:, 1, 1] + R_diff[:, 2, 2]
         cos_angle = (trace - 1.0) / 2.0
-        cos_angle = cos_angle.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+        
+        # INCREASED CLAMP PADDING: Avoid NaN from edge cases inside torch.acos
+        cos_angle = cos_angle.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
         angle = torch.acos(cos_angle)
 
         return angle.mean()
@@ -117,8 +119,10 @@ class GeodesicRotationLoss(nn.Module):
             [B, 3, 3] rotation matrices
         """
         batch_size = rodrigues.shape[0]
-        theta = torch.norm(rodrigues, dim=1, keepdim=True)  # [B, 1]
-        theta = theta.clamp(min=1e-8)
+        
+        # CRITICAL FIX: Add epsilon BEFORE taking square root to prevent NaN gradients 
+        # evaluating at zero. torch.norm(rodrigues) is unsafe here.
+        theta = torch.sqrt(torch.sum(rodrigues ** 2, dim=1, keepdim=True) + 1e-8)
 
         axis = rodrigues / theta  # [B, 3]
 
@@ -162,8 +166,8 @@ class MultiTaskLoss(nn.Module):
         self.camera_weight = camera_weight
         self.adv_weight = adv_weight
 
-        # Segmentation loss
-        self.seg_loss = nn.CrossEntropyLoss(weight=class_weights)
+        # Segmentation loss (ignore padding artifacts and broken indices safely)
+        self.seg_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=255)
 
         # Depth losses
         self.depth_l1 = nn.L1Loss()

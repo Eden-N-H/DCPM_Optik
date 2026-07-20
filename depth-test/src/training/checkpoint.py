@@ -1,4 +1,5 @@
 """Checkpoint save/load and reproducibility utilities."""
+import os
 import random
 import numpy as np
 import torch
@@ -62,10 +63,11 @@ def save_checkpoint(
     epoch: int,
     best_metric: float,
 ) -> None:
-    """Save a training checkpoint.
+    """Save a training checkpoint atomically.
 
-    Stores model weights, optimizer state, scheduler state, epoch,
-    best metric, and all RNG states for full reproducibility.
+    Writes to a temporary file first, then renames it. This prevents
+    Google Drive sync from capturing a corrupted or partially written file
+    if the process is killed midway through saving.
 
     Args:
         path: File path to save checkpoint
@@ -87,7 +89,12 @@ def save_checkpoint(
         'rng_states': get_rng_states(),
     }
 
-    torch.save(checkpoint_data, str(path))
+    # Atomic save: write to a .tmp file first
+    tmp_path = path.with_suffix('.tmp')
+    torch.save(checkpoint_data, str(tmp_path))
+    
+    # Replace is atomic on POSIX systems
+    os.replace(str(tmp_path), str(path))
 
 
 def load_checkpoint(
