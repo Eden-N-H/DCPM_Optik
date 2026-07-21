@@ -36,6 +36,15 @@ def create_corridor(frames, upload_folder):
     W_canvas = int((max_x - min_x) * PPM)
     H_canvas = int((max_y - min_y) * PPM)
     
+    # Prevents catastrophic Out-Of-Memory (OOM) crashes by dynamically scaling 
+    # down the output pixel density if the geographic span selected is too large.
+    MAX_CANVAS_DIM = 8192
+    if W_canvas > MAX_CANVAS_DIM or H_canvas > MAX_CANVAS_DIM:
+        scale_factor = MAX_CANVAS_DIM / max(W_canvas, H_canvas)
+        PPM = PPM * scale_factor
+        W_canvas = int((max_x - min_x) * PPM)
+        H_canvas = int((max_y - min_y) * PPM)
+    
     canvas = np.zeros((H_canvas, W_canvas, 3), dtype=np.uint8)
 
     # Feather width (in canvas pixels) used to blend each new frame's own
@@ -70,8 +79,10 @@ def create_corridor(frames, upload_folder):
         pts_canvas = []
         
         for u, v in pts_img:
-            x_local_m = (u - W/2.0) / PPM
-            y_local_m = (H/2.0 - v) / PPM
+            # We must use the original unscaled 50.0 PPM here since the source BEV 
+            # image was inherently generated at 50 PPM, regardless of the canvas scale
+            x_local_m = (u - W/2.0) / 50.0
+            y_local_m = (H/2.0 - v) / 50.0
             
             x_base_m = dx + x_local_m * math.cos(a) + y_local_m * math.sin(a)
             y_base_m = dy - x_local_m * math.sin(a) + y_local_m * math.cos(a)
@@ -113,11 +124,6 @@ def create_corridor(frames, upload_folder):
         "min_x_m": min_x,
         "max_y_m": max_y,
         "PPM": PPM,
-        # Needed by the frontend/backend to convert normalized (0-1) click
-        # coordinates on the rendered corridor image back into actual
-        # canvas pixel coordinates before dividing by PPM. Previously
-        # omitted, which silently produced wrong world coordinates for
-        # any multi-frame manual mask (see /modify_defects add_corridor).
         "W_canvas": W_canvas,
         "H_canvas": H_canvas
     }

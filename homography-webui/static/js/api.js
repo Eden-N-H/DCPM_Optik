@@ -1,19 +1,67 @@
 import { state } from './state.js';
-import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds, setPassPairsData } from './map.js';
-import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
+import { initMap, clearOrthomosaics, syncOrthoLayers, updateMapSource, fitMapToBounds, setPassPairsData } from './map.js';
+import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning, enableWorkspaceTools } from './ui.js';
+
+export async function exportProject(projectState, btnId, filename) {
+    const btn = document.getElementById(btnId);
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> SAVING...`; 
+    btn.disabled = true;
+    try {
+        const res = await fetch("/export-project", {
+            method: "POST", 
+            headers: { "Content-Type": "application/json" }, 
+            body: JSON.stringify(projectState) 
+        });
+        if (!res.ok) throw new Error("Failed to export project");
+        const blob = await res.blob(); 
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a'); 
+        a.href = url; a.download = filename; 
+        document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
+    } catch (err) { 
+        alert(err.message); 
+    } finally { 
+        btn.innerHTML = originalText; btn.disabled = false; 
+    }
+}
+
+export async function importProject(file) {
+    const fd = new FormData();
+    fd.append("project_zip", file);
+    const res = await fetch("/import-project", {
+        method: "POST",
+        body: fd
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || "Failed to import project");
+    return data.project_state;
+}
 
 export async function triggerZipExport(endpoint, btnId, filename) {
     if (state.fullResults.length === 0) return;
     const btn = document.getElementById(btnId); 
     const originalText = btn.innerHTML;
-    btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> PACKAGING...`; 
+    btn.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> PACKAGING...`; 
     btn.disabled = true;
     try {
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ results: state.fullResults }) });
         if (!res.ok) throw new Error("Failed to compile ZIP file");
-        const blob = await res.blob(); const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
-    } catch (err) { alert(err.message); } finally { btn.innerHTML = originalText; btn.disabled = false; }
+        const blob = await res.blob(); 
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a'); 
+        a.href = url; 
+        a.download = filename; 
+        document.body.appendChild(a); 
+        a.click(); 
+        a.remove(); 
+        window.URL.revokeObjectURL(url);
+    } catch (err) { 
+        alert(err.message); 
+    } finally { 
+        btn.innerHTML = originalText; 
+        btn.disabled = false; 
+    }
 }
 
 export async function cancelJob() {
@@ -79,7 +127,6 @@ export async function fetchPassDiagnostics(minIndexGap, maxDistM) {
     return data;
 }
 
-// Generates a SAM2 polygon preview dynamically for a single frame's rect/BEV space
 export async function fetchSam2Preview(filename, view, calibrationConfig, points) {
     const res = await fetch("/preview_sam2", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -90,10 +137,6 @@ export async function fetchSam2Preview(filename, view, calibrationConfig, points
     return data.points;
 }
 
-// Generates a SAM2 polygon preview directly on a stitched multi-frame
-// corridor image (used when the mask editor has more than one frame
-// loaded). Points are normalized 0-1 relative to the corridor image
-// itself, NOT to any single source frame's rect/BEV space.
 export async function fetchSam2PreviewCorridor(corridorUrl, points) {
     const res = await fetch("/preview_sam2_corridor", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -128,14 +171,11 @@ function startSSE(taskId, totalImages) {
                 alert(msg.type === "cancelled" ? "Process aborted. No outputs generated." : "Process completed, but 0 frames successfully extracted. Review logs.");
                 document.getElementById("workspace").classList.add("hidden");
                 document.getElementById("upload-panel").classList.remove("hidden");
-                document.getElementById("btn-save-project").classList.add("hidden");
-                document.getElementById("btn-export-zip").classList.add("hidden");
-                document.getElementById("btn-export-flat-zip").classList.add("hidden");
-                document.getElementById("btn-toggle-map").classList.add("hidden");
-                document.getElementById("btn-analyze-passes").classList.add("hidden");
-                document.getElementById("btn-group-defects").classList.add("hidden");
-            } else if (msg.type === "cancelled") {
-                addWarning(`[SYSTEM] User aborted process. Partial state saved.`);
+            } else {
+                if (msg.type === "cancelled") {
+                    addWarning(`[SYSTEM] User aborted process. Partial state saved.`);
+                }
+                enableWorkspaceTools();
             }
             return;
         }
@@ -169,7 +209,6 @@ function startSSE(taskId, totalImages) {
         if (msg.type === "update") {
             const r = msg.data;
             state.fullResults.push(r);
-            addOrthomosaicShingle(r, document.getElementById("chk-layer-front").checked, document.getElementById("chk-layer-rear").checked);
             
             let hasDefects = r.geojson && r.geojson.length > 0;
             if (hasDefects) {
@@ -204,7 +243,10 @@ function startSSE(taskId, totalImages) {
                     document.getElementById("btn-next").disabled = (state.currentIndex === state.appResults.length - 1);
                 }
             }
-            if (state.fullResults.length === 1) updateCarousel(true);
+            
+            if (state.fullResults.length === 1) {
+                updateCarousel(true);
+            }
         }
     };
 }
@@ -219,7 +261,6 @@ export async function executeJob() {
     const layerTogglePanel = document.getElementById("layer-toggle-panel");
     const containerBevRear = document.getElementById("container-bev-rear");
 
-    // Standard Options
     fd.append("media_type", document.getElementById("sel-media-type").value);
     fd.append("has_telemetry", document.getElementById("chk-has-telemetry").checked ? "true" : "false");
     fd.append("cam_height", document.getElementById("cam-height").value);
@@ -227,19 +268,16 @@ export async function executeJob() {
     fd.append("draw_grid", document.getElementById("chk-draw-grid").checked ? "true" : "false");
     fd.append("interval_m", document.getElementById("interval-m").value);
     
-    // Advanced Options
     fd.append("undistort", document.getElementById("chk-undistort").checked ? "true" : "false");
     fd.append("ego_mask", document.getElementById("chk-ego-mask").checked ? "true" : "false");
     fd.append("skip_ai", document.getElementById("chk-skip-ai").checked ? "true" : "false");
     fd.append("conf_thresh", document.getElementById("num-conf").value);
 
-    // Grid Size Options
     fd.append("z_near", document.getElementById("grid-z-near").value);
     fd.append("z_far", document.getElementById("grid-z-far").value);
     fd.append("lane_width", document.getElementById("grid-lane-width").value);
     fd.append("gps_lag_sec", document.getElementById("gps-lag-sec").value);
 
-    // GPS antenna -> camera lever-arm offset
     const camOffFwd = document.getElementById("cam-offset-forward");
     const camOffRight = document.getElementById("cam-offset-right");
     fd.append("cam_offset_forward_m", camOffFwd ? camOffFwd.value : "0.0");
@@ -266,13 +304,10 @@ export async function executeJob() {
 
     document.getElementById("upload-panel").classList.add("hidden");
     document.getElementById("workspace").classList.remove("hidden");
-    document.getElementById("btn-save-project").classList.remove("hidden");
-    document.getElementById("btn-export-zip").classList.remove("hidden");
-    document.getElementById("btn-export-flat-zip").classList.remove("hidden");
-    document.getElementById("btn-toggle-map").classList.remove("hidden");
-    document.getElementById("btn-analyze-passes").classList.remove("hidden");
-    document.getElementById("btn-group-defects").classList.remove("hidden");
     document.getElementById("progress-container").classList.remove("hidden");
+    
+    // Display the tools immediately instead of waiting for the job to complete
+    enableWorkspaceTools();
     
     state.warningCount = 0;
     state.layoutPrefs.mapOn.isManual = false;
@@ -284,7 +319,7 @@ export async function executeJob() {
     document.getElementById("no-warnings-msg").classList.remove("hidden");
     
     const btnCancel = document.getElementById("btn-cancel-job");
-    btnCancel.disabled = false; btnCancel.innerHTML = `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> ABORT`;
+    btnCancel.disabled = false; btnCancel.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> ABORT`;
     
     const telemetryHud = document.getElementById("telemetry-hud");
     telemetryHud.innerHTML = ""; telemetryHud.classList.add("hidden");
@@ -332,9 +367,6 @@ export async function executeJob() {
         alert(e.message); 
         document.getElementById("upload-panel").classList.remove("hidden"); 
         document.getElementById("progress-container").classList.add("hidden");
-        document.getElementById("btn-toggle-map").classList.add("hidden");
-        document.getElementById("btn-analyze-passes").classList.add("hidden");
-        document.getElementById("btn-group-defects").classList.add("hidden");
         checkCanProcess();
     }
 }

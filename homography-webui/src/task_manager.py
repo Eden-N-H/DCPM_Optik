@@ -8,11 +8,12 @@ from constants import ALLOWED_IMAGE_EXT, ALLOWED_VIDEO_EXT
 from geo_math import calculate_bearing, haversine_distance, apply_camera_offset
 from pipeline_image import process_single_image
 from pipeline_video import process_video_frames_async, get_video_frame_metadata
+from utils import atomic_write_json
 
 active_tasks = {}
 cancel_flags = {}
 
-def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload_folder, global_model, model_lock, sam2_predictor=None):
+def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload_folder, global_model, model_lock, sam2_predictor=None, sam2_lock=None):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
     initial_ui_state = []
@@ -110,27 +111,32 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
             def is_cancelled():
                 return cancel_flags.get(t_id, False)
 
+            def safe_put(payload):
+                q = active_tasks.get(t_id)
+                if q:
+                    q.put(payload)
+
             for asset in assets:
                 if is_cancelled():
-                    active_tasks[t_id].put({"type": "cancelled", "message": "Job cancelled by user."})
+                    safe_put({"type": "cancelled", "message": "Job cancelled by user."})
                     break
 
                 def on_frame_processed(payload):
                     if "error" in payload:
-                        active_tasks[t_id].put({"type": "item_error", "original_name": payload.get("original_name", asset['original_name']), "message": payload["error"], "is_video": payload.get("is_video", False)})
+                        safe_put({"type": "item_error", "original_name": payload.get("original_name", asset['original_name']), "message": payload["error"], "is_video": payload.get("is_video", False)})
                     elif payload.get("type") == "health_report":
-                        active_tasks[t_id].put({"type": "health_report", "original_name": payload.get("original_name"), "data": payload["data"]})
+                        safe_put({"type": "health_report", "original_name": payload.get("original_name"), "data": payload["data"]})
                     elif payload.get("type") == "cancelled":
-                        active_tasks[t_id].put({"type": "cancelled", "message": "Job cancelled by user during video processing."})
+                        safe_put({"type": "cancelled", "message": "Job cancelled by user during video processing."})
                     else:
-                        active_tasks[t_id].put({"type": "update", "data": payload})
+                        safe_put({"type": "update", "data": payload})
                     
                 if asset['ext'] in ALLOWED_VIDEO_EXT:
                     process_video_frames_async(
                         asset['path'], global_model, upload_folder, 
                         asset['filename'], asset['original_name'], asset['location'], 
                         worker_options, model_lock, on_frame_processed, is_cancelled,
-                        sam2_predictor=sam2_predictor
+                        sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                     )
                     if is_cancelled(): break
                 else:
@@ -154,7 +160,7 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                             asset['path'], global_model, asset['filename'], upload_folder, 
                             telemetry, worker_options, model_lock, asset['original_name'],
-                            sam2_predictor=sam2_predictor
+                            sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                         )
                         
                         process_meta_data = {
@@ -163,10 +169,8 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             "view_meta": view_meta,
                             "original_name": asset['original_name']
                         }
-                        with open(os.path.join(upload_folder, f"process_meta_{asset['filename']}.json"), 'w') as f:
-                            json.dump(process_meta_data, f)
+                        atomic_write_json(os.path.join(upload_folder, f"process_meta_{asset['filename']}.json"), process_meta_data)
                         
-                        # Preserve full precision floats to eliminate map rendering quantisation steps
                         result_payload = {
                             "original_name": asset['original_name'], "filename": asset['filename'],
                             "lat": asset['lat'] if asset['lat'] is not None else None, 
@@ -186,14 +190,21 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                                 "edit_bev_url": f"/static/uploads/{gf.get('edit_bev', gf['raw_bev'])}",
                                 "defects": defects[view], "footprint": footprints[view]
                             }
-                        active_tasks[t_id].put({"type": "update", "data": result_payload})
+                        safe_put({"type": "update", "data": result_payload})
                     except Exception as e:
-                        active_tasks[t_id].put({"type": "item_error", "original_name": asset['original_name'], "message": str(e), "is_video": False})
+                        safe_put({"type": "item_error", "original_name": asset['original_name'], "message": str(e), "is_video": False})
             
             if not is_cancelled():
-                active_tasks[t_id].put({"type": "complete"})
+                safe_put({"type": "complete"})
         except Exception as e:
-            active_tasks[t_id].put({"type": "error", "message": str(e)})
+            safe_put({"type": "error", "message": str(e)})
+        finally:
+            cancel_flags.pop(t_id, None)
+            def delayed_cleanup():
+                import time
+                time.sleep(10)
+                active_tasks.pop(t_id, None)
+            threading.Thread(target=delayed_cleanup).start()
 
     threading.Thread(target=process_worker, args=(image_data, task_id, options)).start()
 

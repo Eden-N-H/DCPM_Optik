@@ -4,20 +4,22 @@ import time
 import json
 import base64
 import cv2
+import zipfile
 import numpy as np
 import threading
 import traceback
+import uuid
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, Response, send_file
 from werkzeug.utils import secure_filename
 from ultralytics import YOLO
 
 from constants import ALLOWED_IMAGE_EXT
-from utils import safe_float
+from utils import safe_float, atomic_write_json
 from parser_exif import extract_full_photo_metadata
 from pipeline_image import generate_grid_preview, recalculate_view, get_projected_image, render_view_from_detections, _run_sam2_on_points
 from cv_vp import find_vanishing_point_hough, calculate_pitch_yaw_deltas
-from exports import create_raw_zip, create_flat_zip
+from exports import create_raw_zip, create_flat_zip, create_project_zip
 from task_manager import start_processing_job, active_tasks, cancel_flags
 from sam2_integration import load_sam2, get_predictor
 from diagnostics import build_pass_diagnostic_report, align_project
@@ -34,20 +36,12 @@ app = Flask(__name__, static_folder='../static', template_folder='../templates')
 app.config['UPLOAD_FOLDER'] = os.path.join(PROJECT_ROOT, 'static', 'uploads')
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# --------------------------------------------------------------------------
-# Startup cleanup: uploaded media, extracted frames, BEV renders, and
-# process_meta/trace sidecars are disposable working data for the current
-# session only. Wiping them here means nobody has to remember to run a
-# cleanup script manually before starting a new session, and old sessions'
-# files never quietly stick around consuming disk space. Exported projects
-# (ZIP exports, "Save State" JSON) live outside this folder entirely and
-# are never touched by this call.
-# --------------------------------------------------------------------------
 clear_uploads(app.config['UPLOAD_FOLDER'])
 
 global_model = None
 model_lock = threading.Lock()
 sam2_predictor = None
+sam2_lock = threading.Lock()
 
 FALLBACK_CLASSES = ["Defect", "Pothole", "Cracking", "Rutting", "Patching", "Edge Break", "Line Marking", "Other"]
 
@@ -71,7 +65,8 @@ def handle_model_upload(request_obj):
         model_file = request_obj.files['model']
         model_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(model_file.filename))
         model_file.save(model_path)
-        global_model = YOLO(model_path)
+        with model_lock:
+            global_model = YOLO(model_path)
 
 @app.route('/')
 def index():
@@ -119,7 +114,7 @@ def process():
     image_data = []
     for f in img_files:
         ext = os.path.splitext(f.filename)[1].lower()
-        filename = f"{int(time.time()*100)}_{secure_filename(f.filename)}"
+        filename = f"{uuid.uuid4().hex}_{secure_filename(f.filename)}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(filepath)
         
@@ -135,11 +130,13 @@ def process():
                 "klns": klns, "xfov": xfov, "yfov": yfov,
                 "pitch": pitch_ui, "roll": roll_ui
             })
-            with open(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), 'w') as mf:
-                json.dump(full_meta, mf, indent=2)
+            atomic_write_json(os.path.join(app.config['UPLOAD_FOLDER'], f"meta_{filename}.json"), full_meta, indent=2)
         image_data.append(file_meta)
     
-    res = start_processing_job(image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], global_model, model_lock, sam2_predictor=sam2_predictor)
+    res = start_processing_job(
+        image_data, options, last_lat, last_lon, loc_id, app.config['UPLOAD_FOLDER'], 
+        global_model, model_lock, sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
+    )
     return jsonify(res)
 
 @app.route('/stream/<task_id>')
@@ -149,13 +146,17 @@ def stream(task_id):
         if not q:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Invalid Task ID'})}\n\n"
             return
-        while True:
-            msg = q.get()
-            yield f"data: {json.dumps(msg)}\n\n"
-            if msg['type'] in ['complete', 'error', 'cancelled']:
-                cancel_flags.pop(task_id, None)
-                active_tasks.pop(task_id, None)
-                break
+        try:
+            while True:
+                msg = q.get()
+                yield f"data: {json.dumps(msg)}\n\n"
+                if msg['type'] in ['complete', 'error', 'cancelled']:
+                    break
+        except GeneratorExit:
+            # Client disconnected prematurely. Do NOT set the cancel flag. Let the 
+            # background task finish processing so work isn't lost on a network blip.
+            pass
+            
     return Response(event_stream(), mimetype="text/event-stream")
 
 @app.route('/cancel/<task_id>', methods=['POST'])
@@ -220,9 +221,6 @@ def align_passes():
             updated_r = r.copy()
             updated_r['geojson'] = []
             
-            # Using render_view_from_detections avoids running YOLO/SAM2 completely, 
-            # preserving all manual edits while perfectly re-projecting the existing 
-            # pixel polygons to their corrected geographic baseline.
             for view_name in r['views'].keys():
                 calib = r['views'][view_name]['calibration']
                 defects, geo_feats = render_view_from_detections(
@@ -231,7 +229,6 @@ def align_passes():
                 updated_r['views'][view_name]['defects'] = defects
                 updated_r['geojson'].extend(geo_feats)
                 
-                # Also update the footprint bounds
                 gps_lat, gps_lon = r['lat'], r['lon']
                 heading = float(process_meta['telemetry'].get('heading') or 0.0)
                 yaw_offset = float(calib.get('yaw_offset', 0.0))
@@ -254,7 +251,7 @@ def align_passes():
                     "width_m": 2 * x_r, "height_m": y_max - y_min, "corners": maplibre_corners
                 }
                 
-            with open(meta_path, 'w') as f: json.dump(process_meta, f)
+            atomic_write_json(meta_path, process_meta)
             new_results.append(updated_r)
             
         return jsonify({"success": True, "results": new_results})
@@ -403,7 +400,7 @@ def preview_sam2():
             h, w = rect_img.shape[:2]
             rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
             
-            pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+            pts = _run_sam2_on_points(rect_img, rect_points, predictor, sam2_lock=sam2_lock)
             if pts is None or len(pts) < 3:
                 return jsonify({"error": "SAM2 could not generate a valid mask."}), 400
                 
@@ -429,7 +426,7 @@ def preview_sam2():
                 bev_points.append([bev_x, bev_y])
                 
             raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-            bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+            bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor, sam2_lock=sam2_lock)
             
             if bev_pts is None or len(bev_pts) < 3:
                 return jsonify({"error": "SAM2 could not generate a valid mask."}), 400
@@ -468,7 +465,7 @@ def preview_sam2_corridor():
         h, w = corridor_img.shape[:2]
         px_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
 
-        pts = _run_sam2_on_points(corridor_img, px_points, predictor)
+        pts = _run_sam2_on_points(corridor_img, px_points, predictor, sam2_lock=sam2_lock)
         if pts is None or len(pts) < 3:
             return jsonify({"error": "SAM2 could not generate a valid mask on the corridor image."}), 400
 
@@ -501,7 +498,7 @@ def recalculate_bev():
             defects, geo_feats, footprints, view_meta_detections = recalculate_view(
                 source_path, process_meta['telemetry'], process_meta['options'],
                 view_name, calib, r['original_name'], app.config['UPLOAD_FOLDER'], filename,
-                global_model, model_lock, sam2_predictor=sam2_predictor
+                global_model, model_lock, sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
             )
             updated_r['views'][view_name]['calibration'] = calib.copy()
             updated_r['views'][view_name]['defects'] = defects
@@ -510,7 +507,7 @@ def recalculate_bev():
             
             process_meta['view_meta'][view_name]['detections'] = view_meta_detections
             
-        with open(meta_path, 'w') as f: json.dump(process_meta, f)
+        atomic_write_json(meta_path, process_meta)
         new_results.append(updated_r)
     return jsonify({"success": True, "results": new_results})
 
@@ -599,7 +596,7 @@ def modify_defects():
             # frame/K/homography to run the morphometric depth estimator
             # against, so depth is intentionally not computed for this path.
             
-            with open(meta_path, 'w') as f: json.dump(primary_meta, f)
+            atomic_write_json(meta_path, primary_meta)
             
             defects, geojson_features = render_view_from_detections(
                 primary_meta, view_name, calib, primary_filename, app.config['UPLOAD_FOLDER']
@@ -620,7 +617,7 @@ def modify_defects():
                 source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
                 media_type = process_meta.get('options', {}).get('media_type', '360-video')
                 is_simple_frame = (media_type == 'orthographic')
-                
+
                 rect_img_for_depth = None
                 K_for_depth = None
                 cam_h_for_depth = None
@@ -637,7 +634,7 @@ def modify_defects():
                         if use_sam2:
                             predictor = get_predictor()
                             if predictor:
-                                pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+                                pts = _run_sam2_on_points(rect_img, rect_points, predictor, sam2_lock=sam2_lock)
                         if pts is None or len(pts) < 3:
                             pts = np.array(rect_points, dtype=np.float32)
                         polygon_list = pts.tolist()
@@ -669,7 +666,7 @@ def modify_defects():
                             raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
                             predictor = get_predictor()
                             if predictor:
-                                bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+                                bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor, sam2_lock=sam2_lock)
                                 
                         if bev_pts is None or len(bev_pts) < 3:
                             bev_pts = np.array(bev_points, dtype=np.float32)
@@ -799,7 +796,7 @@ def modify_defects():
                     detections.pop(idx)
                 
             process_meta['view_meta'][view_name]['detections'] = detections
-            with open(meta_path, 'w') as f: json.dump(process_meta, f)
+            atomic_write_json(meta_path, process_meta)
             
             defects, geojson_features = render_view_from_detections(
                 process_meta, view_name, calib, filename, app.config['UPLOAD_FOLDER']
@@ -823,6 +820,42 @@ def export_flat_zip():
     if not project_data: return jsonify({"error": "No data provided"}), 400
     mem_file = create_flat_zip(project_data, app.config['UPLOAD_FOLDER'])
     return send_file(mem_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
+
+@app.route('/export-project', methods=['POST'])
+def export_project():
+    project_state = request.json
+    if not project_state or not project_state.get('results'):
+        return jsonify({"error": "No project data provided"}), 400
+    mem_file = create_project_zip(project_state, app.config['UPLOAD_FOLDER'])
+    return send_file(mem_file, download_name="dcpm_project.dcpmproj", as_attachment=True)
+
+@app.route('/import-project', methods=['POST'])
+def import_project():
+    if 'project_zip' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files['project_zip']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+        
+    try:
+        with zipfile.ZipFile(file, 'r') as zf:
+            if 'project_state.json' not in zf.namelist():
+                return jsonify({"error": "Invalid project file: missing project_state.json"}), 400
+                
+            state_data = json.loads(zf.read('project_state.json').decode('utf-8'))
+            
+            for member in zf.namelist():
+                if member.startswith('data/') and len(member) > 5:
+                    filename = os.path.basename(member)
+                    target_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    with open(target_path, 'wb') as f_out:
+                        f_out.write(zf.read(member))
+                        
+        return jsonify({"success": True, "project_state": state_data})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__': 
     app.run(debug=False, port=5001)

@@ -78,11 +78,6 @@ export function initMap(onMapClickCallback) {
                 paint: { 'line-color': '#ffffff', 'line-width': 1.5 }
             });
 
-            // Repeat-pass diagnostic overlay: connects each auto-matched pair
-            // of frames (same physical spot, different pass) with a bright
-            // magenta dashed line, so lateral/longitudinal drift between
-            // passes is visible directly on the map rather than only in a
-            // table of numbers.
             state.map.addLayer({
                 id: 'pass-pairs-layer', type: 'line', source: 'pass-pairs-source',
                 layout: { 'visibility': 'none' },
@@ -170,52 +165,64 @@ export function clearOrthomosaics() {
     state.orthoLayerIds = [];
 }
 
-export function addOrthomosaicShingle(r, isFrontVisible, isRearVisible) {
+export function syncOrthoLayers() {
     if (!state.mapLoaded || !state.map) return;
-    ['front', 'rear'].forEach(view => {
-        if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
-            const ts = Date.now();
-            const rawBevUrl = r.views[view].raw_bev_url + `?t=${ts}`;
-            const corners = r.views[view].footprint.corners;
-            const sourceId = 'ortho-' + r.filename + '-' + view;
-            
-            if (!state.map.getSource(sourceId)) {
-                state.map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: corners });
-                const isVisible = view === 'front' ? isFrontVisible : isRearVisible;
-                
-                // Anchor every new frame's imagery layer directly beneath the
-                // fixed 'defects-layer' id (rather than beneath the *previous*
-                // ortho layer, as before). Frames are always added here in
-                // sequential capture order, so inserting each new one just
-                // under 'defects-layer' stacks it ON TOP of every previously
-                // added frame (while still staying under defect overlays).
-                //
-                // Previously this used a rolling "lowestRasterLayerId" that
-                // pointed at the last-added frame, so each new frame was
-                // inserted BELOW it -- meaning the very first frame captured
-                // in a sequence stayed on top of literally everything after
-                // it, permanently. Because each frame's BEV footprint is
-                // rotated to its own capture-time heading and heavily
-                // overlaps its neighbours (footprint depth > capture
-                // interval), that one stale, top-most rectangle's straight
-                // edge would cut diagonally across newer, differently
-                // oriented frames underneath -- especially through corners --
-                // producing the visible staircase/"stepping" artifact along
-                // the corridor. Newest-on-top ordering fixes this at the
-                // source: the freshest, most spatially-correct frame is
-                // always what's visible, with no smoothing/blurring needed.
-                state.map.addLayer({
-                    id: sourceId,
-                    type: 'raster',
-                    source: sourceId,
-                    layout: { 'visibility': isVisible ? 'visible' : 'none' },
-                    paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
-                }, 'defects-layer');
-                
-                state.orthoLayerIds.push(sourceId);
-            }
+    
+    // To avoid triggering MapLibre WebGL texture count crashes, we only 
+    // keep a sliding window of raster layers actively loaded around the 
+    // current carousel index.
+    const activeIdx = state.currentIndex;
+    const windowRadius = 15; 
+    
+    const framesToKeep = new Set();
+    state.appResults.forEach((r, i) => {
+        if (Math.abs(i - activeIdx) <= windowRadius) {
+            framesToKeep.add(r.filename);
         }
     });
+    
+    state.orthoLayerIds = state.orthoLayerIds.filter(id => {
+        const match = id.match(/ortho-(.+)-(front|rear)/);
+        if (match && !framesToKeep.has(match[1])) {
+            if (state.map.getLayer(id)) state.map.removeLayer(id);
+            if (state.map.getSource(id)) state.map.removeSource(id);
+            return false;
+        }
+        return true;
+    });
+
+    const chkFront = document.getElementById("chk-layer-front") ? document.getElementById("chk-layer-front").checked : true;
+    const chkRear = document.getElementById("chk-layer-rear") ? document.getElementById("chk-layer-rear").checked : true;
+    
+    state.appResults.forEach((r, i) => {
+        if (Math.abs(i - activeIdx) <= windowRadius) {
+            ['front', 'rear'].forEach(view => {
+                if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
+                    const sourceId = 'ortho-' + r.filename + '-' + view;
+                    if (!state.map.getSource(sourceId)) {
+                        const isVisible = view === 'front' ? chkFront : chkRear;
+                        const rawBevUrl = r.views[view].raw_bev_url;
+                        state.map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: r.views[view].footprint.corners });
+                        
+                        state.map.addLayer({
+                            id: sourceId,
+                            type: 'raster',
+                            source: sourceId,
+                            layout: { 'visibility': isVisible ? 'visible' : 'none' },
+                            paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
+                        }, 'defects-layer');
+                        state.orthoLayerIds.push(sourceId);
+                    }
+                }
+            });
+        }
+    });
+}
+
+// Deprecated for direct usage. Forwarding to syncOrthoLayers safely 
+// if any older module pieces attempt to invoke it.
+export function addOrthomosaicShingle(r, isFrontVisible, isRearVisible) {
+    syncOrthoLayers();
 }
 
 export function setPassPairsVisible(visible) {

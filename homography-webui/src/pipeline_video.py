@@ -3,13 +3,13 @@ import cv2
 import json
 import math
 import numpy as np
-from utils import sanitize_meta
+from utils import sanitize_meta, atomic_write_json
 from geo_math import calculate_bearing, apply_camera_offset
 from parser_gpmf import extract_streams_with_time
 from telemetry import evaluate_telemetry_health, get_telemetry_interpolators
 from pipeline_image import process_single_image
 
-def process_video_frames_async(video_path, model, upload_dir, file_name, original_name, location_str, options, model_lock, callback, is_cancelled=None, sam2_predictor=None):
+def process_video_frames_async(video_path, model, upload_dir, file_name, original_name, location_str, options, model_lock, callback, is_cancelled=None, sam2_predictor=None, sam2_lock=None):
     cap = cv2.VideoCapture(video_path)
     base_stem = os.path.splitext(file_name)[0]
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -67,13 +67,10 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
         if not ret: break
         frame_idx += 1
         
-        msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-        if msec > 0:
-            elapsed_sec = msec / 1000.0
-        else:
-            elapsed_sec = frame_idx / fps
+        # Rely strictly on explicit framerate-based calculation.
+        # cv2.CAP_PROP_POS_MSEC returns 0 or drifts heavily on GoPros.
+        elapsed_sec = frame_idx / fps
             
-        # Sample the exact speed accounting for GPS calculation lag
         speed_val = max(0.0, float(speed_interp(elapsed_sec + gps_lag)))
         dist_accum += speed_val * (elapsed_sec - last_time)
         last_time = elapsed_sec
@@ -85,7 +82,6 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             else:
                 dist_accum = 0.0 
             
-            # Fetch coordinate/pose mapping using the lag-corrected timestamp
             sample_time = elapsed_sec + gps_lag
             current_grav = [float(grav_x_interp(sample_time)), float(grav_y_interp(sample_time)), float(grav_z_interp(sample_time))]
             gx, gy, gz = current_grav
@@ -103,9 +99,6 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                 current_heading = float(heading_interp(sample_time))
             except Exception: continue
 
-            # Shift the raw GPS antenna fix to the true camera position
-            # using the configured lever-arm offset, BEFORE it is used to
-            # derive defect world coordinates downstream.
             if cam_off_fwd or cam_off_right:
                 current_lat, current_lon = apply_camera_offset(raw_lat, raw_lon, current_heading, cam_off_right, cam_off_fwd)
             else:
@@ -135,8 +128,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                     "Roll_UI": current_roll
                 })
             }
-            with open(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), 'w') as mf:
-                json.dump(frame_meta, mf, indent=2)
+            atomic_write_json(os.path.join(upload_dir, f"meta_{frame_base_name}.json"), frame_meta, indent=2)
 
             telemetry = {
                 "lat": current_lat,
@@ -160,7 +152,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             try:
                 defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                     frame, model, frame_base_name, upload_dir, telemetry, options, model_lock, original_frame_name,
-                    sam2_predictor=sam2_predictor
+                    sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                 )
                 
                 process_meta_data = {
@@ -169,15 +161,12 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                     "view_meta": view_meta,
                     "original_name": original_frame_name
                 }
-                with open(os.path.join(upload_dir, f"process_meta_{frame_base_name}.json"), 'w') as f:
-                    json.dump(process_meta_data, f)
+                atomic_write_json(os.path.join(upload_dir, f"process_meta_{frame_base_name}.json"), process_meta_data)
                     
             except Exception as e:
                 callback({"error": str(e), "is_video": False, "original_name": original_frame_name})
                 continue
             
-            # Maintain full coordinate float precision to avoid 11cm quantisation
-            # staircase errors on the plotted UI trails/footprints
             result_payload = {
                 "original_name": original_frame_name,
                 "filename": frame_base_name,
