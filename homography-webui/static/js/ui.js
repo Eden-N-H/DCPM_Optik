@@ -1,7 +1,16 @@
 import { state } from './state.js';
-import { updateMapSource, clearOrthomosaics, addOrthomosaicShingle, setPassPairsData, clearPassPairsData } from './map.js';
+import { updateMapSource, clearOrthomosaics, syncOrthoLayers, setPassPairsData, clearPassPairsData } from './map.js';
 import { stringToColor } from './utils.js';
 import { fetchGridPreview, recalculateProject, autoDetectVP, clickManualVP, fetchSam2Preview, fetchSam2PreviewCorridor, fetchPassDiagnostics } from './api.js';
+
+export function enableWorkspaceTools() {
+    document.getElementById("btn-save-project").classList.remove("hidden");
+    document.getElementById("btn-export-zip").classList.remove("hidden");
+    document.getElementById("btn-export-flat-zip").classList.remove("hidden");
+    document.getElementById("btn-toggle-map").classList.remove("hidden");
+    document.getElementById("btn-analyze-passes").classList.remove("hidden");
+    document.getElementById("btn-group-defects").classList.remove("hidden");
+}
 
 export function handleMapClick(clickedName) {
     const target = state.fullResults.find(r => r.original_name === clickedName || r.filename === clickedName);
@@ -22,7 +31,12 @@ export function checkCanProcess() {
     const skipAi = chkSkipAi ? chkSkipAi.checked : false;
     const hasModel = (state.isModelLoaded || state.modelFile !== null);
     
-    btnProcess.disabled = !((hasModel || skipAi) && state.imageFiles.length > 0);
+    btnProcess.disabled = !((hasModel || skipAi) && state.imageFiles.length > 0) || state.currentTaskId !== null;
+    
+    const btnManualEntry = document.getElementById("btn-add-defect");
+    if (btnManualEntry) {
+        btnManualEntry.disabled = state.currentTaskId !== null;
+    }
 }
 
 const handleFiles = (files, isMulti, callback, nameElement) => {
@@ -73,6 +87,10 @@ export function refreshLocationsUI() {
     const locations = [...new Set(state.fullResults.map(r => r.location))];
     const currentSelection = selLocation.value;
     
+    // Remember current item to avoid violently jumping back to 0
+    const currentItem = state.appResults[state.currentIndex];
+    const targetName = currentItem ? currentItem.original_name : null;
+    
     selLocation.innerHTML = locations.map(loc => `<option value="${loc}">${loc}</option>`).join("");
     if (locations.includes(currentSelection)) selLocation.value = currentSelection;
     else if (locations.length > 0) selLocation.value = locations[0];
@@ -84,6 +102,15 @@ export function refreshLocationsUI() {
     };
     
     state.appResults = state.fullResults.filter(r => r.location === selLocation.value);
+    
+    if (targetName) {
+        const foundIdx = state.appResults.findIndex(r => r.original_name === targetName);
+        if (foundIdx > -1) state.currentIndex = foundIdx;
+        else state.currentIndex = 0;
+    } else {
+        state.currentIndex = 0;
+    }
+    
     if(state.appResults.length > 0 && document.getElementById("img-rect").classList.contains("hidden")) updateCarousel(false);
 }
 
@@ -137,6 +164,8 @@ export function updateCarousel(panMap = true) {
     }
     imgRect.src = activeViewData.rect_url.split('?')[0] + `?t=${ts}`;
 
+    const isProcessing = (state.currentTaskId !== null);
+
     document.getElementById("table-defects").innerHTML = activeViewData.defects.map((d) => {
         let badge = '';
         if(d.is_stitched || d.is_grouped) badge = `<span class="badge" style="background:#ff9900; margin-left:4px;" title="Spans multiple frames: ${d.spanned_frames ? d.spanned_frames.join(', ') : ''}">MULTI</span>`;
@@ -146,13 +175,13 @@ export function updateCarousel(panMap = true) {
             <td>${(d.conf*100).toFixed(0)}%</td>
             <td><strong>${d.area_sqm} m²</strong></td>
             <td class="text-right">
-                <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" title="Change Class">
+                <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" title="Change Class" ${isProcessing ? 'disabled' : ''}>
                     <svg viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
                 </button>
-                <button onclick="window.startReoutlineDefect(${d.det_idx})" class="action-icon" title="Re-outline">
+                <button onclick="window.startReoutlineDefect(${d.det_idx})" class="action-icon" title="Re-outline" ${isProcessing ? 'disabled' : ''}>
                     <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
-                <button onclick="window.deleteDefect(${d.det_idx})" class="action-icon" title="Delete">
+                <button onclick="window.deleteDefect(${d.det_idx})" class="action-icon" title="Delete" ${isProcessing ? 'disabled' : ''}>
                     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
             </td>
@@ -169,6 +198,8 @@ export function updateCarousel(panMap = true) {
 
     document.getElementById("btn-prev").disabled = (state.currentIndex === 0);
     document.getElementById("btn-next").disabled = (state.currentIndex === state.appResults.length - 1);
+
+    syncOrthoLayers();
 }
 
 export function openFullscreen(type) {
@@ -336,11 +367,7 @@ export function setupDiagnosticsUI() {
                 });
                 updateMapSource('nodes-source', state.nodesGeoJson);
                 
-                clearOrthomosaics();
-                const chkF = document.getElementById("chk-layer-front").checked;
-                const chkR = document.getElementById("chk-layer-rear").checked;
-                state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
-                
+                syncOrthoLayers();
                 updateCarousel(false);
                 toggleDiagnosticsModal(false);
                 alert("Trajectory successfully aligned. Defect locations have been automatically re-projected onto the corrected GPS baseline.");
@@ -504,11 +531,7 @@ export function setupCalibrationUI() {
             state.fullResults.forEach(r => state.fullGeojson.features.push(...r.geojson));
             updateMapSource('defects-source', state.fullGeojson);
             
-            clearOrthomosaics();
-            const chkF = document.getElementById("chk-layer-front").checked;
-            const chkR = document.getElementById("chk-layer-rear").checked;
-            state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
-            
+            syncOrthoLayers();
             updateCarousel(false);
             close();
         } catch(err) {
@@ -1160,11 +1183,7 @@ export async function combineDefectSegments(triggerButtons) {
             state.fullResults.forEach(r => state.fullGeojson.features.push(...r.geojson));
             updateMapSource('defects-source', state.fullGeojson);
             
-            clearOrthomosaics();
-            const chkF = document.getElementById("chk-layer-front").checked;
-            const chkR = document.getElementById("chk-layer-rear").checked;
-            state.fullResults.forEach(r => addOrthomosaicShingle(r, chkF, chkR));
-            
+            syncOrthoLayers();
             updateCarousel(false);
             alert("Defects successfully combined: continuous defects stitched into single polygons, and repeated observations of the same defect grouped into one entry.");
         } else {

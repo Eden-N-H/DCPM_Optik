@@ -67,11 +67,9 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
         if not ret: break
         frame_idx += 1
         
-        msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-        if msec > 0:
-            elapsed_sec = msec / 1000.0
-        else:
-            elapsed_sec = frame_idx / fps
+        # Rely strictly on explicit framerate-based calculation.
+        # cv2.CAP_PROP_POS_MSEC returns 0 or drifts heavily on GoPros.
+        elapsed_sec = frame_idx / fps
             
         speed_val = max(0.0, float(speed_interp(elapsed_sec + gps_lag)))
         dist_accum += speed_val * (elapsed_sec - last_time)

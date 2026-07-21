@@ -1,6 +1,6 @@
 import { state } from './state.js';
-import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, addOrthomosaicShingle } from './map.js';
-import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal, setupDiagnosticsUI, combineDefectSegments } from './ui.js';
+import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, syncOrthoLayers } from './map.js';
+import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal, setupDiagnosticsUI, combineDefectSegments, enableWorkspaceTools } from './ui.js';
 import { executeJob, triggerZipExport, cancelJob, exportProject, importProject } from './api.js';
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -48,14 +48,12 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("btn-export-zip").onclick = () => triggerZipExport(
         "/export-zip", 
         "btn-export-zip", 
-        `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Compiling RAW...`, 
         "DCPM_RAW_Export.zip"
     );
     
     document.getElementById("btn-export-flat-zip").onclick = () => triggerZipExport(
         "/export-flat-zip", 
         "btn-export-flat-zip", 
-        `<img src="https://api.iconify.design/svg-spinners/180-ring.svg?color=white" class="w-4 h-4 inline align-middle -mt-0.5 mr-1"> Compiling Flattened...`, 
         "DCPM_FLAT_Export.zip"
     );
 
@@ -136,14 +134,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             document.getElementById("upload-panel").classList.add("hidden");
             document.getElementById("workspace").classList.remove("hidden");
-            document.getElementById("btn-save-project").classList.remove("hidden");
-            document.getElementById("btn-export-zip").classList.remove("hidden");
-            document.getElementById("btn-export-flat-zip").classList.remove("hidden");
-            document.getElementById("btn-toggle-map").classList.remove("hidden"); 
-            document.getElementById("btn-analyze-passes").classList.remove("hidden");
-            if (document.getElementById("btn-group-defects")) {
-                document.getElementById("btn-group-defects").classList.remove("hidden");
-            }
+            enableWorkspaceTools();
             
             state.layoutPrefs.mapOn.isManual = false;
             state.layoutPrefs.mapOff.isManual = false;
@@ -177,7 +168,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 updateMapSource('nodes-source', state.nodesGeoJson);
                 updateMapSource('trail-source', state.trailGeoJson);
 
-                state.fullResults.forEach(r => addOrthomosaicShingle(r, true, true));
+                syncOrthoLayers();
 
                 if (state.fullGeojson.features.length > 0) fitMapToBounds(state.fullGeojson);
                 else if (state.trailGeoJson.features.length > 0) fitMapToBounds(state.trailGeoJson);
@@ -190,8 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
             alert("Error loading project: " + err.message); 
         } finally {
             document.body.removeChild(loaderDiv);
-            e.target.value = ''; // Reset input to allow loading the same file twice
+            e.target.value = ''; 
         }
     });
 });
-

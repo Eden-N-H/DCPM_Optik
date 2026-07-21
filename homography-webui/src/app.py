@@ -40,7 +40,7 @@ clear_uploads(app.config['UPLOAD_FOLDER'])
 global_model = None
 model_lock = threading.Lock()
 sam2_predictor = None
-sam2_lock = threading.Lock()  # Safeguards global SAM2 Predictor internal states across threads
+sam2_lock = threading.Lock()
 
 FALLBACK_CLASSES = ["Defect", "Pothole", "Cracking", "Rutting", "Patching", "Edge Break", "Line Marking", "Other"]
 
@@ -152,11 +152,9 @@ def stream(task_id):
                 if msg['type'] in ['complete', 'error', 'cancelled']:
                     break
         except GeneratorExit:
-            pass # Client disconnected prematurely
-        finally:
-            if task_id in cancel_flags:
-                cancel_flags[task_id] = True # Tell background worker to gracefully spin down
-            active_tasks.pop(task_id, None)
+            # Client disconnected prematurely. Do NOT set the cancel flag. Let the 
+            # background task finish processing so work isn't lost on a network blip.
+            pass
             
     return Response(event_stream(), mimetype="text/event-stream")
 

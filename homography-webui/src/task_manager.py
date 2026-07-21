@@ -160,6 +160,11 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
             safe_put({"type": "error", "message": str(e)})
         finally:
             cancel_flags.pop(t_id, None)
+            def delayed_cleanup():
+                import time
+                time.sleep(10)
+                active_tasks.pop(t_id, None)
+            threading.Thread(target=delayed_cleanup).start()
 
     threading.Thread(target=process_worker, args=(image_data, task_id, options)).start()
 
