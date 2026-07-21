@@ -5,7 +5,7 @@ import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMap
 export async function exportProject(projectState, btnId, filename) {
     const btn = document.getElementById(btnId);
     const originalText = btn.innerHTML;
-    btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> SAVING...`; 
+    btn.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> SAVING...`; 
     btn.disabled = true;
     try {
         const res = await fetch("/export-project", {
@@ -42,7 +42,7 @@ export async function triggerZipExport(endpoint, btnId, filename) {
     if (state.fullResults.length === 0) return;
     const btn = document.getElementById(btnId); 
     const originalText = btn.innerHTML;
-    btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> PACKAGING...`; 
+    btn.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> PACKAGING...`; 
     btn.disabled = true;
     try {
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ results: state.fullResults }) });
@@ -319,7 +319,7 @@ export async function executeJob() {
     document.getElementById("no-warnings-msg").classList.remove("hidden");
     
     const btnCancel = document.getElementById("btn-cancel-job");
-    btnCancel.disabled = false; btnCancel.innerHTML = `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> ABORT`;
+    btnCancel.disabled = false; btnCancel.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> ABORT`;
     
     const telemetryHud = document.getElementById("telemetry-hud");
     telemetryHud.innerHTML = ""; telemetryHud.classList.add("hidden");

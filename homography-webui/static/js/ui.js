@@ -62,6 +62,14 @@ export function setupDz(dzId, inId, nameId, isMulti, callback) {
     
     dz.addEventListener('click', () => inp.click());
     
+    // Add keyboard support for dropzones
+    dz.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            inp.click();
+        }
+    });
+    
     dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add("drag-active"); });
     dz.addEventListener('dragenter', (e) => { e.preventDefault(); dz.classList.add("drag-active"); });
     dz.addEventListener('dragleave', (e) => { e.preventDefault(); dz.classList.remove("drag-active"); });
@@ -175,14 +183,14 @@ export function updateCarousel(panMap = true) {
             <td>${(d.conf*100).toFixed(0)}%</td>
             <td><strong>${d.area_sqm} m²</strong></td>
             <td class="text-right">
-                <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" title="Change Class" ${isProcessing ? 'disabled' : ''}>
-                    <svg viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
+                <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" aria-label="Change Class" title="Change Class" ${isProcessing ? 'disabled' : ''}>
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
                 </button>
-                <button onclick="window.startReoutlineDefect(${d.det_idx})" class="action-icon" title="Re-outline" ${isProcessing ? 'disabled' : ''}>
-                    <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                <button onclick="window.startReoutlineDefect(${d.det_idx})" class="action-icon" aria-label="Re-outline" title="Re-outline" ${isProcessing ? 'disabled' : ''}>
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
-                <button onclick="window.deleteDefect(${d.det_idx})" class="action-icon" title="Delete" ${isProcessing ? 'disabled' : ''}>
-                    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                <button onclick="window.deleteDefect(${d.det_idx})" class="action-icon" aria-label="Delete" title="Delete" ${isProcessing ? 'disabled' : ''}>
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
             </td>
         </tr>`;
@@ -483,7 +491,7 @@ export function setupCalibrationUI() {
         } catch(err) { console.error(err); }
         finally {
             btnAutoVP.disabled = false;
-            btnAutoVP.innerHTML = `<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> AUTO-VP`;
+            btnAutoVP.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> AUTO-VP`;
         }
     };
 
