@@ -37,7 +37,21 @@ def create_corridor(frames, upload_folder):
     H_canvas = int((max_y - min_y) * PPM)
     
     canvas = np.zeros((H_canvas, W_canvas, 3), dtype=np.uint8)
-    
+
+    # Feather width (in canvas pixels) used to blend each new frame's own
+    # boundary into whatever is already stitched onto the canvas. Purely a
+    # compositing-quality improvement -- it does not touch any coordinate
+    # or homography math, so geo-referenced defect positions are unaffected.
+    #
+    # Previously frames were composited with a hard boolean cutover
+    # (`canvas = np.where(mask > 0, warped, canvas)`), which produces a
+    # visible seam line at every frame boundary even when the underlying
+    # geometric alignment is perfect (due to per-frame exposure/perspective
+    # differences at the very edge). Feathering the new frame's edge and
+    # alpha-blending it over existing content removes that visible seam
+    # without affecting alignment accuracy.
+    FEATHER_PX = 15.0
+
     for dx, dy, f in centers_m:
         img_name = os.path.basename(f['bev_url'].split('?')[0])
         img_path = os.path.join(upload_folder, img_name)
@@ -68,9 +82,26 @@ def create_corridor(frames, upload_folder):
             
         M = cv2.getAffineTransform(pts_img, np.float32(pts_canvas))
         warped = cv2.warpAffine(bev_img, M, (W_canvas, H_canvas))
-        mask = (warped > 0).astype(np.uint8)
-        
-        canvas = np.where(mask > 0, warped, canvas)
+        mask = (warped.sum(axis=2) > 0).astype(np.uint8)
+
+        if mask.sum() == 0:
+            continue
+
+        existing_mask = (canvas.sum(axis=2) > 0)
+
+        # Distance transform of the new frame's own footprint gives a
+        # smooth 0->1 ramp from its boundary inward, used only where we're
+        # blending over pre-existing content. Regions of the canvas that
+        # are still empty always get the new frame at full opacity, so the
+        # overall corridor's leading/trailing edges are never faded out.
+        dist = cv2.distanceTransform((mask * 255).astype(np.uint8), cv2.DIST_L2, 5)
+        alpha = np.clip(dist / FEATHER_PX, 0.0, 1.0).astype(np.float32)[..., None]
+
+        blended = (canvas.astype(np.float32) * (1.0 - alpha) + warped.astype(np.float32) * alpha)
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+        new_content = np.where(existing_mask[..., None], blended, warped)
+        canvas = np.where(mask[..., None] > 0, new_content, canvas).astype(np.uint8)
         
     corridor_filename = f"corridor_{base_f['filename']}.png"
     cv2.imwrite(os.path.join(upload_folder, corridor_filename), canvas)

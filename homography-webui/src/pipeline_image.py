@@ -7,6 +7,7 @@ from ultralytics.utils.plotting import colors
 from geo_math import local_to_global, global_to_local
 from cv_projections import equirectangular_to_rectilinear
 from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
+from depth_integration import is_pothole_class, attach_depth_to_detection
 
 def _run_sam2_on_points(image_bgr, points, predictor):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -108,6 +109,9 @@ def _render_simple_view_from_detections(process_meta, view_name, calib, filename
         cv2.polylines(annotated_rect, [pts], isClosed=True, color=color_bgr, thickness=2)
         
         area_px = cv2.contourArea(pts)
+        # Orthographic/simple frames have no camera model (no K/BEV
+        # homography), so depth estimation is intentionally not run here --
+        # only the 360/standard-video BEV pipeline supports it.
         defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_px, 0), "color": hex_color, "det_idx": det_idx})
         
     rect_filename = f"rect_{view_name}_{filename}"
@@ -177,6 +181,20 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
         is_stitched = det.get('is_stitched', False)
         is_grouped = det.get('is_grouped', False)
         spanned_frames = det.get('spanned_frames', [])
+
+        # Depth is never recomputed here -- this function only re-renders
+        # existing polygons (e.g. after grouping/alignment). Depth stats
+        # were computed once at creation time (process_single_image /
+        # recalculate_view / modify_defects) and persisted onto the
+        # detection dict; grouping.py only ever dict.update()s extra keys
+        # onto that same dict, so these fields survive grouping/stitching
+        # untouched. We just pass them through into the response here.
+        depth_props = {
+            "depth_max_mm": det.get("depth_max_mm"),
+            "depth_mean_mm": det.get("depth_mean_mm"),
+            "depth_quality": det.get("depth_quality"),
+            "depth_map_file": det.get("depth_map_file"),
+        }
         
         if is_stitched:
             geo_coords = det.get('world_polygon', [])
@@ -209,10 +227,10 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
                 cv2.fillPoly(overlay, [pts], color=color_bgr)
                 cv2.addWeighted(overlay, 0.4, annotated_bev_bgr, 0.6, 0, annotated_bev_bgr)
                 
-            defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(det.get('area_sqm', 0), 4), "color": hex_color, "det_idx": det_idx, "is_stitched": True, "spanned_frames": spanned_frames})
+            defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(det.get('area_sqm', 0), 4), "color": hex_color, "det_idx": det_idx, "is_stitched": True, "spanned_frames": spanned_frames, **depth_props})
             geojson_features.append({
                 "type": "Feature",
-                "properties": {"class": class_name, "area_sqm": round(det.get('area_sqm', 0), 4), "view": view_name, "color": hex_color, "filename": filename, "conf": round(conf, 2), "det_idx": det_idx, "is_stitched": True, "spanned_frames": spanned_frames},
+                "properties": {"class": class_name, "area_sqm": round(det.get('area_sqm', 0), 4), "view": view_name, "color": hex_color, "filename": filename, "conf": round(conf, 2), "det_idx": det_idx, "is_stitched": True, "spanned_frames": spanned_frames, **depth_props},
                 "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
             })
             continue
@@ -241,11 +259,11 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
                 if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
             else: geo_coords = []
             
-            defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": det_idx, "is_grouped": is_grouped, "spanned_frames": spanned_frames})
+            defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": det_idx, "is_grouped": is_grouped, "spanned_frames": spanned_frames, **depth_props})
             if geo_coords:
                 geojson_features.append({
                     "type": "Feature",
-                    "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": filename, "conf": round(conf, 2), "det_idx": det_idx, "is_grouped": is_grouped, "spanned_frames": spanned_frames},
+                    "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": filename, "conf": round(conf, 2), "det_idx": det_idx, "is_grouped": is_grouped, "spanned_frames": spanned_frames, **depth_props},
                     "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                 })
                 
@@ -289,6 +307,7 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
                 "polygon": pts.tolist()
             })
             det_idx = len(view_meta["front"]["detections"]) - 1
+            # No camera model in orthographic mode -- depth is skipped here.
             all_defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_px, 0), "color": hex_color, "det_idx": det_idx})
     else:
         for r in results:
@@ -418,6 +437,10 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                 cv2.fillPoly(mask_canvas, [pts.astype(np.int32)], 255)
                 contours, _ = cv2.findContours(cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h)), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
+                _det_entries = []
+                _geo_props_entries = []
+                _area_total = 0.0
+
                 for contour in contours:
                     area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                     if area_sqm <= 1e-5: continue
@@ -429,12 +452,30 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                     geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[0]] for pt in contour]
                     if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                     
-                    all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
+                    defect_entry = {"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx}
+                    all_defects[view_name].append(defect_entry)
+                    _det_entries.append(defect_entry)
+                    _area_total += area_sqm
+
+                    geo_props = {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx}
                     all_geojson_features.append({
                         "type": "Feature",
-                        "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx},
+                        "properties": geo_props,
                         "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                     })
+                    _geo_props_entries.append(geo_props)
+
+                # Pothole-only, cached, computed once per detection (not per
+                # BEV contour fragment) using its total BEV surface area.
+                if is_pothole_class(class_name):
+                    cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
+                    attach_depth_to_detection(
+                        view_meta["detections"], this_det_idx, class_name,
+                        rect_img, pts, K, cam_height, v_down, _area_total,
+                        output_dir, cache_key,
+                        extra_targets=[_det_entries, _geo_props_entries],
+                        force=False
+                    )
         else:
             for r in results:
                 annotated_rect = r.plot(img=annotated_rect)
@@ -456,6 +497,10 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                         cv2.fillPoly(mask_canvas, [np.array(mask_pts, dtype=np.int32)], 255)
                         contours, _ = cv2.findContours(cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h)), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         
+                        _det_entries = []
+                        _geo_props_entries = []
+                        _area_total = 0.0
+
                         for contour in contours:
                             area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                             if area_sqm <= 1e-5: continue
@@ -467,12 +512,28 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                             geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_range_base, y_max_base-(pt[0][1]*gsd))[0]] for pt in contour]
                             if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                             
-                            all_defects[view_name].append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
+                            defect_entry = {"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx}
+                            all_defects[view_name].append(defect_entry)
+                            _det_entries.append(defect_entry)
+                            _area_total += area_sqm
+
+                            geo_props = {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx}
                             all_geojson_features.append({
                                 "type": "Feature",
-                                "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx},
+                                "properties": geo_props,
                                 "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                             })
+                            _geo_props_entries.append(geo_props)
+
+                        if is_pothole_class(class_name):
+                            cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
+                            attach_depth_to_detection(
+                                view_meta["detections"], this_det_idx, class_name,
+                                rect_img, np.array(mask_pts, dtype=np.float32), K, cam_height, v_down, _area_total,
+                                output_dir, cache_key,
+                                extra_targets=[_det_entries, _geo_props_entries],
+                                force=False
+                            )
 
         annotated_bev_rgba = apply_bev_feathering(annotated_bev_bgr)
         rect_filename = f"rect_{view_name}_{base_filename}"
@@ -639,6 +700,10 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
             cv2.fillPoly(mask_canvas, [pts.astype(np.int32)], 255)
             contours, _ = cv2.findContours(cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h)), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
+            _det_entries = []
+            _geo_props_entries = []
+            _area_total = 0.0
+
             for contour in contours:
                 area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                 if area_sqm <= 1e-5: continue
@@ -650,12 +715,30 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                 geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[0]] for pt in contour]
                 if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                 
-                defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
+                defect_entry = {"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx}
+                defects.append(defect_entry)
+                _det_entries.append(defect_entry)
+                _area_total += area_sqm
+
+                geo_props = {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx}
                 geojson_features.append({
                     "type": "Feature",
-                    "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx},
+                    "properties": geo_props,
                     "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                 })
+                _geo_props_entries.append(geo_props)
+
+            # Recalibration explicitly changed geometry, so always recompute
+            # (never reuse a stale cached depth map from the old calibration).
+            if is_pothole_class(class_name):
+                cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
+                attach_depth_to_detection(
+                    view_meta_detections, this_det_idx, class_name,
+                    rect_img, pts, K, cam_h, v_down, _area_total,
+                    output_dir, cache_key,
+                    extra_targets=[_det_entries, _geo_props_entries],
+                    force=True
+                )
     else:
         for r in results:
             annotated_rect = r.plot(img=annotated_rect)
@@ -677,6 +760,10 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                     cv2.fillPoly(mask_canvas, [np.array(mask_pts, dtype=np.int32)], 255)
                     contours, _ = cv2.findContours(cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h)), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     
+                    _det_entries = []
+                    _geo_props_entries = []
+                    _area_total = 0.0
+
                     for contour in contours:
                         area_sqm = cv2.contourArea(contour) * (gsd ** 2)
                         if area_sqm <= 1e-5: continue
@@ -688,12 +775,28 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                         geo_coords = [[local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[1], local_to_global(gps_lat, gps_lon, view_heading, (pt[0][0]*gsd)-x_r, y_max-(pt[0][1]*gsd))[0]] for pt in contour]
                         if geo_coords[0] != geo_coords[-1]: geo_coords.append(geo_coords[0])
                         
-                        defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx})
+                        defect_entry = {"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_sqm, 4), "color": hex_color, "det_idx": this_det_idx}
+                        defects.append(defect_entry)
+                        _det_entries.append(defect_entry)
+                        _area_total += area_sqm
+
+                        geo_props = {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx}
                         geojson_features.append({
                             "type": "Feature",
-                            "properties": {"class": class_name, "area_sqm": round(area_sqm, 4), "view": view_name, "color": hex_color, "filename": base_filename, "conf": round(conf, 2), "det_idx": this_det_idx},
+                            "properties": geo_props,
                             "geometry": {"type": "Polygon", "coordinates": [geo_coords]}
                         })
+                        _geo_props_entries.append(geo_props)
+
+                    if is_pothole_class(class_name):
+                        cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
+                        attach_depth_to_detection(
+                            view_meta_detections, this_det_idx, class_name,
+                            rect_img, np.array(mask_pts, dtype=np.float32), K, cam_h, v_down, _area_total,
+                            output_dir, cache_key,
+                            extra_targets=[_det_entries, _geo_props_entries],
+                            force=True
+                        )
 
     annotated_bev_rgba = apply_bev_feathering(annotated_bev_bgr)
     cv2.imwrite(os.path.join(output_dir, f"rect_{view_name}_{base_filename}"), annotated_rect)

@@ -1,6 +1,6 @@
 import { state } from './state.js';
 import { toggleMapLayerVisibility, clearOrthomosaics, initMap, updateMapSource, fitMapToBounds, addOrthomosaicShingle } from './map.js';
-import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal, setupDiagnosticsUI, combineDefectSegments } from './ui.js';
+import { setupDz, checkCanProcess, setView, handleMapClick, refreshLocationsUI, updateCarousel, toggleWarningsModal, toggleMapView, initResizers, autoFitSplitters, setupCalibrationUI, initDrawMode, openFullscreen, initFullscreenModal, initDepthModal, setupDiagnosticsUI, combineDefectSegments } from './ui.js';
 import { executeJob, triggerZipExport, cancelJob } from './api.js';
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDiagnosticsUI();
     initDrawMode();
     initFullscreenModal();
+    initDepthModal();
 
     document.getElementById("rect-image-wrapper").addEventListener("click", () => {
         openFullscreen('rect');

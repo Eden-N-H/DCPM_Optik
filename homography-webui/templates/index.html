@@ -351,6 +351,30 @@
         </div>
     </dialog>
 
+    <dialog id="depth-map-modal" class="modal modal-large">
+        <div class="modal-header">
+            <h2 id="depth-map-title">POTHOLE DEPTH MAP</h2>
+            <button id="btn-close-depth-map" class="close-btn">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="modal-body flex-col gap-2">
+            <div class="calibration-preview" style="height:400px;">
+                <img id="depth-map-image" src="" style="max-width:100%; max-height:100%; object-fit:contain;">
+            </div>
+            <div class="stat-grid">
+                <div class="stat-card"><span class="stat-label">Max Depth</span><span class="stat-value" id="depth-stat-max">—</span></div>
+                <div class="stat-card"><span class="stat-label">Mean Depth</span><span class="stat-value" id="depth-stat-mean">—</span></div>
+                <div class="stat-card"><span class="stat-label">Confidence</span><span class="stat-value" id="depth-stat-quality">—</span></div>
+            </div>
+            <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted);">
+                Colour scale (JET): dark blue = shallow / surface level, red = deepest point within the masked
+                pothole region. Depth is a morphometric estimate derived from the defect's measured surface
+                area and mask shape, not a directly-sensed measurement — treat it as an approximation.
+            </p>
+        </div>
+    </dialog>
+
     <dialog id="draw-modal" class="modal modal-xl">
         <div class="modal-header">
             <h2>POLYGON DEFINITION</h2>

@@ -21,39 +21,68 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
     cam_off_fwd = options.get('cam_offset_forward_m', 0.0) or 0.0
     cam_off_right = options.get('cam_offset_right_m', 0.0) or 0.0
 
+    # --------------------------------------------------------------------
+    # PASS 1: Compute heading for every image using the ORIGINAL (raw)
+    # GPS trace only.
+    #
+    # Previously, heading computation and lever-arm offset application
+    # were interleaved in a single loop that mutated image_data[i]['lat']/
+    # ['lon'] in place. Because points are visited in order, by the time
+    # point i's heading was computed, point i-1's coordinates had ALREADY
+    # been overwritten with their offset-corrected value from the prior
+    # iteration, while point i+1 was still raw -- so the centered-difference
+    # bearing was silently computed from a mixed raw/corrected coordinate
+    # basis. This produced a small but systematic heading error whenever a
+    # nonzero camera offset was configured, which then propagated directly
+    # into every downstream world-placement calculation (BEV footprints,
+    # defect geocoding) via view_heading.
+    #
+    # Splitting into two passes guarantees headings are always derived
+    # from a single, consistent (raw) coordinate basis, independent of
+    # loop order.
+    # --------------------------------------------------------------------
+    raw_photo_coords = [
+        (a['lat'], a['lon']) if a['ext'] in ALLOWED_IMAGE_EXT else None
+        for a in image_data
+    ]
+
+    for i in range(len(image_data)):
+        if image_data[i]['ext'] not in ALLOWED_IMAGE_EXT:
+            continue
+
+        lat, lon = raw_photo_coords[i]
+
+        prev_valid = i > 0 and raw_photo_coords[i - 1] is not None and raw_photo_coords[i - 1][0] is not None and lat is not None
+        next_valid = (i < len(image_data) - 1 and raw_photo_coords[i + 1] is not None
+                      and raw_photo_coords[i + 1][0] is not None and lat is not None)
+
+        if prev_valid and next_valid:
+            heading = calculate_bearing(raw_photo_coords[i - 1][0], raw_photo_coords[i - 1][1],
+                                         raw_photo_coords[i + 1][0], raw_photo_coords[i + 1][1])
+        elif next_valid:
+            heading = calculate_bearing(lat, lon, raw_photo_coords[i + 1][0], raw_photo_coords[i + 1][1])
+        elif prev_valid:
+            heading = calculate_bearing(raw_photo_coords[i - 1][0], raw_photo_coords[i - 1][1], lat, lon)
+        else:
+            heading = image_data[i - 1].get('heading', 0.0) if i > 0 else 0.0
+
+        image_data[i]['heading'] = heading
+
+    # --------------------------------------------------------------------
+    # PASS 2: Apply lever-arm offset (now that every heading is final and
+    # consistent), cluster into locations, and build the trail/UI state.
+    # --------------------------------------------------------------------
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
-            lat, lon = image_data[i]['lat'], image_data[i]['lon']
-
-            # Centered-difference heading: previously this was a pure forward
-            # difference (bearing from i to i+1 only), which systematically
-            # "looks ahead" through corners and produces a heading bias whose
-            # magnitude depends on the spacing between captured photos --
-            # spacing that isn't repeatable between sessions. Using the
-            # midpoint bearing (i-1 -> i+1) removes that directional bias for
-            # all interior points; only the first/last photo in a sequence
-            # fall back to a one-sided difference.
-            prev_valid = i > 0 and image_data[i-1].get('lat') is not None and lat is not None
-            next_valid = i < len(image_data) - 1 and image_data[i+1].get('lat') is not None and lat is not None
-
-            if prev_valid and next_valid:
-                heading = calculate_bearing(image_data[i-1]['lat'], image_data[i-1]['lon'], image_data[i+1]['lat'], image_data[i+1]['lon'])
-            elif next_valid:
-                heading = calculate_bearing(lat, lon, image_data[i+1]['lat'], image_data[i+1]['lon'])
-            elif prev_valid:
-                heading = calculate_bearing(image_data[i-1]['lat'], image_data[i-1]['lon'], lat, lon)
-            else:
-                heading = image_data[i-1].get('heading', 0.0) if i > 0 else 0.0
-
-            image_data[i]['heading'] = heading
+            lat, lon = raw_photo_coords[i]
+            heading = image_data[i]['heading']
 
             if lat is not None and lon is not None:
-                # Shift the raw GPS antenna fix to the true camera position
-                # before it's used for trail plotting, location clustering,
-                # or (downstream, in pipeline_image) defect world coordinates.
                 if cam_off_fwd or cam_off_right:
                     image_data[i]['raw_lat'], image_data[i]['raw_lon'] = lat, lon
                     lat, lon = apply_camera_offset(lat, lon, heading, cam_off_right, cam_off_fwd)
+                    image_data[i]['lat'], image_data[i]['lon'] = lat, lon
+                else:
                     image_data[i]['lat'], image_data[i]['lon'] = lat, lon
 
                 trail_coordinates.append([lon, lat])

@@ -110,6 +110,19 @@ export function setView(dir) {
     updateCarousel(false);
 }
 
+function renderDepthCell(d) {
+    const hasDepth = (d.depth_max_mm !== undefined && d.depth_max_mm !== null && d.depth_max_mm !== 0);
+    if (!hasDepth) return '<span style="color:var(--muted);">—</span>';
+
+    if (d.depth_map_file) {
+        return `<button class="btn-small btn-warning" onclick="window.showDepthMap(${d.det_idx})" title="View depth map">
+            ${Math.round(d.depth_max_mm)}mm
+            <svg viewBox="0 0 24 24" style="width:0.9em; height:0.9em;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        </button>`;
+    }
+    return `${Math.round(d.depth_max_mm)}mm`;
+}
+
 export function updateCarousel(panMap = true) {
     if (state.appResults.length === 0) return;
     const current = state.appResults[state.currentIndex];
@@ -145,6 +158,7 @@ export function updateCarousel(panMap = true) {
             <td><span class="color-dot" style="background-color: ${d.color || stringToColor(d.class)};"></span>${d.class} ${badge}</td>
             <td>${(d.conf*100).toFixed(0)}%</td>
             <td><strong>${d.area_sqm} m²</strong></td>
+            <td>${renderDepthCell(d)}</td>
             <td class="text-right">
                 <button onclick="window.startEditDefect(${d.det_idx})" class="action-icon" title="Change Class">
                     <svg viewBox="0 0 24 24"><polygon points="16 3 21 8 8 21 3 21 3 16 16 3"/></svg>
@@ -157,7 +171,7 @@ export function updateCarousel(panMap = true) {
                 </button>
             </td>
         </tr>`;
-    }).join('') || `<tr><td colspan="4" style="text-align:center; padding:10px; color:var(--muted);">NO DETECTIONS FOUND</td></tr>`;
+    }).join('') || `<tr><td colspan="5" style="text-align:center; padding:10px; color:var(--muted);">NO DETECTIONS FOUND</td></tr>`;
 
     state.activeMarkerFilename = current.original_name;
     state.nodesGeoJson.features.forEach(f => { f.properties.active = (f.properties.original_name === state.activeMarkerFilename); });
@@ -189,6 +203,29 @@ export function initFullscreenModal() {
     document.getElementById("btn-close-fullscreen").onclick = () => {
         document.getElementById("fullscreen-modal").close();
         document.getElementById("img-fullscreen").src = "";
+    };
+}
+
+export function initDepthModal() {
+    window.showDepthMap = (detIdx) => {
+        if (state.appResults.length === 0) return;
+        const current = state.appResults[state.currentIndex];
+        const activeViewData = current.views[state.currentDirection] || current.views['front'];
+        const d = activeViewData.defects.find(x => x.det_idx === detIdx);
+        if (!d || !d.depth_map_file) return;
+
+        document.getElementById("depth-map-image").src = `/static/uploads/${d.depth_map_file}?t=${Date.now()}`;
+        document.getElementById("depth-stat-max").textContent = (d.depth_max_mm !== undefined && d.depth_max_mm !== null) ? `${d.depth_max_mm.toFixed(1)} mm` : '—';
+        document.getElementById("depth-stat-mean").textContent = (d.depth_mean_mm !== undefined && d.depth_mean_mm !== null) ? `${d.depth_mean_mm.toFixed(1)} mm` : '—';
+        document.getElementById("depth-stat-quality").textContent = (d.depth_quality !== undefined && d.depth_quality !== null) ? `${(d.depth_quality*100).toFixed(0)}%` : '—';
+        document.getElementById("depth-map-title").textContent = `${d.class} — DEPTH MAP`;
+
+        document.getElementById("depth-map-modal").showModal();
+    };
+
+    document.getElementById("btn-close-depth-map").onclick = () => {
+        document.getElementById("depth-map-modal").close();
+        document.getElementById("depth-map-image").src = "";
     };
 }
 

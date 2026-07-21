@@ -24,6 +24,7 @@ from diagnostics import build_pass_diagnostic_report, align_project
 from corridor import create_corridor
 from geo_math import local_to_global
 from cleanup import clear_uploads
+from depth_integration import is_pothole_class, attach_depth_to_detection
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -589,8 +590,14 @@ def modify_defects():
             
             if idx is not None and idx >= 0 and idx < len(primary_meta['view_meta'][view_name]['detections']):
                 primary_meta['view_meta'][view_name]['detections'][idx] = det_obj
+                this_det_idx = idx
             else:
                 primary_meta['view_meta'][view_name]['detections'].append(det_obj)
+                this_det_idx = len(primary_meta['view_meta'][view_name]['detections']) - 1
+
+            # Multi-frame stitched corridor defects have no single rectilinear
+            # frame/K/homography to run the morphometric depth estimator
+            # against, so depth is intentionally not computed for this path.
             
             with open(meta_path, 'w') as f: json.dump(primary_meta, f)
             
@@ -609,111 +616,184 @@ def modify_defects():
                 
             detections = process_meta['view_meta'][view_name].get('detections', [])
             
-            if action in ['add', 're-outline'] and points:
+            if action in ['add', 're-outline', 'update']:
                 source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
                 media_type = process_meta.get('options', {}).get('media_type', '360-video')
                 is_simple_frame = (media_type == 'orthographic')
                 
-                if is_simple_frame:
-                    rect_img = cv2.imread(source_path)
-                    h, w = rect_img.shape[:2]
-                    rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
-                    pts = None
-                    if use_sam2:
-                        predictor = get_predictor()
-                        if predictor:
-                            pts = _run_sam2_on_points(rect_img, rect_points, predictor)
-                    if pts is None or len(pts) < 3:
-                        pts = np.array(rect_points, dtype=np.float32)
-                    polygon_list = pts.tolist()
-                else:
-                    rect_img, K, grav_vec, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
-                    h, w = rect_img.shape[:2]
-                    
-                    cam_h = float(calib.get('cam_height') or 1.6)
-                    y_min = float(calib.get('z_near') or 1.2)
-                    y_max = float(calib.get('z_far') or 5.0)
-                    road_width = float(calib.get('lane_width') or 6.0)
+                rect_img_for_depth = None
+                K_for_depth = None
+                cam_h_for_depth = None
+                v_down_for_depth = None
+                bev_area_sqm_for_depth = 0.0
+                polygon_list = None
 
-                    from cv_bev import get_bev_homography
-                    H_mat, bev_w, bev_h, PPM, _, _, _ = get_bev_homography(
-                        K, cam_h, grav_vec, eff_yaw, y_min, y_max, road_width
-                    )
-                    
-                    try: H_inv = np.linalg.inv(H_mat)
-                    except np.linalg.LinAlgError: H_inv = np.eye(3)
+                if action in ['add', 're-outline'] and points:
+                    if is_simple_frame:
+                        rect_img = cv2.imread(source_path)
+                        h, w = rect_img.shape[:2]
+                        rect_points = [[int(np.clip(px * w, 0, w - 1)), int(np.clip(py * h, 0, h - 1))] for px, py in points]
+                        pts = None
+                        if use_sam2:
+                            predictor = get_predictor()
+                            if predictor:
+                                pts = _run_sam2_on_points(rect_img, rect_points, predictor)
+                        if pts is None or len(pts) < 3:
+                            pts = np.array(rect_points, dtype=np.float32)
+                        polygon_list = pts.tolist()
+                    else:
+                        rect_img, K, grav_vec, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+                        h, w = rect_img.shape[:2]
                         
-                    bev_points = []
-                    for px, py in points:
-                        bev_x = np.clip(px * bev_w, 0, bev_w - 1)
-                        bev_y = np.clip(py * bev_h, 0, bev_h - 1)
-                        bev_points.append([bev_x, bev_y])
+                        cam_h = float(calib.get('cam_height') or 1.6)
+                        y_min = float(calib.get('z_near') or 1.2)
+                        y_max = float(calib.get('z_far') or 5.0)
+                        road_width = float(calib.get('lane_width') or 6.0)
+
+                        from cv_bev import get_bev_homography
+                        H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+                            K, cam_h, grav_vec, eff_yaw, y_min, y_max, road_width
+                        )
                         
-                    bev_pts = None
-                    if use_sam2:
-                        raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
-                        predictor = get_predictor()
-                        if predictor:
-                            bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+                        try: H_inv = np.linalg.inv(H_mat)
+                        except np.linalg.LinAlgError: H_inv = np.eye(3)
                             
-                    if bev_pts is None or len(bev_pts) < 3:
-                        bev_pts = np.array(bev_points, dtype=np.float32)
+                        bev_points = []
+                        for px, py in points:
+                            bev_x = np.clip(px * bev_w, 0, bev_w - 1)
+                            bev_y = np.clip(py * bev_h, 0, bev_h - 1)
+                            bev_points.append([bev_x, bev_y])
+                            
+                        bev_pts = None
+                        if use_sam2:
+                            raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+                            predictor = get_predictor()
+                            if predictor:
+                                bev_pts = _run_sam2_on_points(raw_bev_bgr, bev_points, predictor)
+                                
+                        if bev_pts is None or len(bev_pts) < 3:
+                            bev_pts = np.array(bev_points, dtype=np.float32)
+                            
+                        rect_contour_points = []
+                        for pt in bev_pts:
+                            bev_x, bev_y = pt[0], pt[1]
+                            vec = np.array([bev_x, bev_y, 1.0])
+                            rect_pt = H_inv @ vec
+                            if rect_pt[2] != 0:
+                                rect_x = rect_pt[0] / rect_pt[2]
+                                rect_y = rect_pt[1] / rect_pt[2]
+                            else:
+                                rect_x, rect_y = rect_pt[0], rect_pt[1]
+                            rect_x = np.clip(rect_x, 0, w - 1)
+                            rect_y = np.clip(rect_y, 0, h - 1)
+                            rect_contour_points.append([float(rect_x), float(rect_y)])
+                            
+                        polygon_list = rect_contour_points
+
+                        # Stash everything needed for depth estimation, computed
+                        # once the final polygon/det index is known below. Area
+                        # is approximated directly from the BEV-space polygon
+                        # (pixels^2 / PPM^2 = m^2), matching how PPM is defined
+                        # in get_bev_homography.
+                        rect_img_for_depth = rect_img
+                        K_for_depth = K
+                        cam_h_for_depth = cam_h
+                        v_down_for_depth = v_down
+                        try:
+                            bev_area_sqm_for_depth = float(cv2.contourArea(np.array(bev_pts, dtype=np.float32))) / (PPM ** 2)
+                        except Exception:
+                            bev_area_sqm_for_depth = 0.0
+
+                elif action == 'update' and idx is not None and 0 <= idx < len(detections):
+                    polygon_list = detections[idx].get('polygon', [])
+                    
+                    if not is_simple_frame and len(polygon_list) > 2:
+                        rect_img, K, grav_vec, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
+                        h, w = rect_img.shape[:2]
                         
-                    rect_contour_points = []
-                    for pt in bev_pts:
-                        bev_x, bev_y = pt[0], pt[1]
-                        vec = np.array([bev_x, bev_y, 1.0])
-                        rect_pt = H_inv @ vec
-                        if rect_pt[2] != 0:
-                            rect_x = rect_pt[0] / rect_pt[2]
-                            rect_y = rect_pt[1] / rect_pt[2]
+                        cam_h = float(calib.get('cam_height') or 1.6)
+                        y_min = float(calib.get('z_near') or 1.2)
+                        y_max = float(calib.get('z_far') or 5.0)
+                        road_width = float(calib.get('lane_width') or 6.0)
+
+                        from cv_bev import get_bev_homography
+                        H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+                            K, cam_h, grav_vec, eff_yaw, y_min, y_max, road_width
+                        )
+                        
+                        mask_canvas = np.zeros((h, w), dtype=np.uint8)
+                        cv2.fillPoly(mask_canvas, [np.array(polygon_list, dtype=np.int32)], 255)
+                        warped_mask = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
+                        contours, _ = cv2.findContours(warped_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        area_px = sum(cv2.contourArea(c) for c in contours)
+                        
+                        rect_img_for_depth = rect_img
+                        K_for_depth = K
+                        cam_h_for_depth = cam_h
+                        v_down_for_depth = v_down
+                        bev_area_sqm_for_depth = float(area_px) / (PPM ** 2)
+
+                if polygon_list is not None:
+                    if action == 'add' and points:
+                        cls_idx = 0
+                        if global_model is not None and class_name in global_model.names.values():
+                            cls_idx = list(global_model.names.values()).index(class_name)
+                        elif class_name in FALLBACK_CLASSES:
+                            cls_idx = FALLBACK_CLASSES.index(class_name)
+                            
+                        from ultralytics.utils.plotting import colors
+                        color_bgr = colors(cls_idx, bgr=True)
+                        hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
+                        
+                        detections.append({
+                            "class_name": class_name, "conf": 1.0, 
+                            "color_bgr": [int(c) for c in color_bgr], "hex_color": hex_color,
+                            "polygon": polygon_list
+                        })
+                        this_det_idx = len(detections) - 1
+                    elif action == 're-outline' and points:
+                        detections[idx]['polygon'] = polygon_list
+                        detections[idx].pop('is_stitched', None)
+                        detections[idx].pop('is_grouped', None)
+                        detections[idx].pop('world_polygon', None)
+                        detections[idx].pop('area_sqm', None)
+                        detections[idx].pop('spanned_frames', None)
+                        this_det_idx = idx
+                        class_name = detections[idx]['class_name']
+                    elif action == 'update' and idx is not None and 0 <= idx < len(detections):
+                        cls_idx = 0
+                        if global_model is not None and class_name in global_model.names.values():
+                            cls_idx = list(global_model.names.values()).index(class_name)
+                        elif class_name in FALLBACK_CLASSES:
+                            cls_idx = FALLBACK_CLASSES.index(class_name)
+                            
+                        from ultralytics.utils.plotting import colors
+                        color_bgr = colors(cls_idx, bgr=True)
+                        hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
+                        
+                        detections[idx]['class_name'] = class_name
+                        detections[idx]['color_bgr'] = [int(c) for c in color_bgr]
+                        detections[idx]['hex_color'] = hex_color
+                        this_det_idx = idx
+
+                    # Manual add/re-outline/update explicitly changed geometry/class, so this
+                    # always recomputes (never reuses a stale cached depth map).
+                    if rect_img_for_depth is not None and len(polygon_list) > 2:
+                        if is_pothole_class(class_name):
+                            cache_key = f"{filename}_{view_name}_{this_det_idx}_{int(time.time()*1000)}"
+                            attach_depth_to_detection(
+                                detections, this_det_idx, class_name,
+                                rect_img_for_depth, np.array(polygon_list, dtype=np.float32),
+                                K_for_depth, cam_h_for_depth, v_down_for_depth, bev_area_sqm_for_depth,
+                                app.config['UPLOAD_FOLDER'], cache_key, force=True
+                            )
                         else:
-                            rect_x, rect_y = rect_pt[0], rect_pt[1]
-                        rect_x = np.clip(rect_x, 0, w - 1)
-                        rect_y = np.clip(rect_y, 0, h - 1)
-                        rect_contour_points.append([float(rect_x), float(rect_y)])
-                        
-                    polygon_list = rect_contour_points
-                
-                if action == 'add':
-                    cls_idx = 0
-                    if global_model is not None and class_name in global_model.names.values():
-                        cls_idx = list(global_model.names.values()).index(class_name)
-                    elif class_name in FALLBACK_CLASSES:
-                        cls_idx = FALLBACK_CLASSES.index(class_name)
-                        
-                    from ultralytics.utils.plotting import colors
-                    color_bgr = colors(cls_idx, bgr=True)
-                    hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
+                            detections[this_det_idx].pop('depth_max_mm', None)
+                            detections[this_det_idx].pop('depth_mean_mm', None)
+                            detections[this_det_idx].pop('depth_quality', None)
+                            detections[this_det_idx].pop('depth_map_file', None)
                     
-                    detections.append({
-                        "class_name": class_name, "conf": 1.0, 
-                        "color_bgr": [int(c) for c in color_bgr], "hex_color": hex_color,
-                        "polygon": polygon_list
-                    })
-                elif action == 're-outline':
-                    detections[idx]['polygon'] = polygon_list
-                    detections[idx].pop('is_stitched', None)
-                    detections[idx].pop('is_grouped', None)
-                    detections[idx].pop('world_polygon', None)
-                    detections[idx].pop('area_sqm', None)
-                    detections[idx].pop('spanned_frames', None)
-                    
-            elif action == 'update':
-                cls_idx = 0
-                if global_model is not None and class_name in global_model.names.values():
-                    cls_idx = list(global_model.names.values()).index(class_name)
-                elif class_name in FALLBACK_CLASSES:
-                    cls_idx = FALLBACK_CLASSES.index(class_name)
-                    
-                from ultralytics.utils.plotting import colors
-                color_bgr = colors(cls_idx, bgr=True)
-                hex_color = f"#{int(color_bgr[2]):02x}{int(color_bgr[1]):02x}{int(color_bgr[0]):02x}"
-                
-                detections[idx]['class_name'] = class_name
-                detections[idx]['color_bgr'] = [int(c) for c in color_bgr]
-                detections[idx]['hex_color'] = hex_color
-                
             elif action == 'delete':
                 if 0 <= idx < len(detections):
                     detections.pop(idx)
