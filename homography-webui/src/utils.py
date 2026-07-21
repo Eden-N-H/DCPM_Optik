@@ -1,4 +1,17 @@
 import math
+import os
+import json
+
+def atomic_write_json(filepath, data, **kwargs):
+    """
+    Safely writes JSON data to disk by writing to a temporary file 
+    first and performing an atomic rename, preventing file corruption 
+    if a concurrent read or crash occurs mid-write.
+    """
+    tmp_path = filepath + ".tmp"
+    with open(tmp_path, 'w') as f:
+        json.dump(data, f, **kwargs)
+    os.replace(tmp_path, filepath)
 
 def safe_float(value, default=None):
     try:

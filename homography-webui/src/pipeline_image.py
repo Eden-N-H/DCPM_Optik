@@ -8,7 +8,7 @@ from geo_math import local_to_global, global_to_local
 from cv_projections import equirectangular_to_rectilinear
 from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
 
-def _run_sam2_on_points(image_bgr, points, predictor):
+def _run_sam2_on_points(image_bgr, points, predictor, sam2_lock=None):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     points_np = np.array(points, dtype=np.float32)
     if points_np.ndim != 2 or points_np.shape[0] < 3:
@@ -29,16 +29,24 @@ def _run_sam2_on_points(image_bgr, points, predictor):
     y_max = float(np.clip(y_max + margin_y, 0, h - 1))
 
     box = np.array([[x_min, y_min, x_max, y_max]], dtype=np.float32)
-
-    predictor.set_image(image_rgb)
     
-    point_labels = np.ones(len(points_np), dtype=np.int32)
-    masks, scores, logits = predictor.predict(
-        point_coords=points_np,
-        point_labels=point_labels,
-        box=box, 
-        multimask_output=False
-    )
+    locked = False
+    if sam2_lock:
+        sam2_lock.acquire()
+        locked = True
+    try:
+        predictor.set_image(image_rgb)
+        
+        point_labels = np.ones(len(points_np), dtype=np.int32)
+        masks, scores, logits = predictor.predict(
+            point_coords=points_np,
+            point_labels=point_labels,
+            box=box, 
+            multimask_output=False
+        )
+    finally:
+        if locked:
+            sam2_lock.release()
 
     if masks.ndim == 4: mask = masks[0, 0]
     elif masks.ndim == 3: mask = masks[0]
@@ -58,17 +66,27 @@ def _run_sam2_on_points(image_bgr, points, predictor):
     if pts.shape[0] < 3: return None
     return pts
 
-def _run_sam2_masks(rect_img, results, sam2_predictor):
+def _run_sam2_masks(rect_img, results, sam2_predictor, sam2_lock=None):
     if sam2_predictor is None: return None
     from sam2_integration import run_sam2_on_detections
     all_sam2_results = []
-    for r in results:
-        if r.boxes is not None and len(r.boxes) > 0:
-            image_rgb = cv2.cvtColor(rect_img, cv2.COLOR_BGR2RGB)
-            sam2_out = run_sam2_on_detections(image_rgb, r, sam2_predictor)
-            for pts, cls_id, conf, class_name in sam2_out:
-                mask_color_bgr = colors(cls_id, bgr=True)
-                all_sam2_results.append((pts, cls_id, conf, class_name, mask_color_bgr))
+    
+    locked = False
+    if sam2_lock:
+        sam2_lock.acquire()
+        locked = True
+    try:
+        for r in results:
+            if r.boxes is not None and len(r.boxes) > 0:
+                image_rgb = cv2.cvtColor(rect_img, cv2.COLOR_BGR2RGB)
+                sam2_out = run_sam2_on_detections(image_rgb, r, sam2_predictor)
+                for pts, cls_id, conf, class_name in sam2_out:
+                    mask_color_bgr = colors(cls_id, bgr=True)
+                    all_sam2_results.append((pts, cls_id, conf, class_name, mask_color_bgr))
+    finally:
+        if locked:
+            sam2_lock.release()
+            
     return all_sam2_results if all_sam2_results else None
 
 def _annotate_with_sam2(annotated_rect, sam2_results, model_names):
@@ -255,7 +273,7 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     
     return defects, geojson_features
 
-def _process_simple_frame(img_input, model, base_filename, output_dir, options, model_lock, original_filename="", sam2_predictor=None):
+def _process_simple_frame(img_input, model, base_filename, output_dir, options, model_lock, original_filename="", sam2_predictor=None, sam2_lock=None):
     img_mat = cv2.imread(img_input) if isinstance(img_input, str) else img_input
     base_name_no_ext = os.path.splitext(base_filename)[0]
     
@@ -275,7 +293,7 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
     all_defects = []
     view_meta = {"front": {"K": [[1,0,0],[0,1,0],[0,0,1]], "detections": []}}
     
-    sam2_results = _run_sam2_masks(img_mat, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
+    sam2_results = _run_sam2_masks(img_mat, results, sam2_predictor, sam2_lock) if (not skip_ai and sam2_predictor) else None
 
     if sam2_results:
         _annotate_with_sam2(annotated, sam2_results, model.names)
@@ -321,10 +339,10 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
     
     return {"front": all_defects}, [], generated_files, bev_footprints, view_meta, calibrations
 
-def process_single_image(img_input, model, base_filename, output_dir, telemetry, options, model_lock, original_filename="", sam2_predictor=None):
+def process_single_image(img_input, model, base_filename, output_dir, telemetry, options, model_lock, original_filename="", sam2_predictor=None, sam2_lock=None):
     media_type = options.get('media_type', '360-video')
     if media_type == 'orthographic':
-        return _process_simple_frame(img_input, model, base_filename, output_dir, options, model_lock, original_filename, sam2_predictor)
+        return _process_simple_frame(img_input, model, base_filename, output_dir, options, model_lock, original_filename, sam2_predictor, sam2_lock)
         
     gps_lat, gps_lon = telemetry.get('lat') or 0.0, telemetry.get('lon') or 0.0
     heading = telemetry.get('heading', 0.0)
@@ -400,7 +418,7 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
             with model_lock:
                 results = model.predict(source=inference_img, conf=options.get('conf_thresh', 0.25), save=False, verbose=False)
 
-        sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
+        sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor, sam2_lock) if (not skip_ai and sam2_predictor) else None
 
         if sam2_results:
             annotated_rect = _annotate_with_sam2(annotated_rect, sam2_results, model.names)
@@ -498,12 +516,6 @@ def get_projected_image(source_path, telemetry, options, view_name, calib):
     fov = float(calib.get('fov') or 100.0)
 
     if is_360:
-        # Telemetry-derived pitch/roll are the single source of truth for
-        # camera attitude and are baked directly into the equirectangular ->
-        # rectilinear re-projection below. The resulting rectilinear image
-        # is already leveled, so the downstream homography needs an
-        # identity "down" vector and no further yaw correction (yaw is
-        # already applied here too).
         dynamic_pitch = float(telemetry.get('pitch') or 0.0)
         dynamic_roll = float(telemetry.get('roll') or 0.0)
 
@@ -524,10 +536,6 @@ def get_projected_image(source_path, telemetry, options, view_name, calib):
             f = (w / 2.0) / math.tan(math.radians(fov) / 2.0)
             K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float64)
         
-        # Telemetry gravity vector is the single source of truth for camera
-        # pitch/roll here; get_bev_homography derives the "down" direction
-        # directly from it. Yaw remains a legitimate manual mounting/heading
-        # calibration knob, independent of IMU-derived attitude.
         raw_grav = telemetry.get('grav_vec')
         grav_vec = list(raw_grav) if raw_grav is not None else [0.0, 1.0, 0.0]
         eff_yaw = yaw_offset
@@ -571,7 +579,7 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         
     return preview_img
 
-def recalculate_view(source_path, telemetry, options, view_name, calib, original_filename, output_dir, base_filename, model, model_lock, sam2_predictor=None):
+def recalculate_view(source_path, telemetry, options, view_name, calib, original_filename, output_dir, base_filename, model, model_lock, sam2_predictor=None, sam2_lock=None):
     rect_img, K, grav_vec, eff_yaw = get_projected_image(source_path, telemetry, options, view_name, calib)
     gps_lat, gps_lon = telemetry.get('lat') or 0.0, telemetry.get('lon') or 0.0
     heading = float(telemetry.get('heading') or 0.0)
@@ -619,7 +627,7 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
         with model_lock:
             results = model.predict(source=inference_img, conf=options.get('conf_thresh', 0.25), save=False, verbose=False)
         
-    sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor) if (not skip_ai and sam2_predictor) else None
+    sam2_results = _run_sam2_masks(rect_img, results, sam2_predictor, sam2_lock) if (not skip_ai and sam2_predictor) else None
     
     defects, geojson_features, view_meta_detections = [], [], []
     

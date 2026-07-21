@@ -5,6 +5,7 @@ from shapely.geometry import Polygon, Point
 from shapely.ops import unary_union
 from shapely.affinity import translate
 from geo_math import haversine_distance, calculate_bearing
+from utils import atomic_write_json
 
 def project_to_local(lat, lon, base_lat, base_lon):
     dist = haversine_distance(base_lat, base_lon, lat, lon)
@@ -23,10 +24,6 @@ def local_to_projected(x, y, base_lat, base_lon):
     return math.degrees(out_lat), math.degrees(out_lon)
 
 def shape_similarity(poly1, poly2):
-    """
-    Evaluates how similar two mask shapes are in dimensions and orientation,
-    ignoring their absolute positions by centering them both at the origin.
-    """
     try:
         c1 = poly1.centroid
         c2 = poly2.centroid
@@ -40,11 +37,6 @@ def shape_similarity(poly1, poly2):
         return 0
 
 def group_defects(results, upload_folder):
-    """
-    Analyzes project-wide detections to find identical physical defects.
-    Groups overlapping defects of the same instance (picking the best/closest frame)
-    and stitches continuous longitudinal defects (unioning their polygons).
-    """
     valid = [r for r in results if r.get('lat') is not None]
     if not valid: return results
     base_lat, base_lon = valid[0]['lat'], valid[0]['lon']
@@ -93,20 +85,16 @@ def group_defects(results, upload_folder):
             if root_i != root_j:
                 parent[root_i] = root_j
                 
-        # 1. Cluster nearby/related detections
         for i in range(n):
             for j in range(i+1, n):
                 item1 = items[i]
                 item2 = items[j]
                 
-                # Only consider defects in relatively close temporal proximity (same pass)
                 if abs(item1['r_idx'] - item2['r_idx']) > 10:
                     continue
                     
                 dist = item1['poly'].distance(item2['poly'])
                 
-                # Link if they are physically touching/continuous, OR if they 
-                # are slightly offset due to drift but have a highly similar shape (duplicates).
                 if dist < 0.2:
                     union(i, j)
                 elif dist < 2.0 and shape_similarity(item1['poly'], item2['poly']) > 0.5:
@@ -120,12 +108,10 @@ def group_defects(results, upload_folder):
             if len(group) == 1:
                 continue
                 
-            # Pre-calculate distance to camera (in projected local space) for quality resolution
             for item in group:
                 c_x, c_y = project_to_local(item['lat'], item['lon'], base_lat, base_lon)
                 item['dist_to_cam'] = item['poly'].centroid.distance(Point(c_x, c_y))
                 
-            # 2. Iteratively collapse duplicates inside the group
             active_items = list(group)
             while True:
                 found_dup = False
@@ -136,7 +122,6 @@ def group_defects(results, upload_folder):
                         dist = item1['poly'].distance(item2['poly'])
                         
                         if dist < 2.0 and shape_similarity(item1['poly'], item2['poly']) > 0.5:
-                            # We found a duplicate pair. Drop the one further from the camera.
                             if item1['dist_to_cam'] > item2['dist_to_cam']:
                                 active_items.pop(i)
                             else:
@@ -148,9 +133,7 @@ def group_defects(results, upload_folder):
                 if not found_dup:
                     break
                     
-            # 3. Resolve the finalized group
             if len(active_items) == 1:
-                # Group collapsed down to a single physical defect
                 best_item = active_items[0]
                 
                 for item in group:
@@ -163,12 +146,9 @@ def group_defects(results, upload_folder):
                 })
                 
             else:
-                # Multiple distinct connected segments remain (Multi-frame spanning defect)
-                # Stitch them exactly as they are.
                 polys_to_merge = [x['poly'].buffer(1e-5) for x in active_items]
                 merged_poly = unary_union(polys_to_merge).buffer(-1e-5)
                 
-                # Resolve isolated artifacts if union produces disconnected chunks
                 if merged_poly.geom_type == 'GeometryCollection':
                     polys = [geom for geom in merged_poly.geoms if geom.geom_type in ('Polygon', 'MultiPolygon')]
                     if polys:
@@ -177,7 +157,6 @@ def group_defects(results, upload_folder):
                 if merged_poly.geom_type == 'MultiPolygon':
                     merged_poly = max(merged_poly.geoms, key=lambda a: a.area)
                     
-                # Bind the stitched polygon to the earliest seen frame in the segment
                 best_item = min(active_items, key=lambda x: x['r_idx'])
                 
                 for item in group:
@@ -204,7 +183,7 @@ def _mark_detection_hidden(upload_folder, filename, view, det_idx):
     with open(meta_path, 'r') as f: meta = json.load(f)
     if det_idx < len(meta['view_meta'][view]['detections']):
         meta['view_meta'][view]['detections'][det_idx]['hidden'] = True
-    with open(meta_path, 'w') as f: json.dump(meta, f)
+    atomic_write_json(meta_path, meta)
 
 def _update_detection_meta(upload_folder, filename, view, det_idx, updates):
     meta_path = os.path.join(upload_folder, f"process_meta_{filename}.json")
@@ -212,4 +191,4 @@ def _update_detection_meta(upload_folder, filename, view, det_idx, updates):
     with open(meta_path, 'r') as f: meta = json.load(f)
     if det_idx < len(meta['view_meta'][view]['detections']):
         meta['view_meta'][view]['detections'][det_idx].update(updates)
-    with open(meta_path, 'w') as f: json.dump(meta, f)
+    atomic_write_json(meta_path, meta)
