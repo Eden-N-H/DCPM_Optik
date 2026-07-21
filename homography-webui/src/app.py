@@ -4,6 +4,7 @@ import time
 import json
 import base64
 import cv2
+import zipfile
 import numpy as np
 import threading
 import traceback
@@ -17,7 +18,7 @@ from utils import safe_float
 from parser_exif import extract_full_photo_metadata
 from pipeline_image import generate_grid_preview, recalculate_view, get_projected_image, render_view_from_detections, _run_sam2_on_points
 from cv_vp import find_vanishing_point_hough, calculate_pitch_yaw_deltas
-from exports import create_raw_zip, create_flat_zip
+from exports import create_raw_zip, create_flat_zip, create_project_zip
 from task_manager import start_processing_job, active_tasks, cancel_flags
 from sam2_integration import load_sam2, get_predictor
 from diagnostics import build_pass_diagnostic_report, align_project
@@ -219,9 +220,6 @@ def align_passes():
             updated_r = r.copy()
             updated_r['geojson'] = []
             
-            # Using render_view_from_detections avoids running YOLO/SAM2 completely, 
-            # preserving all manual edits while perfectly re-projecting the existing 
-            # pixel polygons to their corrected geographic baseline.
             for view_name in r['views'].keys():
                 calib = r['views'][view_name]['calibration']
                 defects, geo_feats = render_view_from_detections(
@@ -230,7 +228,6 @@ def align_passes():
                 updated_r['views'][view_name]['defects'] = defects
                 updated_r['geojson'].extend(geo_feats)
                 
-                # Also update the footprint bounds
                 gps_lat, gps_lon = r['lat'], r['lon']
                 heading = float(process_meta['telemetry'].get('heading') or 0.0)
                 yaw_offset = float(calib.get('yaw_offset', 0.0))
@@ -744,5 +741,42 @@ def export_flat_zip():
     mem_file = create_flat_zip(project_data, app.config['UPLOAD_FOLDER'])
     return send_file(mem_file, download_name="DCPM_Flattened_Export.zip", as_attachment=True)
 
+@app.route('/export-project', methods=['POST'])
+def export_project():
+    project_state = request.json
+    if not project_state or not project_state.get('results'):
+        return jsonify({"error": "No project data provided"}), 400
+    mem_file = create_project_zip(project_state, app.config['UPLOAD_FOLDER'])
+    return send_file(mem_file, download_name="dcpm_project.dcpmproj", as_attachment=True)
+
+@app.route('/import-project', methods=['POST'])
+def import_project():
+    if 'project_zip' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files['project_zip']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+        
+    try:
+        with zipfile.ZipFile(file, 'r') as zf:
+            if 'project_state.json' not in zf.namelist():
+                return jsonify({"error": "Invalid project file: missing project_state.json"}), 400
+                
+            state_data = json.loads(zf.read('project_state.json').decode('utf-8'))
+            
+            for member in zf.namelist():
+                if member.startswith('data/') and len(member) > 5:
+                    filename = os.path.basename(member)
+                    target_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    with open(target_path, 'wb') as f_out:
+                        f_out.write(zf.read(member))
+                        
+        return jsonify({"success": True, "project_state": state_data})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__': 
     app.run(debug=False, port=5001)
+

@@ -2,6 +2,42 @@ import { state } from './state.js';
 import { initMap, clearOrthomosaics, addOrthomosaicShingle, updateMapSource, fitMapToBounds, setPassPairsData } from './map.js';
 import { refreshLocationsUI, updateCarousel, setView, checkCanProcess, handleMapClick, addWarning } from './ui.js';
 
+export async function exportProject(projectState, btnId, filename) {
+    const btn = document.getElementById(btnId);
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> SAVING...`; 
+    btn.disabled = true;
+    try {
+        const res = await fetch("/export-project", {
+            method: "POST", 
+            headers: { "Content-Type": "application/json" }, 
+            body: JSON.stringify(projectState) 
+        });
+        if (!res.ok) throw new Error("Failed to export project");
+        const blob = await res.blob(); 
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a'); 
+        a.href = url; a.download = filename; 
+        document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
+    } catch (err) { 
+        alert(err.message); 
+    } finally { 
+        btn.innerHTML = originalText; btn.disabled = false; 
+    }
+}
+
+export async function importProject(file) {
+    const fd = new FormData();
+    fd.append("project_zip", file);
+    const res = await fetch("/import-project", {
+        method: "POST",
+        body: fd
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || "Failed to import project");
+    return data.project_state;
+}
+
 export async function triggerZipExport(endpoint, btnId, filename) {
     if (state.fullResults.length === 0) return;
     const btn = document.getElementById(btnId); 
@@ -338,3 +374,4 @@ export async function executeJob() {
         checkCanProcess();
     }
 }
+
