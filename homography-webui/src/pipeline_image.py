@@ -9,6 +9,43 @@ from cv_projections import equirectangular_to_rectilinear
 from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
 from depth_integration import is_pothole_class, attach_depth_to_detection
 
+
+def _get_grid_offsets(telemetry, options, view_heading):
+    """
+    Compute the camera's displacement from the project grid baseline.
+
+    Returns (cam_offset_x, cam_offset_z) in the current view's local
+    coordinate system (metres). When a grid_baseline is stored in options,
+    the grid will be drawn at world-fixed positions; otherwise returns
+    (0, 0) for camera-relative grid (backward compatible).
+    """
+    try:
+        baseline = options.get('grid_baseline')
+        if not baseline:
+            return 0.0, 0.0
+
+        gps_lat = telemetry.get('lat')
+        gps_lon = telemetry.get('lon')
+        if gps_lat is None or gps_lon is None:
+            return 0.0, 0.0
+
+        base_lat = baseline['lat']
+        base_lon = baseline['lon']
+        base_heading = baseline['heading']
+
+        # Get camera position relative to baseline in baseline-aligned frame
+        x_base, z_base = global_to_local(base_lat, base_lon, base_heading, gps_lat, gps_lon)
+
+        # Rotate the baseline-frame offset into the view's local frame.
+        delta_heading = math.radians(view_heading - base_heading)
+        cos_d, sin_d = math.cos(delta_heading), math.sin(delta_heading)
+        cam_offset_x = x_base * cos_d + z_base * sin_d
+        cam_offset_z = -x_base * sin_d + z_base * cos_d
+
+        return cam_offset_x, cam_offset_z
+    except Exception:
+        return 0.0, 0.0
+
 def _run_sam2_on_points(image_bgr, points, predictor, sam2_lock=None):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     points_np = np.array(points, dtype=np.float32)
@@ -178,7 +215,11 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     annotated_bev_bgr = raw_bev_bgr.copy()
     
     if options.get('draw_grid', False):
-        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
+        grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+        try:
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz)
+        except Exception:
+            pass
         
     detections = process_meta.get('view_meta', {}).get(view_name, {}).get('detections', [])
     defects = []
@@ -428,7 +469,11 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         annotated_bev_bgr = raw_bev_bgr.copy()
         
         if options.get('draw_grid', False):
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base)
+            grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+            try:
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz)
+            except Exception:
+                pass
 
         skip_ai = options.get('skip_ai', False)
         results = []
@@ -636,6 +681,9 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         cv2.polylines(preview_img, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if process_meta['options'].get('draw_grid', False):
+        # Grid preview during calibration uses camera-relative grid (no baseline offset).
+        # This is intentional: the user is adjusting yaw/pitch in real-time and needs
+        # to see the grid aligned to the current view, not offset to a project baseline.
         preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     return preview_img
@@ -678,7 +726,11 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     annotated_bev_bgr = raw_bev_bgr.copy()
     
     if options.get('draw_grid', False):
-        annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
+        grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+        try:
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz)
+        except Exception:
+            pass
         
     skip_ai = options.get('skip_ai', False)
     results = []

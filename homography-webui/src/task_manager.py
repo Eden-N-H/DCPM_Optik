@@ -157,15 +157,29 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             "cam_offset_right_m": cam_off_right
                         }
 
+                        # Grid baseline is injected transiently by the video pipeline
+                        # (pipeline_video.py) for video assets. For photo assets, we
+                        # inject it here if draw_grid is enabled and valid GPS is available.
+                        if 'grid_baseline' not in worker_options and worker_options.get('draw_grid', False):
+                            if asset['lat'] is not None and asset['lon'] is not None:
+                                worker_options['grid_baseline'] = {
+                                    'lat': asset['lat'],
+                                    'lon': asset['lon'],
+                                    'heading': asset.get('heading', 0.0)
+                                }
+
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                             asset['path'], global_model, asset['filename'], upload_folder, 
                             telemetry, worker_options, model_lock, asset['original_name'],
                             sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                         )
                         
+                        # Strip transient grid_baseline before persisting
+                        opts_to_save = {k: v for k, v in worker_options.items() if k != 'grid_baseline'}
+                        
                         process_meta_data = {
                             "telemetry": telemetry,
-                            "options": worker_options,
+                            "options": opts_to_save,
                             "view_meta": view_meta,
                             "original_name": asset['original_name']
                         }

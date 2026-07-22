@@ -57,6 +57,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
 
     dist_accum, last_time = 0.0, 0.0
     frame_idx = -1
+    grid_baseline = None
     
     while True:
         if is_cancelled and is_cancelled():
@@ -104,6 +105,14 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             else:
                 current_lat, current_lon = raw_lat, raw_lon
 
+            # Set grid baseline from first extracted frame (once only)
+            if grid_baseline is None and options.get('draw_grid', False):
+                grid_baseline = {
+                    'lat': current_lat,
+                    'lon': current_lon,
+                    'heading': current_heading
+                }
+
             frame_base_name = f"fr{frame_idx}_{base_stem}.jpg"
             original_frame_name = f"{original_name} (Frame {frame_idx})"
             
@@ -150,10 +159,19 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
             }
 
             try:
+                # Inject grid baseline for the draw_bev_grid call inside process_single_image.
+                # This is NOT persisted into process_meta (stripped before serialization) so 
+                # it doesn't bloat stored metadata or confuse downstream re-render paths.
+                if grid_baseline is not None:
+                    options['grid_baseline'] = grid_baseline
+
                 defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                     frame, model, frame_base_name, upload_dir, telemetry, options, model_lock, original_frame_name,
                     sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                 )
+
+                # Remove transient grid_baseline before persisting options to disk
+                options.pop('grid_baseline', None)
                 
                 process_meta_data = {
                     "telemetry": telemetry,
@@ -164,6 +182,7 @@ def process_video_frames_async(video_path, model, upload_dir, file_name, origina
                 atomic_write_json(os.path.join(upload_dir, f"process_meta_{frame_base_name}.json"), process_meta_data)
                     
             except Exception as e:
+                options.pop('grid_baseline', None)
                 callback({"error": str(e), "is_video": False, "original_name": original_frame_name})
                 continue
             

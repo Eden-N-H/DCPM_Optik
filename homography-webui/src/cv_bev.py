@@ -145,29 +145,60 @@ def get_bev_homography(K_rect, cam_height_m, grav_vec, yaw_offset, y_min, y_max,
         
     return H_mat, bev_W, bev_H, PPM, v_down, v_forward, v_right
 
-def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, y_max, x_range):
-    # Draw horizontal lines (constant y/forward)
-    for y_fwd in np.arange(math.floor(y_min), math.ceil(y_max) + 1, 1.0):
+def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, y_max, x_range, cam_offset_x=0.0, cam_offset_z=0.0):
+    """
+    Draws a metric grid onto the rectilinear image.
+
+    If cam_offset_x / cam_offset_z are provided (camera displacement from
+    project baseline in the view's local coordinate system), the grid is
+    drawn at world-fixed metre boundaries so it remains stationary as the
+    camera moves through the scene. Without offsets (default 0,0), the grid
+    is camera-relative (identical to the original behaviour).
+
+    cam_offset_x: lateral displacement of camera from baseline (metres, +right)
+    cam_offset_z: longitudinal displacement of camera from baseline (metres, +forward)
+    """
+    # Compute world-aligned grid line positions visible in the current frustum.
+    # The camera sees the local range [y_min, y_max] forward and [-x_range, x_range] lateral.
+    # In world coordinates those correspond to [cam_offset_z + y_min, cam_offset_z + y_max]
+    # and [cam_offset_x - x_range, cam_offset_x + x_range].
+    # We draw grid lines at integer-metre world positions that fall within the visible range.
+
+    world_z_min = cam_offset_z + y_min
+    world_z_max = cam_offset_z + y_max
+    world_x_min = cam_offset_x - x_range
+    world_x_max = cam_offset_x + x_range
+
+    # Draw horizontal lines (constant world-z / forward distance)
+    for world_z in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 1, 1.0):
+        local_z = world_z - cam_offset_z
+        if local_z < y_min - 0.5 or local_z > y_max + 0.5:
+            continue
         pts = []
-        for x in np.arange(-x_range, x_range + 0.5, 0.5):
-            pt3d = (x * v_right) + (y_fwd * v_forward) + (cam_height_m * v_down)
+        for world_x in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 0.5, 0.5):
+            local_x = world_x - cam_offset_x
+            pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
             p_img = K_rect @ pt3d
             if p_img[2] > 1e-5:
                 u, v = int(p_img[0]/p_img[2]), int(p_img[1]/p_img[2])
                 pts.append((u, v))
         if len(pts) > 1:
             for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
-            
-    # Draw vertical lines (constant x/right)
-    for x_rt in np.arange(math.floor(-x_range), math.ceil(x_range) + 1, 1.0):
+
+    # Draw vertical lines (constant world-x / lateral position)
+    for world_x in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 1, 1.0):
+        local_x = world_x - cam_offset_x
+        if local_x < -x_range - 0.5 or local_x > x_range + 0.5:
+            continue
         pts = []
-        for y_fwd in np.arange(y_min, y_max + 0.5, 0.5):
-            pt3d = (x_rt * v_right) + (y_fwd * v_forward) + (cam_height_m * v_down)
+        for world_z in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 0.5, 0.5):
+            local_z = world_z - cam_offset_z
+            pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
             p_img = K_rect @ pt3d
             if p_img[2] > 1e-5:
                 u, v = int(p_img[0]/p_img[2]), int(p_img[1]/p_img[2])
                 pts.append((u, v))
         if len(pts) > 1:
             for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
-            
+
     return img

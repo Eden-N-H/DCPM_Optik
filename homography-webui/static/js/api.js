@@ -247,6 +247,8 @@ function startSSE(taskId, totalImages) {
             if (state.fullResults.length === 1) {
                 updateCarousel(true);
             }
+
+            syncOrthoLayers();
         }
     };
 }

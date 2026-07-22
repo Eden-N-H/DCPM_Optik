@@ -168,18 +168,7 @@ export function clearOrthomosaics() {
 export function syncOrthoLayers() {
     if (!state.mapLoaded || !state.map) return;
     
-    // To avoid triggering MapLibre WebGL texture count crashes, we only 
-    // keep a sliding window of raster layers actively loaded around the 
-    // current carousel index.
-    const activeIdx = state.currentIndex;
-    const windowRadius = 15; 
-    
-    const framesToKeep = new Set();
-    state.appResults.forEach((r, i) => {
-        if (Math.abs(i - activeIdx) <= windowRadius) {
-            framesToKeep.add(r.filename);
-        }
-    });
+    const framesToKeep = new Set(state.fullResults.map(r => r.filename));
     
     state.orthoLayerIds = state.orthoLayerIds.filter(id => {
         const match = id.match(/ortho-(.+)-(front|rear)/);
@@ -194,28 +183,26 @@ export function syncOrthoLayers() {
     const chkFront = document.getElementById("chk-layer-front") ? document.getElementById("chk-layer-front").checked : true;
     const chkRear = document.getElementById("chk-layer-rear") ? document.getElementById("chk-layer-rear").checked : true;
     
-    state.appResults.forEach((r, i) => {
-        if (Math.abs(i - activeIdx) <= windowRadius) {
-            ['front', 'rear'].forEach(view => {
-                if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
-                    const sourceId = 'ortho-' + r.filename + '-' + view;
-                    if (!state.map.getSource(sourceId)) {
-                        const isVisible = view === 'front' ? chkFront : chkRear;
-                        const rawBevUrl = r.views[view].raw_bev_url;
-                        state.map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: r.views[view].footprint.corners });
-                        
-                        state.map.addLayer({
-                            id: sourceId,
-                            type: 'raster',
-                            source: sourceId,
-                            layout: { 'visibility': isVisible ? 'visible' : 'none' },
-                            paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
-                        }, 'defects-layer');
-                        state.orthoLayerIds.push(sourceId);
-                    }
+    state.fullResults.forEach((r) => {
+        ['front', 'rear'].forEach(view => {
+            if (r.views[view] && r.views[view].footprint && r.views[view].footprint.corners) {
+                const sourceId = 'ortho-' + r.filename + '-' + view;
+                if (!state.map.getSource(sourceId)) {
+                    const isVisible = view === 'front' ? chkFront : chkRear;
+                    const rawBevUrl = r.views[view].raw_bev_url;
+                    state.map.addSource(sourceId, { type: 'image', url: rawBevUrl, coordinates: r.views[view].footprint.corners });
+                    
+                    state.map.addLayer({
+                        id: sourceId,
+                        type: 'raster',
+                        source: sourceId,
+                        layout: { 'visibility': isVisible ? 'visible' : 'none' },
+                        paint: { 'raster-opacity': 1.0, 'raster-fade-duration': 0 }
+                    }, 'defects-layer');
+                    state.orthoLayerIds.push(sourceId);
                 }
-            });
-        }
+            }
+        });
     });
 }
 
