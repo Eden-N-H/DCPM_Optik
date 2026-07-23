@@ -14,7 +14,17 @@ def apply_ego_mask(img, mask_pct=0.15):
     img[h - mask_h:, :] = 0
     return img
 
-def get_fisheye_maps(W, H, x_fov_deg, y_fov_deg):
+def get_fisheye_maps(W, H, x_fov_deg, y_fov_deg, R=None):
+    """
+    Build undistortion remap tables for a fisheye (equidistant) lens.
+    
+    Parameters
+    ----------
+    R : np.ndarray (3x3), optional
+        Rectification rotation applied during undistortion. Use this to
+        level the output image (compensate camera roll/pitch) so that the
+        horizon is horizontal in pixel space. If None, no rotation is applied.
+    """
     x_fov_rad = np.radians(x_fov_deg)
     y_fov_rad = np.radians(y_fov_deg)
     
@@ -36,8 +46,104 @@ def get_fisheye_maps(W, H, x_fov_deg, y_fov_deg):
     ], dtype=np.float64)
     
     D = np.zeros(4)
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_fish, D, np.eye(3), K_rect, (W, H), cv2.CV_32FC1)
+    R_mat = R if R is not None else np.eye(3)
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_fish, D, R_mat, K_rect, (W, H), cv2.CV_32FC1)
     return map1, map2, K_rect
+
+def get_bev_from_fisheye(raw_img, cam_height_m, yaw_offset, y_min, y_max, road_width, x_fov_deg, y_fov_deg):
+    """
+    Generate BEV (Bird's Eye View) directly from a raw fisheye image without
+    intermediate undistortion. This produces geometrically perfect orthographic
+    output because each BEV pixel is individually mapped through the exact
+    fisheye projection model to find its source pixel.
+    
+    This eliminates the two-step error (undistort with imperfect model → warp
+    with K_rect that doesn't match) that caused corridor stitching artifacts.
+    
+    Returns: bev_bgr, bev_W, bev_H, PPM
+    """
+    h, w = raw_img.shape[:2]
+    x_fov_rad = math.radians(x_fov_deg)
+    y_fov_rad = math.radians(y_fov_deg)
+    
+    # Fisheye (equidistant) focal lengths
+    fx_fish = (w / 2.0) / (x_fov_rad / 2.0)
+    fy_fish = (h / 2.0) / (y_fov_rad / 2.0)
+    cx, cy = w / 2.0, h / 2.0
+    
+    # BEV canvas parameters
+    PPM = 50.0
+    bev_W = int(road_width * PPM)
+    bev_H = int((y_max - y_min) * PPM)
+    
+    # Apply yaw rotation (camera mounting angle offset)
+    y_rad = math.radians(yaw_offset)
+    cos_y, sin_y = math.cos(y_rad), math.sin(y_rad)
+    
+    # For each BEV pixel (u_bev, v_bev), compute the corresponding ground point,
+    # then project through camera model to find source pixel in raw fisheye.
+    # BEV coordinate system:
+    #   u_bev: 0=left edge (-road_width/2), bev_W=right edge (+road_width/2)
+    #   v_bev: 0=far (y_max), bev_H=near (y_min)
+    
+    u_bev = np.arange(bev_W, dtype=np.float64)
+    v_bev = np.arange(bev_H, dtype=np.float64)
+    uu, vv = np.meshgrid(u_bev, v_bev)
+    
+    # Ground coordinates (in road plane, relative to camera)
+    # x_ground: lateral (right is positive)
+    # z_ground: forward distance from camera
+    x_ground = (uu / PPM) - (road_width / 2.0)
+    z_ground = y_max - (vv / PPM)
+    
+    # Apply yaw rotation (rotate ground coordinates by yaw offset)
+    x_rot = cos_y * x_ground + sin_y * z_ground
+    z_rot = -sin_y * x_ground + cos_y * z_ground
+    
+    # 3D point in camera frame: ground is at Y = cam_height_m below camera
+    # Camera: X=right, Y=down, Z=forward
+    x_cam = x_rot
+    y_cam = np.full_like(x_rot, cam_height_m)  # ground is cam_height below
+    z_cam = z_rot
+    
+    # Project through equidistant fisheye model: r = f * theta
+    r_3d = np.sqrt(x_cam**2 + y_cam**2 + z_cam**2)
+    theta = np.arccos(np.clip(z_cam / r_3d, -1.0, 1.0))
+    
+    # Radial direction in XY plane
+    r_xy = np.sqrt(x_cam**2 + y_cam**2)
+    # Avoid division by zero at optical axis
+    r_xy_safe = np.maximum(r_xy, 1e-9)
+    
+    dir_x = x_cam / r_xy_safe
+    dir_y = y_cam / r_xy_safe
+    
+    # Fisheye pixel coordinates
+    map_x = (cx + fx_fish * theta * dir_x).astype(np.float32)
+    map_y = (cy + fy_fish * theta * dir_y).astype(np.float32)
+    
+    # Mask out points behind camera or outside image bounds
+    valid = (z_cam > 0.1) & (map_x >= 0) & (map_x < w) & (map_y >= 0) & (map_y < h)
+    
+    # Set invalid pixels to map to (0,0) — they'll be black
+    map_x[~valid] = 0
+    map_y[~valid] = 0
+    
+    bev_bgr = cv2.remap(raw_img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    
+    # Zero out invalid pixels
+    bev_bgr[~valid] = 0
+    
+    # Erode the valid mask slightly to remove edge artifacts (interpolation
+    # at the boundary of valid/invalid produces dark fringe pixels that show
+    # up as visible seams in corridor stitching)
+    valid_mask = valid.astype(np.uint8) * 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    valid_mask = cv2.erode(valid_mask, kernel)
+    bev_bgr[valid_mask == 0] = 0
+    
+    return bev_bgr, bev_W, bev_H, PPM
+
 
 def get_camera_to_world_rotation(pitch_deg, yaw_deg, roll_deg):
     """
@@ -79,31 +185,57 @@ def get_camera_to_world_rotation(pitch_deg, yaw_deg, roll_deg):
     return Ry(y) @ Rx(p) @ Rz(r)
 
 def get_bev_homography(K_rect, cam_height_m, grav_vec, yaw_offset, y_min, y_max, road_width):
-    # 1. Absolute Down from IMU Gravity
-    #    This is the SINGLE source of truth for camera pitch/roll. It reflects
-    #    true vehicle/camera attitude (body roll, hill pitch, mounting tilt).
+    # 1. Road-Surface-Relative Ground Plane (Pitch-Only from GRAV)
+    #
+    #    For a vehicle-mounted camera doing road inspection:
+    #    - Roll is corrected during undistortion (image horizon is leveled)
+    #    - Pitch (camera tilt toward/away from road) must be accounted for
+    #      so the grid projects at the correct perspective angle
+    #    - The "ground plane" is the camera's local road surface
+    #
+    #    After roll correction in undistortion, the effective gravity in the
+    #    leveled image frame has gx=0 (no roll component). The remaining
+    #    pitch is visible as gz != 0 (gravity has a forward/backward lean).
+    #
+    #    We compute v_down from pitch only (roll already removed from image),
+    #    which ensures the grid perspective matches what the camera sees.
+    
     g = np.array(grav_vec, dtype=np.float64)
     n = np.linalg.norm(g)
-    v_down_base = g / n if n > 1e-6 else np.array([0, 1, 0], dtype=np.float64)
+    if n < 1e-6:
+        g_norm = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    else:
+        g_norm = g / n
     
-    # 2. Extract true Forward via Z-Axis (Optical Axis) Projection
-    #    This is the singular mathematically perfect way to decouple pitch and roll 
-    #    without introducing "false yaw". Projecting the Z-axis guarantees recovery 
-    #    of the true vehicle forward vector even under extreme simultaneous pitch/roll.
-    z_cam = np.array([0, 0, 1], dtype=np.float64)
+    # After roll-correction in undistortion, the effective gravity vector
+    # in the leveled frame has gx≈0. The pitch component remains in gy, gz.
+    # For cameras where undistortion is not applied (or roll correction is
+    # skipped), we still zero out gx to prevent roll from tilting the grid.
+    gy = g_norm[1]
+    gz = g_norm[2]
+    
+    # Reconstruct v_down in the YZ plane only (gx forced to 0 = no roll)
+    yz_norm = math.sqrt(gy*gy + gz*gz)
+    if yz_norm > 1e-6:
+        v_down_base = np.array([0.0, gy / yz_norm, gz / yz_norm], dtype=np.float64)
+    else:
+        v_down_base = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    
+    # 2. Forward = Z-axis projected onto the plane perpendicular to v_down
+    z_cam = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     v_fwd_base = z_cam - np.dot(z_cam, v_down_base) * v_down_base
     n_fwd = np.linalg.norm(v_fwd_base)
     
     if n_fwd > 1e-6:
         v_fwd_base /= n_fwd
     else:
-        # Gimbal lock fallback (camera looking perfectly straight down or straight up)
-        y_cam = np.array([0, -1, 0], dtype=np.float64)
+        y_cam = np.array([0.0, -1.0, 0.0], dtype=np.float64)
         v_fwd_base = y_cam - np.dot(y_cam, v_down_base) * v_down_base
         v_fwd_base /= np.linalg.norm(v_fwd_base)
             
-    # 3. True Right is orthogonal to Down and Forward (Cross Product)
+    # 3. Right is orthogonal to Down and Forward (always [1,0,0] since no roll)
     v_right_base = np.cross(v_down_base, v_fwd_base)
+    v_right_base /= np.linalg.norm(v_right_base)
         
     # 4. Apply Manual Yaw Calibration
     #    Yaw is a rotation of the world frame around the true Gravity vector (v_down_base).
@@ -147,7 +279,7 @@ def get_bev_homography(K_rect, cam_height_m, grav_vec, yaw_offset, y_min, y_max,
 
 def _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
                               world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
-                              y_min, y_max, x_range):
+                              y_min, y_max, x_range, fisheye_params=None):
     """
     Projects a sequence of world-frame (x, z) sample points for a single grid
     line into image pixels, returning a list the same length as
@@ -155,17 +287,10 @@ def _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
     that particular sample falls outside the currently visible local
     frustum (or behind the camera).
 
-    Returning a per-sample list (instead of silently dropping invalid
-    samples) is the key fix: it lets the caller only ever draw a segment
-    between two ADJACENT samples that are both valid, and never between
-    two arbitrary valid samples that happen to still be in the list after
-    invalid ones were removed. Connecting non-adjacent samples is exactly
-    what produced the spurious long diagonal lines crossing the whole
-    image whenever a world-fixed grid line swept in and out of view
-    (which happens routinely once the camera's heading differs from the
-    baseline, e.g. mid-corner) -- the grid geometry itself was correct,
-    but the rendering was joining points that were never meant to be
-    connected.
+    If fisheye_params is provided (a dict with 'fx', 'fy', 'cx', 'cy'),
+    points are projected through the equidistant fisheye model (r = f*theta)
+    onto the raw distorted image rather than through the rectilinear K_rect.
+    This ensures the grid matches the actual fisheye image perfectly.
     """
     projected = []
     for world_x, world_z in world_points:
@@ -180,25 +305,56 @@ def _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
             continue
 
         pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
-        p_img = K_rect @ pt3d
         
-        # REQUIREMENT: Depth along optical axis (p_img[2]) must be reasonably in front of the lens.
-        # If it approaches 0 (the focal plane), the pixel division explodes towards infinity.
-        # Previously this was "fixed" by clamping extreme pixel values, but dragging the endpoint 
-        # of an exploded 2D vector back toward the principal point radically alters the line's slope,
-        # forcing parallel grid lines to physically converge into a drawn "starburst".
-        # Safely discarding the point instead (assigning None) naturally breaks the drawn segment.
-        if p_img[2] > 0.5:
-            px, py = p_img[0] / p_img[2], p_img[1] / p_img[2]
+        if fisheye_params is not None:
+            # Equidistant fisheye projection: r = f * theta
+            # theta = angle from optical axis (Z)
+            x3, y3, z3 = pt3d[0], pt3d[1], pt3d[2]
             
-            # Rely on strict coordinate bounds check rather than clamping to avoid OpenCV 16-bit 
-            # integer overflow while preserving true projective geometry.
+            # Must be in front of camera
+            if z3 <= 0.1:
+                projected.append(None)
+                continue
+            
+            # Angle from optical axis
+            r_3d = math.sqrt(x3*x3 + y3*y3 + z3*z3)
+            theta = math.acos(np.clip(z3 / r_3d, -1.0, 1.0))
+            
+            # Direction in image plane (XY components give the radial direction)
+            r_xy = math.sqrt(x3*x3 + y3*y3)
+            if r_xy < 1e-9:
+                # Point is on the optical axis
+                px = fisheye_params['cx']
+                py = fisheye_params['cy']
+            else:
+                # Equidistant: image radius = f * theta
+                r_img_x = fisheye_params['fx'] * theta
+                r_img_y = fisheye_params['fy'] * theta
+                
+                # Project to pixel using direction in XY plane
+                dir_x = x3 / r_xy
+                dir_y = y3 / r_xy
+                
+                px = fisheye_params['cx'] + r_img_x * dir_x
+                py = fisheye_params['cy'] + r_img_y * dir_y
+            
             if abs(px) < 16000 and abs(py) < 16000:
                 projected.append((int(px), int(py)))
             else:
                 projected.append(None)
         else:
-            projected.append(None)
+            # Standard rectilinear (pinhole) projection
+            p_img = K_rect @ pt3d
+            
+            if p_img[2] > 0.5:
+                px, py = p_img[0] / p_img[2], p_img[1] / p_img[2]
+                
+                if abs(px) < 16000 and abs(py) < 16000:
+                    projected.append((int(px), int(py)))
+                else:
+                    projected.append(None)
+            else:
+                projected.append(None)
 
     return projected
 
@@ -212,7 +368,7 @@ def _draw_polyline_segments(img, projected_points, color=(0, 255, 255), thicknes
 
 
 def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, y_max, x_range,
-                   cam_offset_x=0.0, cam_offset_z=0.0, delta_heading=0.0):
+                   cam_offset_x=0.0, cam_offset_z=0.0, delta_heading=0.0, fisheye_params=None):
     """
     Draws a metric grid onto the rectilinear image.
 
@@ -287,7 +443,7 @@ def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, 
         world_points = [(wx, world_z) for wx in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 0.5, 0.5)]
         projected = _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
                                               world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
-                                              y_min, y_max, x_range)
+                                              y_min, y_max, x_range, fisheye_params)
         _draw_polyline_segments(img, projected)
 
     # Vertical lines (constant world-x / lateral position)
@@ -295,7 +451,7 @@ def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, 
         world_points = [(world_x, wz) for wz in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 0.5, 0.5)]
         projected = _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
                                               world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
-                                              y_min, y_max, x_range)
+                                              y_min, y_max, x_range, fisheye_params)
         _draw_polyline_segments(img, projected)
 
     return img

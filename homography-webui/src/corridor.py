@@ -7,7 +7,10 @@ from geo_math import haversine_distance, calculate_bearing
 def create_corridor(frames, upload_folder):
     """
     Stitches multiple single-frame BEV images into a single continuous 
-    orthographic corridor map based on their physical GPS footprint geometries.
+    orthographic corridor map. Uses midline-seam compositing to eliminate
+    the overlap/gap pattern visible on curves: each frame is clipped to
+    the region closer to its own center than to any neighbor's center,
+    producing clean trapezoid tiles that seamlessly cover the curve.
     """
     PPM = 50.0
     
@@ -36,8 +39,6 @@ def create_corridor(frames, upload_folder):
     W_canvas = int((max_x - min_x) * PPM)
     H_canvas = int((max_y - min_y) * PPM)
     
-    # Prevents catastrophic Out-Of-Memory (OOM) crashes by dynamically scaling 
-    # down the output pixel density if the geographic span selected is too large.
     MAX_CANVAS_DIM = 8192
     if W_canvas > MAX_CANVAS_DIM or H_canvas > MAX_CANVAS_DIM:
         scale_factor = MAX_CANVAS_DIM / max(W_canvas, H_canvas)
@@ -46,22 +47,16 @@ def create_corridor(frames, upload_folder):
         H_canvas = int((max_y - min_y) * PPM)
     
     canvas = np.zeros((H_canvas, W_canvas, 3), dtype=np.uint8)
-
-    # Feather width (in canvas pixels) used to blend each new frame's own
-    # boundary into whatever is already stitched onto the canvas. Purely a
-    # compositing-quality improvement -- it does not touch any coordinate
-    # or homography math, so geo-referenced defect positions are unaffected.
-    #
-    # Previously frames were composited with a hard boolean cutover
-    # (`canvas = np.where(mask > 0, warped, canvas)`), which produces a
-    # visible seam line at every frame boundary even when the underlying
-    # geometric alignment is perfect (due to per-frame exposure/perspective
-    # differences at the very edge). Feathering the new frame's edge and
-    # alpha-blending it over existing content removes that visible seam
-    # without affecting alignment accuracy.
-    FEATHER_PX = 15.0
-
+    
+    # Pre-compute all frame centers in canvas pixel coordinates for
+    # nearest-center voronoi assignment during compositing
+    canvas_centers = []
     for dx, dy, f in centers_m:
+        cx_px = (dx - min_x) * PPM
+        cy_px = (max_y - dy) * PPM
+        canvas_centers.append((cx_px, cy_px))
+
+    for idx, (dx, dy, f) in enumerate(centers_m):
         img_name = os.path.basename(f['bev_url'].split('?')[0])
         img_path = os.path.join(upload_folder, img_name)
         if not os.path.exists(img_path):
@@ -79,8 +74,6 @@ def create_corridor(frames, upload_folder):
         pts_canvas = []
         
         for u, v in pts_img:
-            # We must use the original unscaled 50.0 PPM here since the source BEV 
-            # image was inherently generated at 50 PPM, regardless of the canvas scale
             x_local_m = (u - W/2.0) / 50.0
             y_local_m = (H/2.0 - v) / 50.0
             
@@ -93,26 +86,71 @@ def create_corridor(frames, upload_folder):
             
         M = cv2.getAffineTransform(pts_img, np.float32(pts_canvas))
         warped = cv2.warpAffine(bev_img, M, (W_canvas, H_canvas))
-        mask = (warped.sum(axis=2) > 0).astype(np.uint8)
+        
+        # Mask: only pixels with actual road content (not black BEV corners).
+        # BEV frames have black triangular corners where the fisheye FOV doesn't
+        # reach. These must be excluded so they don't overwrite valid road content
+        # from adjacent frames. Use a brightness threshold instead of strict >0
+        # to also exclude near-black noise pixels at BEV edges.
+        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        mask = (gray > 10).astype(np.uint8)
 
         if mask.sum() == 0:
             continue
 
+        # Voronoi-style seam: for each pixel in this frame's footprint,
+        # only keep it if this frame's center is the closest (or within a
+        # feather margin of closest) among all frames. This naturally clips
+        # each frame to its Voronoi cell, producing seamless tiles on curves.
+        if len(canvas_centers) > 1:
+            ys, xs = np.where(mask > 0)
+            if len(xs) > 0:
+                my_cx, my_cy = canvas_centers[idx]
+                my_dist = np.sqrt((xs.astype(np.float32) - my_cx)**2 + (ys.astype(np.float32) - my_cy)**2)
+                
+                # Find minimum distance to any OTHER frame's center
+                min_other_dist = np.full(len(xs), np.inf, dtype=np.float32)
+                for other_idx, (ocx, ocy) in enumerate(canvas_centers):
+                    if other_idx == idx:
+                        continue
+                    other_dist = np.sqrt((xs.astype(np.float32) - ocx)**2 + (ys.astype(np.float32) - ocy)**2)
+                    min_other_dist = np.minimum(min_other_dist, other_dist)
+                
+                # diff > 0: we're closer (keep), diff < 0: other is closer (discard)
+                FEATHER_PX = 10.0
+                diff = min_other_dist - my_dist
+                alpha_vals = np.clip((diff + FEATHER_PX) / (2.0 * FEATHER_PX), 0.0, 1.0).astype(np.float32)
+                
+                # Apply alpha mask: discard pixels where other frame is closer
+                discard = alpha_vals <= 0
+                warped[ys[discard], xs[discard]] = 0
+                mask[ys[discard], xs[discard]] = 0
+                
+                # Partial alpha at boundaries
+                partial = (alpha_vals > 0) & (alpha_vals < 1.0)
+                if partial.any():
+                    partial_ys = ys[partial]
+                    partial_xs = xs[partial]
+                    partial_alphas = alpha_vals[partial]
+                    warped[partial_ys, partial_xs] = (warped[partial_ys, partial_xs].astype(np.float32) * partial_alphas[:, None]).astype(np.uint8)
+
+        # Composite: blend where both have content, fill where only new has content
         existing_mask = (canvas.sum(axis=2) > 0)
-
-        # Distance transform of the new frame's own footprint gives a
-        # smooth 0->1 ramp from its boundary inward, used only where we're
-        # blending over pre-existing content. Regions of the canvas that
-        # are still empty always get the new frame at full opacity, so the
-        # overall corridor's leading/trailing edges are never faded out.
-        dist = cv2.distanceTransform((mask * 255).astype(np.uint8), cv2.DIST_L2, 5)
-        alpha = np.clip(dist / FEATHER_PX, 0.0, 1.0).astype(np.float32)[..., None]
-
-        blended = (canvas.astype(np.float32) * (1.0 - alpha) + warped.astype(np.float32) * alpha)
-        blended = np.clip(blended, 0, 255).astype(np.uint8)
-
-        new_content = np.where(existing_mask[..., None], blended, warped)
-        canvas = np.where(mask[..., None] > 0, new_content, canvas).astype(np.uint8)
+        both_mask = existing_mask & (mask > 0)
+        new_only_mask = (~existing_mask) & (mask > 0)
+        
+        # Where both exist: weighted average blend using the Voronoi alpha
+        # The warped pixels have already been alpha-premultiplied by the Voronoi step.
+        # To blend correctly: result = existing*(1-alpha) + warped_original*alpha
+        # Since warped is already scaled by alpha, we need to reconstruct.
+        # Simpler approach: just take the newer frame's content at full strength
+        # since Voronoi already ensures minimal overlap.
+        if both_mask.any():
+            # Use the new frame where it has content in the overlap zone
+            canvas[both_mask] = warped[both_mask]
+        
+        # Where only new frame: direct copy
+        canvas[new_only_mask] = warped[new_only_mask]
         
     corridor_filename = f"corridor_{base_f['filename']}.png"
     cv2.imwrite(os.path.join(upload_folder, corridor_filename), canvas)

@@ -6,7 +6,7 @@ from ultralytics.utils.plotting import colors
 
 from geo_math import local_to_global, global_to_local
 from cv_projections import equirectangular_to_rectilinear
-from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask
+from cv_bev import get_bev_homography, apply_bev_feathering, draw_bev_grid, apply_ego_mask, get_bev_from_fisheye
 from depth_integration import is_pothole_class, attach_depth_to_detection
 
 
@@ -181,7 +181,17 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     )
     gsd = 1.0 / PPM
     
-    raw_bev_bgr = cv2.warpPerspective(rect_img_for_proj, H_mat, (bev_w, bev_h))
+    # Generate BEV: direct fisheye for standard video, homography for 360
+    if not options.get('is_360', True) and options.get('undistort', True) and telemetry.get('xfov'):
+        source_img = cv2.imread(source_path)
+        x_fov = float(telemetry.get('xfov') or calib.get('fov', 100))
+        y_fov = float(telemetry.get('yfov')) if telemetry.get('yfov') else math.degrees(2 * math.atan(math.tan(math.radians(x_fov) / 2) * (source_img.shape[0] / source_img.shape[1])))
+        raw_bev_bgr, bev_w, bev_h, PPM = get_bev_from_fisheye(
+            source_img, cam_h, eff_yaw, y_min, y_max, road_width, x_fov, y_fov
+        )
+        gsd = 1.0 / PPM
+    else:
+        raw_bev_bgr = cv2.warpPerspective(rect_img_for_proj, H_mat, (bev_w, bev_h))
     yaw_offset = float(calib.get('yaw_offset', 0.0))
     heading_offset = 180.0 if view_name == 'rear' else 0.0
     view_heading = (heading + heading_offset + yaw_offset) % 360
@@ -192,7 +202,15 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     if options.get('draw_grid', False):
         grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
         try:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
+            # For standard video: draw grid on raw fisheye image using fisheye projection
+            # This guarantees the grid aligns with the actual image regardless of
+            # lens model accuracy, since both use the same projection.
+            raw_img, fish_params = get_grid_fisheye_params(source_path, telemetry, options, calib, view_name)
+            if raw_img is not None and fish_params is not None:
+                annotated_rect = raw_img.copy()
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta, fish_params)
+            else:
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
         except Exception:
             pass
         
@@ -221,6 +239,7 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
             "depth_mean_mm": det.get("depth_mean_mm"),
             "depth_quality": det.get("depth_quality"),
             "depth_map_file": det.get("depth_map_file"),
+            "depth_method": det.get("depth_method", "geometry"),
         }
         
         if is_stitched:
@@ -412,7 +431,22 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         
         raw_rect_filename = f"raw_rect_{view_name}_{base_filename}"
         cv2.imwrite(os.path.join(output_dir, raw_rect_filename), rect_img)
-        raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        
+        # Generate BEV: use direct fisheye projection for standard video,
+        # or standard homography warp for 360/other modes.
+        if not options.get('is_360', True) and options.get('undistort', True) and telemetry.get('xfov'):
+            # Direct fisheye BEV — bypasses undistortion entirely for
+            # geometrically perfect orthographic output
+            source_img = cv2.imread(os.path.join(output_dir, source_filename))
+            x_fov = float(telemetry.get('xfov') or fov_val)
+            y_fov = float(telemetry.get('yfov')) if telemetry.get('yfov') else math.degrees(2 * math.atan(math.tan(math.radians(x_fov) / 2) * (source_img.shape[0] / source_img.shape[1])))
+            raw_bev_bgr, bev_w, bev_h, PPM = get_bev_from_fisheye(
+                source_img, cam_height, eff_yaw, y_min_base, y_max_base, road_width_base, x_fov, y_fov
+            )
+            gsd = 1.0 / PPM
+        else:
+            raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+        
         raw_bev_rgba = apply_bev_feathering(raw_bev_bgr)
         raw_bev_filename = f"raw_bev_{view_name}_{base_name_no_ext}.png" 
         cv2.imwrite(os.path.join(output_dir, raw_bev_filename), raw_bev_rgba)
@@ -438,7 +472,12 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         if options.get('draw_grid', False):
             grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
             try:
-                annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz, grid_delta)
+                raw_img, fish_params = get_grid_fisheye_params(os.path.join(output_dir, source_filename), telemetry, options, calibrations[view_name], view_name)
+                if raw_img is not None and fish_params is not None:
+                    annotated_rect = raw_img.copy()
+                    annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz, grid_delta, fish_params)
+                else:
+                    annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz, grid_delta)
             except Exception:
                 pass
 
@@ -576,6 +615,13 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
     return all_defects, all_geojson_features, generated_files, bev_footprints, view_meta_all, calibrations
 
 def get_projected_image(source_path, telemetry, options, view_name, calib):
+    """
+    Returns:
+        rect_img: undistorted rectilinear image (for BEV warp and AI inference)
+        K: camera matrix matching rect_img (K_rect)
+        grav_vec: gravity vector for BEV homography
+        eff_yaw: effective yaw offset
+    """
     img_mat = cv2.imread(source_path)
     is_360 = options.get('is_360', True)
     
@@ -601,17 +647,59 @@ def get_projected_image(source_path, telemetry, options, view_name, calib):
             from cv_bev import get_fisheye_maps
             x_fov = float(telemetry.get('xfov') or fov)
             y_fov = float(telemetry.get('yfov')) if telemetry.get('yfov') else math.degrees(2 * math.atan(math.tan(math.radians(x_fov) / 2) * (h / w)))
+            
             map1, map2, K = get_fisheye_maps(w, h, x_fov, y_fov)
             rect_img = cv2.remap(rect_img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         else:
             f = (w / 2.0) / math.tan(math.radians(fov) / 2.0)
             K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], dtype=np.float64)
         
-        raw_grav = telemetry.get('grav_vec')
-        grav_vec = list(raw_grav) if raw_grav is not None else [0.0, 1.0, 0.0]
+        grav_vec = [0.0, 1.0, 0.0]
         eff_yaw = yaw_offset
         
     return rect_img, K, grav_vec, eff_yaw
+
+
+def get_grid_fisheye_params(source_path, telemetry, options, calib, view_name):
+    """
+    For standard (non-360) video with undistortion enabled, returns the raw
+    source image and fisheye projection parameters for drawing the grid 
+    directly on the undistorted fisheye frame. This bypasses the lens model
+    accuracy issue entirely — the grid is projected through the same 
+    equidistant model the image was captured through, guaranteeing alignment.
+    
+    Returns (raw_img, fisheye_params) or (None, None) if not applicable.
+    """
+    is_360 = options.get('is_360', True)
+    if is_360:
+        return None, None
+    if not options.get('undistort', True):
+        return None, None
+    
+    img_mat = cv2.imread(source_path)
+    if img_mat is None:
+        return None, None
+    
+    h, w = img_mat.shape[:2]
+    fov = float(calib.get('fov') or 100.0)
+    x_fov = float(telemetry.get('xfov') or fov)
+    y_fov = float(telemetry.get('yfov')) if telemetry.get('yfov') else math.degrees(2 * math.atan(math.tan(math.radians(x_fov) / 2) * (h / w)))
+    
+    x_fov_rad = math.radians(x_fov)
+    y_fov_rad = math.radians(y_fov)
+    
+    # Equidistant fisheye focal lengths
+    fx_fish = (w / 2.0) / (x_fov_rad / 2.0)
+    fy_fish = (h / 2.0) / (y_fov_rad / 2.0)
+    
+    fisheye_params = {
+        'fx': fx_fish,
+        'fy': fy_fish,
+        'cx': w / 2.0,
+        'cy': h / 2.0
+    }
+    
+    return img_mat, fisheye_params
 
 def generate_grid_preview(source_path, process_meta, view_name, calib):
     rect_img, K, grav_vec, eff_yaw = get_projected_image(source_path, process_meta['telemetry'], process_meta['options'], view_name, calib)
@@ -646,7 +734,12 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         cv2.polylines(preview_img, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if process_meta['options'].get('draw_grid', False):
-        preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
+        raw_img, fish_params = get_grid_fisheye_params(source_path, process_meta['telemetry'], process_meta['options'], calib, view_name)
+        if raw_img is not None and fish_params is not None:
+            preview_img = raw_img.copy()
+            preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, fisheye_params=fish_params)
+        else:
+            preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     return preview_img
 
@@ -665,7 +758,17 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     )
     gsd = 1.0 / PPM
     
-    raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
+    # Generate BEV: direct fisheye for standard video, homography for 360
+    if not options.get('is_360', True) and options.get('undistort', True) and telemetry.get('xfov'):
+        source_img = cv2.imread(source_path)
+        x_fov = float(telemetry.get('xfov') or calib.get('fov', 100))
+        y_fov = float(telemetry.get('yfov')) if telemetry.get('yfov') else math.degrees(2 * math.atan(math.tan(math.radians(x_fov) / 2) * (source_img.shape[0] / source_img.shape[1])))
+        raw_bev_bgr, bev_w, bev_h, PPM = get_bev_from_fisheye(
+            source_img, cam_h, eff_yaw, y_min, y_max, road_width, x_fov, y_fov
+        )
+        gsd = 1.0 / PPM
+    else:
+        raw_bev_bgr = cv2.warpPerspective(rect_img, H_mat, (bev_w, bev_h))
     base_name_no_ext = os.path.splitext(base_filename)[0]
     
     cv2.imwrite(os.path.join(output_dir, f"raw_rect_{view_name}_{base_filename}"), rect_img)
@@ -690,7 +793,12 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     if options.get('draw_grid', False):
         grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
         try:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
+            raw_img, fish_params = get_grid_fisheye_params(source_path, telemetry, options, calib, view_name)
+            if raw_img is not None and fish_params is not None:
+                annotated_rect = raw_img.copy()
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta, fish_params)
+            else:
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
         except Exception:
             pass
         

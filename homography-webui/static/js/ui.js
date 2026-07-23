@@ -259,12 +259,83 @@ export function initDepthModal() {
         document.getElementById("depth-stat-quality").textContent = (d.depth_quality !== undefined && d.depth_quality !== null) ? `${(d.depth_quality*100).toFixed(0)}%` : '—';
         document.getElementById("depth-map-title").textContent = `${d.class} — DEPTH MAP`;
 
+        // Set the method selector to the current method used for this detection
+        const methodSelect = document.getElementById("depth-method-select");
+        methodSelect.value = d.depth_method || 'geometry';
+        document.getElementById("depth-method-status").textContent = '';
+
+        // Store the active det_idx for recompute
+        state._depthModalDetIdx = detIdx;
+
         document.getElementById("depth-map-modal").showModal();
     };
 
     document.getElementById("btn-close-depth-map").onclick = () => {
         document.getElementById("depth-map-modal").close();
         document.getElementById("depth-map-image").src = "";
+    };
+
+    // Recompute depth with a different method
+    document.getElementById("btn-recompute-depth").onclick = async () => {
+        const detIdx = state._depthModalDetIdx;
+        if (detIdx === undefined || detIdx === null) return;
+        if (state.appResults.length === 0) return;
+
+        const current = state.appResults[state.currentIndex];
+        const method = document.getElementById("depth-method-select").value;
+        const statusEl = document.getElementById("depth-method-status");
+        const loader = document.getElementById("depth-recompute-loader");
+        const btn = document.getElementById("btn-recompute-depth");
+
+        statusEl.textContent = "Recomputing...";
+        loader.classList.remove("hidden");
+        btn.disabled = true;
+
+        try {
+            const res = await fetch("/recompute_depth", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    filename: current.filename,
+                    view: state.currentDirection,
+                    det_idx: detIdx,
+                    depth_method: method,
+                    calibration: (current.views[state.currentDirection] || current.views['front']).calibration || {}
+                })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) throw new Error(data.error || "Depth recompute failed");
+
+            // Update local state with new depth stats
+            const activeViewData = current.views[state.currentDirection] || current.views['front'];
+            const d = activeViewData.defects.find(x => x.det_idx === detIdx);
+            if (d) {
+                d.depth_max_mm = data.depth_max_mm;
+                d.depth_mean_mm = data.depth_mean_mm;
+                d.depth_quality = data.depth_quality;
+                d.depth_map_file = data.depth_map_file;
+                d.depth_method = data.depth_method;
+            }
+
+            // Update the modal display
+            document.getElementById("depth-map-image").src = data.depth_map_file ? `/static/uploads/${data.depth_map_file}?t=${Date.now()}` : '';
+            document.getElementById("depth-stat-max").textContent = data.depth_max_mm ? `${data.depth_max_mm.toFixed(1)} mm` : '—';
+            document.getElementById("depth-stat-mean").textContent = data.depth_mean_mm ? `${data.depth_mean_mm.toFixed(1)} mm` : '—';
+            document.getElementById("depth-stat-quality").textContent = data.depth_quality ? `${(data.depth_quality*100).toFixed(0)}%` : '—';
+
+            statusEl.textContent = `Done (${method})`;
+            statusEl.style.color = 'var(--success, #4caf50)';
+
+            // Refresh the defects table
+            updateCarousel(false);
+        } catch(err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.style.color = 'var(--danger, #f44336)';
+            console.error("Depth recompute error:", err);
+        } finally {
+            loader.classList.add("hidden");
+            btn.disabled = false;
+        }
     };
 }
 

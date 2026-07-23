@@ -26,7 +26,7 @@ from diagnostics import build_pass_diagnostic_report, align_project
 from corridor import create_corridor
 from geo_math import local_to_global
 from cleanup import clear_uploads
-from depth_integration import is_pothole_class, attach_depth_to_detection
+from depth_integration import is_pothole_class, attach_depth_to_detection, load_depth_model, is_depth_model_loaded
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -510,6 +510,102 @@ def recalculate_bev():
         atomic_write_json(meta_path, process_meta)
         new_results.append(updated_r)
     return jsonify({"success": True, "results": new_results})
+
+@app.route('/recompute_depth', methods=['POST'])
+def recompute_depth():
+    """
+    Re-run depth estimation for a single detection using a user-selected method.
+    Accepts: {filename, view, det_idx, depth_method, calibration}
+    Returns: {success, depth_max_mm, depth_mean_mm, depth_quality, depth_map_file, depth_method}
+    """
+    try:
+        data = request.json
+        filename = data.get('filename')
+        view_name = data.get('view', 'front')
+        det_idx = data.get('det_idx')
+        depth_method = data.get('depth_method', 'geometry')
+        calib = data.get('calibration', {})
+
+        meta_path = os.path.join(app.config['UPLOAD_FOLDER'], f"process_meta_{filename}.json")
+        if not os.path.exists(meta_path):
+            return jsonify({"error": "Process metadata not found"}), 404
+        with open(meta_path, 'r') as f:
+            process_meta = json.load(f)
+
+        detections = process_meta.get('view_meta', {}).get(view_name, {}).get('detections', [])
+        if det_idx is None or det_idx < 0 or det_idx >= len(detections):
+            return jsonify({"error": "Invalid detection index"}), 400
+
+        det = detections[det_idx]
+        class_name = det.get('class_name', '')
+        polygon_list = det.get('polygon', [])
+
+        if not is_pothole_class(class_name):
+            return jsonify({"error": "Detection is not a pothole class"}), 400
+        if len(polygon_list) < 3:
+            return jsonify({"error": "Detection polygon too small"}), 400
+
+        # Load the source image and compute projection geometry
+        source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"source_{filename}")
+        if not os.path.exists(source_path):
+            return jsonify({"error": "Source image not found"}), 404
+
+        media_type = process_meta.get('options', {}).get('media_type', '360-video')
+        is_simple_frame = (media_type == 'orthographic')
+
+        if is_simple_frame:
+            rect_img = cv2.imread(source_path)
+            h, w = rect_img.shape[:2]
+            K = np.array([[w, 0, w/2], [0, w, h/2], [0, 0, 1]], dtype=np.float64)
+            cam_h = float(calib.get('cam_height') or 1.6)
+            v_down = np.array([0.0, 1.0, 0.0])
+            # For simple frames, area is pixel area (no BEV available)
+            area_sqm = float(cv2.contourArea(np.array(polygon_list, dtype=np.float32)))
+        else:
+            rect_img, K, grav_vec, eff_yaw = get_projected_image(
+                source_path, process_meta['telemetry'], process_meta['options'], view_name, calib
+            )
+            cam_h = float(calib.get('cam_height') or 1.6)
+            y_min = float(calib.get('z_near') or 1.2)
+            y_max = float(calib.get('z_far') or 5.0)
+            road_width = float(calib.get('lane_width') or 6.0)
+
+            from cv_bev import get_bev_homography
+            H_mat, bev_w, bev_h, PPM, v_down, v_forward, v_right = get_bev_homography(
+                K, cam_h, grav_vec, eff_yaw, y_min, y_max, road_width
+            )
+
+            # Compute BEV area from the polygon
+            h_rect, w_rect = rect_img.shape[:2]
+            mask_canvas = np.zeros((h_rect, w_rect), dtype=np.uint8)
+            cv2.fillPoly(mask_canvas, [np.array(polygon_list, dtype=np.int32)], 255)
+            warped_mask = cv2.warpPerspective(mask_canvas, H_mat, (bev_w, bev_h))
+            contours, _ = cv2.findContours(warped_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            area_px = sum(cv2.contourArea(c) for c in contours)
+            area_sqm = float(area_px) / (PPM ** 2)
+
+        # Run depth estimation with the chosen method
+        cache_key = f"{filename}_{view_name}_{det_idx}_{int(time.time()*1000)}"
+        stats = attach_depth_to_detection(
+            detections, det_idx, class_name,
+            rect_img, np.array(polygon_list, dtype=np.float32),
+            K, cam_h, v_down, area_sqm,
+            app.config['UPLOAD_FOLDER'], cache_key,
+            force=True, method=depth_method
+        )
+
+        # Persist updated detection metadata
+        process_meta['view_meta'][view_name]['detections'] = detections
+        atomic_write_json(meta_path, process_meta)
+
+        if stats is None:
+            return jsonify({"error": "Depth computation returned no results"}), 500
+
+        return jsonify({"success": True, **stats})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/modify_defects', methods=['POST'])
 def modify_defects():

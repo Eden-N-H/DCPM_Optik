@@ -33,6 +33,8 @@ export const state = {
     currentTaskId: null,
     warningCount: 0,
     
+    _depthModalDetIdx: null,
+    
     layoutPrefs: {
         mapOn: { mainW: "45%", mediaBasis: "55%", isManual: false },
         mapOff: { mediaBasis: "50%", isManual: false }

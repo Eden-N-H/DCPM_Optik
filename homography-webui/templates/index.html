@@ -359,18 +359,34 @@
             </button>
         </div>
         <div class="modal-body flex-col gap-2">
-            <div class="calibration-preview" style="height:400px;">
+            <div class="calibration-preview" style="height:400px; position:relative;">
                 <img id="depth-map-image" src="" style="max-width:100%; max-height:100%; object-fit:contain;">
+                <div id="depth-recompute-loader" class="loader-overlay hidden">
+                    <span class="loader-text">COMPUTING DEPTH...</span>
+                </div>
             </div>
             <div class="stat-grid">
                 <div class="stat-card"><span class="stat-label">Max Depth</span><span class="stat-value" id="depth-stat-max">—</span></div>
                 <div class="stat-card"><span class="stat-label">Mean Depth</span><span class="stat-value" id="depth-stat-mean">—</span></div>
                 <div class="stat-card"><span class="stat-label">Confidence</span><span class="stat-value" id="depth-stat-quality">—</span></div>
             </div>
-            <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted);">
+            <fieldset style="margin-top:4px;">
+                <legend>DEPTH METHOD</legend>
+                <div class="flex-row gap-1" style="align-items:center; flex-wrap:wrap;">
+                    <select id="depth-method-select" style="font-family:var(--font-mono); font-size:0.8rem; padding:4px 8px;">
+                        <option value="geometry" selected>Geometry (morphometric)</option>
+                        <option value="depthanything">Depth Anything V2 (ML)</option>
+                    </select>
+                    <button id="btn-recompute-depth" class="btn-primary btn-small">RECOMPUTE</button>
+                    <span id="depth-method-status" style="font-family:var(--font-mono); font-size:0.7rem; color:var(--muted);"></span>
+                </div>
+                <p style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); margin-top:4px;">
+                    <strong>Geometry:</strong> fast heuristic from BEV area &amp; mask shape. <strong>Depth Anything V2:</strong> monocular ML model with RANSAC plane fitting (slower, first run downloads ~100MB model).
+                </p>
+            </fieldset>
+            <p id="depth-method-description" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted);">
                 Colour scale (JET): dark blue = shallow / surface level, red = deepest point within the masked
-                pothole region. Depth is a morphometric estimate derived from the defect's measured surface
-                area and mask shape, not a directly-sensed measurement — treat it as an approximation.
+                pothole region.
             </p>
         </div>
     </dialog>
