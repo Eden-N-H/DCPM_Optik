@@ -145,60 +145,157 @@ def get_bev_homography(K_rect, cam_height_m, grav_vec, yaw_offset, y_min, y_max,
         
     return H_mat, bev_W, bev_H, PPM, v_down, v_forward, v_right
 
-def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, y_max, x_range, cam_offset_x=0.0, cam_offset_z=0.0):
+def _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
+                              world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
+                              y_min, y_max, x_range):
+    """
+    Projects a sequence of world-frame (x, z) sample points for a single grid
+    line into image pixels, returning a list the same length as
+    `world_points` where each entry is either an (u, v) pixel or None if
+    that particular sample falls outside the currently visible local
+    frustum (or behind the camera).
+
+    Returning a per-sample list (instead of silently dropping invalid
+    samples) is the key fix: it lets the caller only ever draw a segment
+    between two ADJACENT samples that are both valid, and never between
+    two arbitrary valid samples that happen to still be in the list after
+    invalid ones were removed. Connecting non-adjacent samples is exactly
+    what produced the spurious long diagonal lines crossing the whole
+    image whenever a world-fixed grid line swept in and out of view
+    (which happens routinely once the camera's heading differs from the
+    baseline, e.g. mid-corner) -- the grid geometry itself was correct,
+    but the rendering was joining points that were never meant to be
+    connected.
+    """
+    projected = []
+    for world_x, world_z in world_points:
+        dx = world_x - cam_offset_x
+        dz = world_z - cam_offset_z
+        local_x = dx * cos_d - dz * sin_d
+        local_z = dx * sin_d + dz * cos_d
+
+        if (local_z < y_min - 0.5 or local_z > y_max + 0.5
+                or local_x < -x_range - 0.5 or local_x > x_range + 0.5):
+            projected.append(None)
+            continue
+
+        pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
+        p_img = K_rect @ pt3d
+        
+        # REQUIREMENT: Depth along optical axis (p_img[2]) must be reasonably in front of the lens.
+        # If it approaches 0 (the focal plane), the pixel division explodes towards infinity.
+        # Previously this was "fixed" by clamping extreme pixel values, but dragging the endpoint 
+        # of an exploded 2D vector back toward the principal point radically alters the line's slope,
+        # forcing parallel grid lines to physically converge into a drawn "starburst".
+        # Safely discarding the point instead (assigning None) naturally breaks the drawn segment.
+        if p_img[2] > 0.5:
+            px, py = p_img[0] / p_img[2], p_img[1] / p_img[2]
+            
+            # Rely on strict coordinate bounds check rather than clamping to avoid OpenCV 16-bit 
+            # integer overflow while preserving true projective geometry.
+            if abs(px) < 16000 and abs(py) < 16000:
+                projected.append((int(px), int(py)))
+            else:
+                projected.append(None)
+        else:
+            projected.append(None)
+
+    return projected
+
+
+def _draw_polyline_segments(img, projected_points, color=(0, 255, 255), thickness=2):
+    """Draws cv2.line only between consecutive (adjacent-index) valid points."""
+    for i in range(len(projected_points) - 1):
+        a, b = projected_points[i], projected_points[i + 1]
+        if a is not None and b is not None:
+            cv2.line(img, a, b, color, thickness)
+
+
+def draw_bev_grid(img, K_rect, cam_height_m, v_down, v_forward, v_right, y_min, y_max, x_range,
+                   cam_offset_x=0.0, cam_offset_z=0.0, delta_heading=0.0):
     """
     Draws a metric grid onto the rectilinear image.
 
-    If cam_offset_x / cam_offset_z are provided (camera displacement from
-    project baseline in the view's local coordinate system), the grid is
-    drawn at world-fixed metre boundaries so it remains stationary as the
-    camera moves through the scene. Without offsets (default 0,0), the grid
-    is camera-relative (identical to the original behaviour).
+    The grid is anchored to a single, fixed world frame -- the project's
+    grid baseline -- rather than to the camera's own current heading, so
+    integer-metre grid lines stay planted at the same physical ground
+    locations as the camera moves and turns through the scene. As the
+    vehicle turns a corner the grid will (correctly) appear to rotate in
+    the image, because it is drawn on ground that is fixed in the world
+    while the camera's viewing direction changes -- that rotation is
+    expected. What this function guarantees is that the *positions* of
+    the grid lines themselves don't warp, and -- critically -- that lines
+    are never drawn between two points that are not adjacent samples of
+    the same physical line (see _project_world_grid_line /
+    _draw_polyline_segments above). Without that guarantee, a world-fixed
+    line that sweeps in and out of the visible frustum (routine once
+    delta_heading != 0) produces spurious long diagonals connecting
+    unrelated visible fragments of the line -- the "starburst" artifact.
 
-    cam_offset_x: lateral displacement of camera from baseline (metres, +right)
-    cam_offset_z: longitudinal displacement of camera from baseline (metres, +forward)
+    cam_offset_x, cam_offset_z: camera position relative to the baseline,
+      expressed in the baseline's OWN (world-fixed) heading frame -- i.e.
+      NOT pre-rotated into this view's local frame. This is the single
+      coordinate system every frame's grid-line integers are chosen in.
+    delta_heading: rotation, in radians, from the baseline frame to this
+      view's local (v_right/v_forward) frame -- i.e.
+      radians(view_heading - base_heading). Used to rotate each
+      world-frame grid vertex into local ground coordinates immediately
+      before projecting it through K_rect.
+
+    With the defaults (0, 0, 0) the grid is purely camera-relative,
+    identical to the original (pre-baseline) behaviour.
     """
-    # Compute world-aligned grid line positions visible in the current frustum.
-    # The camera sees the local range [y_min, y_max] forward and [-x_range, x_range] lateral.
-    # In world coordinates those correspond to [cam_offset_z + y_min, cam_offset_z + y_max]
-    # and [cam_offset_x - x_range, cam_offset_x + x_range].
-    # We draw grid lines at integer-metre world positions that fall within the visible range.
+    cos_d, sin_d = math.cos(delta_heading), math.sin(delta_heading)
 
-    world_z_min = cam_offset_z + y_min
-    world_z_max = cam_offset_z + y_max
-    world_x_min = cam_offset_x - x_range
-    world_x_max = cam_offset_x + x_range
+    def local_to_world(local_x, local_z):
+        # Inverse rotation (transpose of the 2D rotation matrix used in
+        # _project_world_grid_line), used only to find which world-frame
+        # integer grid lines are potentially visible from the current
+        # local viewing rectangle.
+        world_x = cam_offset_x + (local_x * cos_d + local_z * sin_d)
+        world_z = cam_offset_z + (-local_x * sin_d + local_z * cos_d)
+        return world_x, world_z
 
-    # Draw horizontal lines (constant world-z / forward distance)
+    # Determine the visible world-frame bounding box by transforming the
+    # four corners of the current local viewing frustum's ground rectangle
+    # into world coordinates. Rotation can turn an axis-aligned local
+    # rectangle into a tilted one in world space, so we take the bounding
+    # box of the four transformed corners (a safe superset -- individual
+    # out-of-frustum samples are filtered per-point in
+    # _project_world_grid_line regardless).
+    corners_local = [(-x_range, y_min), (x_range, y_min), (x_range, y_max), (-x_range, y_max)]
+    world_xs, world_zs = [], []
+    for lx, lz in corners_local:
+        wx, wz = local_to_world(lx, lz)
+        world_xs.append(wx)
+        world_zs.append(wz)
+
+    world_x_min, world_x_max = min(world_xs), max(world_xs)
+    world_z_min, world_z_max = min(world_zs), max(world_zs)
+
+    # Cap how much world-space extent we ever sample across. A very large
+    # delta_heading combined with a long z-range can otherwise blow this
+    # bounding box out to an enormous area (slow, and pointless -- almost
+    # none of it is visible). This is a safety net, not a behavioural
+    # change for the normal case.
+    MAX_EXTENT_M = 200.0
+    world_x_min = max(world_x_min, world_x_min if (world_x_max - world_x_min) <= MAX_EXTENT_M else world_x_max - MAX_EXTENT_M)
+    world_z_min = max(world_z_min, world_z_min if (world_z_max - world_z_min) <= MAX_EXTENT_M else world_z_max - MAX_EXTENT_M)
+
+    # Horizontal lines (constant world-z / forward distance)
     for world_z in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 1, 1.0):
-        local_z = world_z - cam_offset_z
-        if local_z < y_min - 0.5 or local_z > y_max + 0.5:
-            continue
-        pts = []
-        for world_x in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 0.5, 0.5):
-            local_x = world_x - cam_offset_x
-            pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
-            p_img = K_rect @ pt3d
-            if p_img[2] > 1e-5:
-                u, v = int(p_img[0]/p_img[2]), int(p_img[1]/p_img[2])
-                pts.append((u, v))
-        if len(pts) > 1:
-            for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+        world_points = [(wx, world_z) for wx in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 0.5, 0.5)]
+        projected = _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
+                                              world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
+                                              y_min, y_max, x_range)
+        _draw_polyline_segments(img, projected)
 
-    # Draw vertical lines (constant world-x / lateral position)
+    # Vertical lines (constant world-x / lateral position)
     for world_x in np.arange(math.floor(world_x_min), math.ceil(world_x_max) + 1, 1.0):
-        local_x = world_x - cam_offset_x
-        if local_x < -x_range - 0.5 or local_x > x_range + 0.5:
-            continue
-        pts = []
-        for world_z in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 0.5, 0.5):
-            local_z = world_z - cam_offset_z
-            pt3d = (local_x * v_right) + (local_z * v_forward) + (cam_height_m * v_down)
-            p_img = K_rect @ pt3d
-            if p_img[2] > 1e-5:
-                u, v = int(p_img[0]/p_img[2]), int(p_img[1]/p_img[2])
-                pts.append((u, v))
-        if len(pts) > 1:
-            for i in range(len(pts)-1): cv2.line(img, pts[i], pts[i+1], (0, 255, 255), 2)
+        world_points = [(world_x, wz) for wz in np.arange(math.floor(world_z_min), math.ceil(world_z_max) + 0.5, 0.5)]
+        projected = _project_world_grid_line(K_rect, cam_height_m, v_down, v_forward, v_right,
+                                              world_points, cam_offset_x, cam_offset_z, cos_d, sin_d,
+                                              y_min, y_max, x_range)
+        _draw_polyline_segments(img, projected)
 
     return img

@@ -3,6 +3,7 @@ import json
 import uuid
 import threading
 import queue
+import numpy as np
 
 from constants import ALLOWED_IMAGE_EXT, ALLOWED_VIDEO_EXT
 from geo_math import calculate_bearing, haversine_distance, apply_camera_offset
@@ -13,6 +14,37 @@ from utils import atomic_write_json
 active_tasks = {}
 cancel_flags = {}
 
+def _smooth_photo_headings(image_data, raw_photo_coords):
+    """
+    Smooths the raw per-image bearing sequence for photo assets.
+    """
+    photo_indices = [
+        i for i in range(len(image_data))
+        if image_data[i]['ext'] in ALLOWED_IMAGE_EXT
+        and raw_photo_coords[i] is not None
+        and raw_photo_coords[i][0] is not None
+    ]
+    if len(photo_indices) < 3:
+        return
+
+    raw_headings_deg = np.array([image_data[i]['heading'] for i in photo_indices], dtype=np.float64)
+    unwrapped_rad = np.unwrap(np.radians(raw_headings_deg))
+
+    window = min(5, len(unwrapped_rad))
+    if window % 2 == 0:
+        window -= 1
+    if window < 3:
+        return
+
+    half = window // 2
+    padded = np.pad(unwrapped_rad, (half, half), mode='edge')
+    kernel = np.ones(window) / window
+    smoothed_rad = np.convolve(padded, kernel, mode='valid')
+    smoothed_deg = np.degrees(smoothed_rad) % 360.0
+
+    for idx, heading in zip(photo_indices, smoothed_deg):
+        image_data[idx]['heading'] = float(heading)
+
 def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload_folder, global_model, model_lock, sam2_predictor=None, sam2_lock=None):
     image_data = sorted(image_data, key=lambda x: x['filename'])
     trail_coordinates = []
@@ -22,26 +54,6 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
     cam_off_fwd = options.get('cam_offset_forward_m', 0.0) or 0.0
     cam_off_right = options.get('cam_offset_right_m', 0.0) or 0.0
 
-    # --------------------------------------------------------------------
-    # PASS 1: Compute heading for every image using the ORIGINAL (raw)
-    # GPS trace only.
-    #
-    # Previously, heading computation and lever-arm offset application
-    # were interleaved in a single loop that mutated image_data[i]['lat']/
-    # ['lon'] in place. Because points are visited in order, by the time
-    # point i's heading was computed, point i-1's coordinates had ALREADY
-    # been overwritten with their offset-corrected value from the prior
-    # iteration, while point i+1 was still raw -- so the centered-difference
-    # bearing was silently computed from a mixed raw/corrected coordinate
-    # basis. This produced a small but systematic heading error whenever a
-    # nonzero camera offset was configured, which then propagated directly
-    # into every downstream world-placement calculation (BEV footprints,
-    # defect geocoding) via view_heading.
-    #
-    # Splitting into two passes guarantees headings are always derived
-    # from a single, consistent (raw) coordinate basis, independent of
-    # loop order.
-    # --------------------------------------------------------------------
     raw_photo_coords = [
         (a['lat'], a['lon']) if a['ext'] in ALLOWED_IMAGE_EXT else None
         for a in image_data
@@ -69,10 +81,8 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
 
         image_data[i]['heading'] = heading
 
-    # --------------------------------------------------------------------
-    # PASS 2: Apply lever-arm offset (now that every heading is final and
-    # consistent), cluster into locations, and build the trail/UI state.
-    # --------------------------------------------------------------------
+    _smooth_photo_headings(image_data, raw_photo_coords)
+
     for i in range(len(image_data)):
         if image_data[i]['ext'] in ALLOWED_IMAGE_EXT:
             lat, lon = raw_photo_coords[i]
@@ -157,16 +167,8 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             "cam_offset_right_m": cam_off_right
                         }
 
-                        # Grid baseline is injected transiently by the video pipeline
-                        # (pipeline_video.py) for video assets. For photo assets, we
-                        # inject it here if draw_grid is enabled and valid GPS is available.
-                        if 'grid_baseline' not in worker_options and worker_options.get('draw_grid', False):
-                            if asset['lat'] is not None and asset['lon'] is not None:
-                                worker_options['grid_baseline'] = {
-                                    'lat': asset['lat'],
-                                    'lon': asset['lon'],
-                                    'heading': asset.get('heading', 0.0)
-                                }
+                        # Removed grid_baseline injection here as well for photo assets.
+                        # This enforces a camera-relative (fixed HUD) perspective grid across all media.
 
                         defects, geo_feats, gen_files, footprints, view_meta, calibrations = process_single_image(
                             asset['path'], global_model, asset['filename'], upload_folder, 
@@ -174,12 +176,9 @@ def start_processing_job(image_data, options, last_lat, last_lon, loc_id, upload
                             sam2_predictor=sam2_predictor, sam2_lock=sam2_lock
                         )
                         
-                        # Strip transient grid_baseline before persisting
-                        opts_to_save = {k: v for k, v in worker_options.items() if k != 'grid_baseline'}
-                        
                         process_meta_data = {
                             "telemetry": telemetry,
-                            "options": opts_to_save,
+                            "options": worker_options,
                             "view_meta": view_meta,
                             "original_name": asset['original_name']
                         }

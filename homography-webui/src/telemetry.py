@@ -1,8 +1,8 @@
 import math
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
-from geo_math import haversine_distance, calculate_bearing
+from scipy.interpolate import interp1d, PchipInterpolator
+from scipy.ndimage import gaussian_filter1d
+from geo_math import haversine_distance
 
 def evaluate_telemetry_health(streams):
     report = {
@@ -36,7 +36,7 @@ def evaluate_telemetry_health(streams):
             lat2, lon2 = curr["data"][0], curr["data"][1]
             doppler_speed_curr = curr["data"][3]
             
-            dop, fix = 1.0, 3.0 # Safest defaults for older GPS5
+            dop, fix = 1.0, 3.0
             if gps_key == "GPS9" and len(curr["data"]) >= 9:
                 dop = curr["data"][7]
                 fix = curr["data"][8]
@@ -87,6 +87,7 @@ def evaluate_telemetry_health(streams):
             
     return report
 
+
 def _filter_gps_speed_outliers(valid_gps, max_speed_error_ms=8.0):
     if len(valid_gps) < 3:
         return valid_gps
@@ -103,25 +104,10 @@ def _filter_gps_speed_outliers(valid_gps, max_speed_error_ms=8.0):
         filtered.append(curr)
     return filtered if len(filtered) >= 2 else valid_gps
 
-def _distance_smoothing_window(n_samples, duration_sec, avg_speed_mps, target_meters=1.5, min_w=5, polyorder=3):
-    if duration_sec <= 0 or n_samples < min_w + 2:
-        return None
-    hz = n_samples / duration_sec
-    safe_speed = max(float(avg_speed_mps), 0.5)
-    duration_for_target = target_meters / safe_speed
-    w = int(round(hz * duration_for_target))
-    if w % 2 == 0:
-        w += 1
-    max_w = n_samples if n_samples % 2 != 0 else n_samples - 1
-    w = max(min_w, min(w, max_w))
-    if w <= polyorder:
-        return None
-    return w
 
 def get_telemetry_interpolators(streams):
     interpolators = {}
     valid_gps = []
-    shared_avg_speed = None
 
     if "GPS9" in streams:
         for s in streams["GPS9"]:
@@ -136,6 +122,9 @@ def get_telemetry_interpolators(streams):
                 if lat != 0.0 and lon != 0.0:
                     valid_gps.append({"time_sec": s["time_sec"], "lat": lat, "lon": lon, "speed": s2d})
 
+    # CRITICAL: GPMF packet streams can sometimes append slightly out-of-order chunks. 
+    # Sorting ensures absolute monotonic time, preventing math errors during differentiation/smoothing.
+    valid_gps = sorted(valid_gps, key=lambda x: x["time_sec"])
     valid_gps = _filter_gps_speed_outliers(valid_gps)
 
     if valid_gps:
@@ -143,84 +132,88 @@ def get_telemetry_interpolators(streams):
         data = np.array([[s["lat"], s["lon"], s["speed"]] for s in valid_gps])
         
         duration = times[-1] - times[0]
-        shared_avg_speed = float(np.mean(data[:, 2])) if len(data) > 0 else None
+        hz = len(data) / duration if duration > 0.1 else 18.0
+        shared_avg_speed = float(np.mean(data[:, 2])) if len(data) > 0 else 5.0
+        safe_speed = max(shared_avg_speed, 1.0)
         
-        w_speed = _distance_smoothing_window(len(data), duration, shared_avg_speed or 5.0, target_meters=2.0)
-        w_heading = _distance_smoothing_window(len(data), duration, shared_avg_speed or 5.0, target_meters=10.0, min_w=11)
-        w_pos = _distance_smoothing_window(len(data), duration, shared_avg_speed or 5.0, target_meters=5.0, min_w=5)
+        # 1. Project global lat/lon to a localized Cartesian flat-plane (Metric X/Y).
+        # This completely avoids floating point errors when computing tangents on micro-movements.
+        R_earth = 6378137.0
+        lat0_rad = math.radians(data[0, 0])
         
-        if w_pos is not None:
-            data[:, 0] = savgol_filter(data[:, 0], w_pos, 3)
-            data[:, 1] = savgol_filter(data[:, 1], w_pos, 3)
+        lats_rad = np.radians(data[:, 0])
+        lons_rad = np.radians(data[:, 1])
+        
+        # Y is North (meters), X is East (meters) relative to the first GPS point.
+        y_m = (lats_rad - lats_rad[0]) * R_earth
+        x_m = (lons_rad - lons_rad[0]) * R_earth * math.cos(lat0_rad)
+        
+        # 2. Aggressive Spatial Smoothing.
+        # Gaussian smoothing completely eliminates the GPS "zigzag" scatter without introducing 
+        # the mathematical overshoot/ringing that polynomial filters cause around sharp corners.
+        sigma_sec = 2.0 / safe_speed
+        sigma_samples = max(1.0, sigma_sec * hz)
+        
+        x_smooth = gaussian_filter1d(x_m, sigma=sigma_samples, mode='nearest')
+        y_smooth = gaussian_filter1d(y_m, sigma=sigma_samples, mode='nearest')
+        speed_smooth = gaussian_filter1d(data[:, 2], sigma=sigma_samples, mode='nearest')
+        
+        # Convert the smoothed metric coordinates cleanly back to lat/lon for the UI/Map
+        smoothed_lat = np.degrees(y_smooth / R_earth) + data[0, 0]
+        smoothed_lon = np.degrees(x_smooth / (R_earth * math.cos(lat0_rad))) + data[0, 1]
+        
+        # 3. Analytic Heading via Calculus Derivatives (dx/dt, dy/dt)
+        # Taking the absolute mathematical tangent of the smoothed path perfectly isolates
+        # the car's heading, entirely preventing the zigzag/wobble seen in the map footprint.
+        dx = np.gradient(x_smooth)
+        dy = np.gradient(y_smooth)
+        
+        # atan2(dx, dy) where X is East and Y is North yields exact map bearing (0=North, 90=East)
+        headings_rad = np.arctan2(dx, dy)
+        continuous_headings_deg = (np.degrees(headings_rad) + 360) % 360
+        
+        # 4. Construct Interpolators
+        if len(times) >= 4:
+            interpolators["gps"] = PchipInterpolator(times, np.column_stack((smoothed_lat, smoothed_lon)), extrapolate=True)
+            interpolators["speed"] = PchipInterpolator(times, speed_smooth, extrapolate=True)
             
-        if w_speed is not None:
-            data[:, 2] = savgol_filter(data[:, 2], w_speed, 3)
+            # Unwrap before PCHIP so the spline doesn't violently swing 360 degrees if a corner crosses North
+            headings_unwrapped = np.unwrap(np.radians(continuous_headings_deg))
+            raw_heading_spline = PchipInterpolator(times, headings_unwrapped, extrapolate=True)
             
-        headings = np.zeros(len(data))
-        seg_times = times.astype(np.float64).copy()
-        for i in range(len(data) - 1):
-            headings[i] = calculate_bearing(data[i, 0], data[i, 1], data[i + 1, 0], data[i + 1, 1])
-            seg_times[i] = (times[i] + times[i + 1]) / 2.0
-        headings[-1] = headings[-2] if len(headings) > 1 else 0.0
-        seg_times[-1] = times[-1]
-        
-        headings_rad = np.radians(headings)
-        unwrapped_rad = np.unwrap(headings_rad)
-        
-        if w_heading is not None:
-            unwrapped_rad = savgol_filter(unwrapped_rad, w_heading, 3)
+            # Wrap the spline evaluator so standard calls still return 0-360 degrees
+            def heading_evaluator(t):
+                return (math.degrees(float(raw_heading_spline(t))) + 360) % 360
+            interpolators["heading"] = heading_evaluator
             
-        continuous_headings_deg = np.degrees(unwrapped_rad)
-        
-        # Use cubic spline interpolation rather than linear to eliminate piecewise 
-        # angular trajectories (stair-stepping) between discrete GPS points.
-        kind_gps = 'cubic' if len(times) >= 4 else 'linear'
-        interpolators["gps"] = interp1d(times, data[:, :2], axis=0, kind=kind_gps, bounds_error=False, fill_value="extrapolate")
-        interpolators["speed"] = interp1d(times, data[:, 2], kind=kind_gps, bounds_error=False, fill_value="extrapolate")
-        
-        kind_h = 'cubic' if len(seg_times) >= 4 else 'linear'
-        interpolators["heading"] = interp1d(seg_times, continuous_headings_deg, kind=kind_h, bounds_error=False, fill_value="extrapolate")
+        else:
+            interpolators["gps"] = interp1d(times, np.column_stack((smoothed_lat, smoothed_lon)), axis=0, kind='linear', bounds_error=False, fill_value="extrapolate")
+            interpolators["speed"] = interp1d(times, speed_smooth, kind='linear', bounds_error=False, fill_value="extrapolate")
+            interpolators["heading"] = interp1d(times, continuous_headings_deg, kind='linear', bounds_error=False, fill_value="extrapolate")
 
+    # IMU Gravity handling
     if "GRAV" in streams:
         times = np.array([s["time_sec"] for s in streams["GRAV"]])
         gravs = np.array([s["data"] for s in streams["GRAV"]])
         
-        # Kinematic Compensation: Remove centrifugal and longitudinal acceleration forces 
-        # that masquerade as false camera roll/pitch during cornering and braking.
-        if valid_gps and "heading" in interpolators and "speed" in interpolators:
-            dt = 0.25
-            for i in range(len(times)):
-                t = times[i]
-                v = float(interpolators["speed"](t))
-                if v > 0.5:
-                    h1 = float(interpolators["heading"](t - dt))
-                    h2 = float(interpolators["heading"](t + dt))
-                    dh = (h2 - h1 + 180) % 360 - 180
-                    yaw_rate_rad = math.radians(dh) / (2 * dt)
-                    
-                    # Centrifugal acceleration (lateral)
-                    ac_x = (v * yaw_rate_rad) / 9.81
-                    gravs[i, 0] += ac_x
-                    
-                    # Longitudinal acceleration (forward/backward squat)
-                    v1 = float(interpolators["speed"](t - dt))
-                    v2 = float(interpolators["speed"](t + dt))
-                    a_lon = (v2 - v1) / (2 * dt)
-                    ac_z = a_lon / 9.81
-                    gravs[i, 2] += ac_z
-                    
         duration = times[-1] - times[0] if len(times) > 0 else 0
-        avg_speed_for_grav = shared_avg_speed if shared_avg_speed is not None else 5.0
-        w = _distance_smoothing_window(len(gravs), duration, avg_speed_for_grav, target_meters=2.0, min_w=11)
+        hz = len(gravs) / duration if duration > 0.1 else 100.0
         
-        if w is not None:
-            gravs[:,0] = savgol_filter(gravs[:,0], w, 3)
-            gravs[:,1] = savgol_filter(gravs[:,1], w, 3)
-            gravs[:,2] = savgol_filter(gravs[:,2], w, 3)
-            
-        kind_g = 'cubic' if len(times) >= 4 else 'linear'
-        interpolators["grav_x"] = interp1d(times, gravs[:,0], kind=kind_g, bounds_error=False, fill_value="extrapolate")
-        interpolators["grav_y"] = interp1d(times, gravs[:,1], kind=kind_g, bounds_error=False, fill_value="extrapolate")
-        interpolators["grav_z"] = interp1d(times, gravs[:,2], kind=kind_g, bounds_error=False, fill_value="extrapolate")
+        # Smooth gravity to kill engine vibration, but keep it responsive
+        sigma_sec = 0.5
+        sigma_samples = max(1.0, sigma_sec * hz)
+        
+        gravs[:,0] = gaussian_filter1d(gravs[:,0], sigma=sigma_samples, mode='nearest')
+        gravs[:,1] = gaussian_filter1d(gravs[:,1], sigma=sigma_samples, mode='nearest')
+        gravs[:,2] = gaussian_filter1d(gravs[:,2], sigma=sigma_samples, mode='nearest')
+        
+        if len(times) >= 4:
+            interpolators["grav_x"] = PchipInterpolator(times, gravs[:,0], extrapolate=True)
+            interpolators["grav_y"] = PchipInterpolator(times, gravs[:,1], extrapolate=True)
+            interpolators["grav_z"] = PchipInterpolator(times, gravs[:,2], extrapolate=True)
+        else:
+            interpolators["grav_x"] = interp1d(times, gravs[:,0], kind='linear', bounds_error=False, fill_value="extrapolate")
+            interpolators["grav_y"] = interp1d(times, gravs[:,1], kind='linear', bounds_error=False, fill_value="extrapolate")
+            interpolators["grav_z"] = interp1d(times, gravs[:,2], kind='linear', bounds_error=False, fill_value="extrapolate")
 
     return interpolators

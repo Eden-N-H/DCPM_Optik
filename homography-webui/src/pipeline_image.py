@@ -12,39 +12,18 @@ from depth_integration import is_pothole_class, attach_depth_to_detection
 
 def _get_grid_offsets(telemetry, options, view_heading):
     """
-    Compute the camera's displacement from the project grid baseline.
-
-    Returns (cam_offset_x, cam_offset_z) in the current view's local
-    coordinate system (metres). When a grid_baseline is stored in options,
-    the grid will be drawn at world-fixed positions; otherwise returns
-    (0, 0) for camera-relative grid (backward compatible).
+    HARDCODED TO RETURN ZERO.
+    
+    This enforces a rigid, camera-relative "HUD" grid that stays perfectly 
+    static and horizontal in the frame regardless of the vehicle's trajectory.
+    
+    Previously, this function attempted to anchor the grid to a fixed physical 
+    world baseline. This meant that as the vehicle turned, the grid would 
+    counter-rotate on the screen to stay glued to the asphalt. While mathematically 
+    correct for a world-locked overlay, it created visually skewed grids that 
+    users perceived as bugs. 
     """
-    try:
-        baseline = options.get('grid_baseline')
-        if not baseline:
-            return 0.0, 0.0
-
-        gps_lat = telemetry.get('lat')
-        gps_lon = telemetry.get('lon')
-        if gps_lat is None or gps_lon is None:
-            return 0.0, 0.0
-
-        base_lat = baseline['lat']
-        base_lon = baseline['lon']
-        base_heading = baseline['heading']
-
-        # Get camera position relative to baseline in baseline-aligned frame
-        x_base, z_base = global_to_local(base_lat, base_lon, base_heading, gps_lat, gps_lon)
-
-        # Rotate the baseline-frame offset into the view's local frame.
-        delta_heading = math.radians(view_heading - base_heading)
-        cos_d, sin_d = math.cos(delta_heading), math.sin(delta_heading)
-        cam_offset_x = x_base * cos_d + z_base * sin_d
-        cam_offset_z = -x_base * sin_d + z_base * cos_d
-
-        return cam_offset_x, cam_offset_z
-    except Exception:
-        return 0.0, 0.0
+    return 0.0, 0.0, 0.0
 
 def _run_sam2_on_points(image_bgr, points, predictor, sam2_lock=None):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -164,9 +143,6 @@ def _render_simple_view_from_detections(process_meta, view_name, calib, filename
         cv2.polylines(annotated_rect, [pts], isClosed=True, color=color_bgr, thickness=2)
         
         area_px = cv2.contourArea(pts)
-        # Orthographic/simple frames have no camera model (no K/BEV
-        # homography), so depth estimation is intentionally not run here --
-        # only the 360/standard-video BEV pipeline supports it.
         defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_px, 0), "color": hex_color, "det_idx": det_idx})
         
     rect_filename = f"rect_{view_name}_{filename}"
@@ -181,7 +157,6 @@ def _render_simple_view_from_detections(process_meta, view_name, calib, filename
 def render_view_from_detections(process_meta, view_name, calib, filename, output_dir):
     telemetry = process_meta.get('telemetry', {})
     options = process_meta.get('options', {})
-    original_filename = process_meta.get('original_name', '')
     media_type = options.get('media_type', '360-video')
     
     if media_type == 'orthographic':
@@ -215,9 +190,9 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
     annotated_bev_bgr = raw_bev_bgr.copy()
     
     if options.get('draw_grid', False):
-        grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+        grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
         try:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz)
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
         except Exception:
             pass
         
@@ -241,13 +216,6 @@ def render_view_from_detections(process_meta, view_name, calib, filename, output
         is_grouped = det.get('is_grouped', False)
         spanned_frames = det.get('spanned_frames', [])
 
-        # Depth is never recomputed here -- this function only re-renders
-        # existing polygons (e.g. after grouping/alignment). Depth stats
-        # were computed once at creation time (process_single_image /
-        # recalculate_view / modify_defects) and persisted onto the
-        # detection dict; grouping.py only ever dict.update()s extra keys
-        # onto that same dict, so these fields survive grouping/stitching
-        # untouched. We just pass them through into the response here.
         depth_props = {
             "depth_max_mm": det.get("depth_max_mm"),
             "depth_mean_mm": det.get("depth_mean_mm"),
@@ -366,7 +334,6 @@ def _process_simple_frame(img_input, model, base_filename, output_dir, options, 
                 "polygon": pts.tolist()
             })
             det_idx = len(view_meta["front"]["detections"]) - 1
-            # No camera model in orthographic mode -- depth is skipped here.
             all_defects.append({"class": class_name, "conf": round(conf, 2), "area_sqm": round(area_px, 0), "color": hex_color, "det_idx": det_idx})
     else:
         for r in results:
@@ -469,9 +436,9 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
         annotated_bev_bgr = raw_bev_bgr.copy()
         
         if options.get('draw_grid', False):
-            grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+            grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
             try:
-                annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz)
+                annotated_rect = draw_bev_grid(annotated_rect, K, cam_height, v_down, v_forward, v_right, y_min_base, y_max_base, x_range_base, grid_ox, grid_oz, grid_delta)
             except Exception:
                 pass
 
@@ -528,8 +495,6 @@ def process_single_image(img_input, model, base_filename, output_dir, telemetry,
                     })
                     _geo_props_entries.append(geo_props)
 
-                # Pothole-only, cached, computed once per detection (not per
-                # BEV contour fragment) using its total BEV surface area.
                 if is_pothole_class(class_name):
                     cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
                     attach_depth_to_detection(
@@ -681,9 +646,6 @@ def generate_grid_preview(source_path, process_meta, view_name, calib):
         cv2.polylines(preview_img, [pts_array], isClosed=True, color=(0, 255, 255), thickness=2)
         
     if process_meta['options'].get('draw_grid', False):
-        # Grid preview during calibration uses camera-relative grid (no baseline offset).
-        # This is intentional: the user is adjusting yaw/pitch in real-time and needs
-        # to see the grid aligned to the current view, not offset to a project baseline.
         preview_img = draw_bev_grid(preview_img, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r)
         
     return preview_img
@@ -726,9 +688,9 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
     annotated_bev_bgr = raw_bev_bgr.copy()
     
     if options.get('draw_grid', False):
-        grid_ox, grid_oz = _get_grid_offsets(telemetry, options, view_heading)
+        grid_ox, grid_oz, grid_delta = _get_grid_offsets(telemetry, options, view_heading)
         try:
-            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz)
+            annotated_rect = draw_bev_grid(annotated_rect, K, cam_h, v_down, v_forward, v_right, y_min, y_max, x_r, grid_ox, grid_oz, grid_delta)
         except Exception:
             pass
         
@@ -788,8 +750,6 @@ def recalculate_view(source_path, telemetry, options, view_name, calib, original
                 })
                 _geo_props_entries.append(geo_props)
 
-            # Recalibration explicitly changed geometry, so always recompute
-            # (never reuse a stale cached depth map from the old calibration).
             if is_pothole_class(class_name):
                 cache_key = f"{base_filename}_{view_name}_{this_det_idx}"
                 attach_depth_to_detection(
